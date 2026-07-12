@@ -1,66 +1,66 @@
 #!/usr/bin/env bash
-# Non-interactive helper for orch. Called directly by fzf bindings
+# Non-interactive helper for ork. Called directly by fzf bindings
 # (no `source`, no `-i`) to avoid repeated dotfile-sourcing overhead and TTY
 # job-control issues when invoked from fzf's execute()/reload().
 set -u
 
-[[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
+[[ -f "$HOME/.ork.conf" ]] && source "$HOME/.ork.conf"
 
-# ORCH_WORKTREES_ROOTS: where per-task worktrees get created/found. Defaults
+# ORK_WORKTREES_ROOTS: where per-task worktrees get created/found. Defaults
 # to the original hardcoded ~/worktrees for backward compat — override in
-# ~/.orch.conf as an array to use a different location (or several).
+# ~/.ork.conf as an array to use a different location (or several).
 #
 # Repos themselves are NOT configured — find_repo_root/all_repo_dirs below
 # scan live under $HOME instead (0.6s on a normal dev machine, fast enough
-# to run on every invocation), so there's no ORCH_CODE_ROOTS to keep in
+# to run on every invocation), so there's no ORK_CODE_ROOTS to keep in
 # sync with wherever you actually clone things.
-ORCH_WORKTREES_ROOTS=("${ORCH_WORKTREES_ROOTS[@]:-$HOME/worktrees}")
+ORK_WORKTREES_ROOTS=("${ORK_WORKTREES_ROOTS[@]:-$HOME/worktrees}")
 
 # Directory names never worth descending into while scanning for repos —
 # dependency trees and build output can contain thousands of nested dirs
 # (and occasionally their own vendored .git dirs), so pruning them isn't
 # just an optimization, it avoids surfacing repos you didn't actually clone
 # yourself.
-_ORCH_SCAN_PRUNE=(node_modules .cache vendor dist build target .venv venv __pycache__ .terraform)
+_ORK_SCAN_PRUNE=(node_modules .cache vendor dist build target .venv venv __pycache__ .terraform)
 
 # Full-depth unbounded scans ranged 0.7s-17s depending on what else was
 # hitting disk (confirmed live) — bounding depth and caching the result
 # fixes both the worst-case latency AND the "looks frozen" UX problem this
-# caused in orch's ctrl-n repo picker. Keep in sync with the identical
-# cache/maxdepth logic in `orch` (this file can't source that one — see
+# caused in ork's ctrl-n repo picker. Keep in sync with the identical
+# cache/maxdepth logic in `ork` (this file can't source that one — see
 # the comment there for why).
-_ORCH_REPO_CACHE="$HOME/.cache/orch/repo-scan"
-_ORCH_REPO_CACHE_TTL=60
+_ORK_REPO_CACHE="$HOME/.cache/ork/repo-scan"
+_ORK_REPO_CACHE_TTL=60
 
 # Lists every repo's checkout dir under $HOME, one per line — a repo is any
 # directory containing a .git (worktrees' .git is a file, not a dir, so
 # `git worktree add`-created worktrees are naturally excluded; only real
 # clones show up here).
 all_repo_dirs() {
-  mkdir -p "$(dirname "$_ORCH_REPO_CACHE")"
+  mkdir -p "$(dirname "$_ORK_REPO_CACHE")"
   local age=999999
-  if [[ -f "$_ORCH_REPO_CACHE" ]]; then
-    age=$(( $(date +%s) - $(stat -c '%Y' "$_ORCH_REPO_CACHE" 2>/dev/null || echo 0) ))
+  if [[ -f "$_ORK_REPO_CACHE" ]]; then
+    age=$(( $(date +%s) - $(stat -c '%Y' "$_ORK_REPO_CACHE" 2>/dev/null || echo 0) ))
   fi
-  if (( age <= _ORCH_REPO_CACHE_TTL )); then
-    cat "$_ORCH_REPO_CACHE"
+  if (( age <= _ORK_REPO_CACHE_TTL )); then
+    cat "$_ORK_REPO_CACHE"
     return
   fi
 
-  local prune_expr=(-name "${_ORCH_SCAN_PRUNE[0]}") name
-  for name in "${_ORCH_SCAN_PRUNE[@]:1}"; do
+  local prune_expr=(-name "${_ORK_SCAN_PRUNE[0]}") name
+  for name in "${_ORK_SCAN_PRUNE[@]:1}"; do
     prune_expr+=(-o -name "$name")
   done
   # .git itself must NOT be in the prune list — pruning it would stop find
   # from ever printing it (confirmed live: with .git in the -prune set, the
   # scan silently found zero repos). Prune only the noisy dependency/build
   # dirs; .git dirs get matched and printed on the second clause instead.
-  find "$HOME" -maxdepth "${ORCH_SCAN_MAXDEPTH:-3}" \( -type d \( "${prune_expr[@]}" \) -prune \) -o -type d -name .git -print 2>/dev/null | \
-    sed 's|/\.git$||' | tee "$_ORCH_REPO_CACHE"
+  find "$HOME" -maxdepth "${ORK_SCAN_MAXDEPTH:-3}" \( -type d \( "${prune_expr[@]}" \) -prune \) -o -type d -name .git -print 2>/dev/null | \
+    sed 's|/\.git$||' | tee "$_ORK_REPO_CACHE"
 }
 
 # Finds a repo's checkout dir by basename (first match wins if more than
-# one repo on disk shares that name — same ambiguity a plain ORCH_CODE_ROOTS
+# one repo on disk shares that name — same ambiguity a plain ORK_CODE_ROOTS
 # array had, just implicit now instead of resolved by array order).
 find_repo_root() {
   local repo=$1 dir
@@ -75,7 +75,7 @@ find_repo_root() {
 # match; empty if none exist yet (e.g. about to be created).
 find_worktree() {
   local repo=$1 task=$2 root
-  for root in "${ORCH_WORKTREES_ROOTS[@]}"; do
+  for root in "${ORK_WORKTREES_ROOTS[@]}"; do
     [[ -d "$root/$repo/$task" ]] && { printf '%s' "$root/$repo/$task"; return; }
   done
 }
@@ -86,7 +86,7 @@ find_worktree() {
 # hardcoded root now loop over this instead.
 all_worktree_dirs() {
   local root
-  for root in "${ORCH_WORKTREES_ROOTS[@]}"; do
+  for root in "${ORK_WORKTREES_ROOTS[@]}"; do
     for wt in "$root"/*/*/; do
       [[ -d "$wt" ]] || continue
       printf '%s\n' "${wt%/}"
@@ -94,9 +94,9 @@ all_worktree_dirs() {
   done
 }
 
-ACCESS_DIR="$HOME/.cache/orch/access"
-AGENT_STATE_DIR="$HOME/.cache/orch/agent-state"
-# Push-based, not polled: ~/.claude/hooks/orch-agent-state.sh writes
+ACCESS_DIR="$HOME/.cache/ork/access"
+AGENT_STATE_DIR="$HOME/.cache/ork/agent-state"
+# Push-based, not polled: ~/.claude/hooks/ork-agent-state.sh writes
 # running/waiting into this dir directly off Claude Code's own hook events
 # (UserPromptSubmit+PreToolUse -> running, Stop+Notification -> waiting).
 # Scraping tmux pane text for a "tokens)" substring was a race against
@@ -182,8 +182,8 @@ ago() {
 }
 
 rows() {
-  # Sorted by last-accessed-via-orch, most recent first. Worktrees never
-  # opened through orch have no such signal — folder mtime is not a
+  # Sorted by last-accessed-via-ork, most recent first. Worktrees never
+  # opened through ork have no such signal — folder mtime is not a
   # substitute (it moves on file edits, not on cd/attach, so it's just
   # wrong) — those show "never" and sort last.
   local now=$(date +%s)
@@ -194,7 +194,7 @@ rows() {
   # sharing a task (BE+FE under the same task name) could then resolve to
   # different sessions — whichever one had the exact-cwd pane got the real
   # session, the other silently fell back and, on any naming mismatch (e.g.
-  # ORCH_SCOPE_SESSIONS_TO_REPO), disagreed entirely — the exact "waiting
+  # ORK_SCOPE_SESSIONS_TO_REPO), disagreed entirely — the exact "waiting
   # shows in one folder but not the other" bug. Resolve once per TASK here,
   # up front, from a single tmux snapshot, so every sibling worktree of the
   # same task shares one session and therefore one cached agent state.
@@ -314,8 +314,8 @@ fortune_sidebar() {
 #
 # Kills any session whose pane cwd matches this worktree (covers sessions
 # started under a different name than the task, e.g. cross-repo sharing),
-# AND the repo-scoped session name (used when ORCH_SCOPE_SESSIONS_TO_REPO=1
-# — see named_session() in orch) — a session can exist under that name with
+# AND the repo-scoped session name (used when ORK_SCOPE_SESSIONS_TO_REPO=1
+# — see named_session() in ork) — a session can exist under that name with
 # no pane ever having this exact cwd if it was created but the process cd'd
 # away. The plain task-named session (default naming) may be shared across
 # repos, so it's only killed if no OTHER repo's worktree under this same
@@ -323,7 +323,7 @@ fortune_sidebar() {
 # under a still-active sibling.
 kill_session_for() {
   local repo=$1 task=$2
-  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORK_WORKTREES_ROOTS[0]}/$repo/$task"
 
   local target
   target=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}" 2>/dev/null | \
@@ -335,7 +335,7 @@ kill_session_for() {
 
   if tmux has-session -t "=$task" 2>/dev/null; then
     local d has_sibling=0 root
-    for root in "${ORCH_WORKTREES_ROOTS[@]}"; do
+    for root in "${ORK_WORKTREES_ROOTS[@]}"; do
       for d in "$root"/*/"$task"; do
         [[ -d "$d" ]] || continue
         [[ "$d" == "$wt" ]] && continue
@@ -354,37 +354,37 @@ kill_session_for() {
 kill_task() {
   local repo=$1 task=$2
   kill_session_for "$repo" "$task"
-  echo "$(date '+%H:%M:%S') killed session for $repo/$task (worktree+branch untouched)" >> /tmp/orch.log
+  echo "$(date '+%H:%M:%S') killed session for $repo/$task (worktree+branch untouched)" >> /tmp/ork.log
 }
 
 end_task() {
   local repo=$1 task=$2
-  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORK_WORKTREES_ROOTS[0]}/$repo/$task"
 
   (
     repo_root=$(find_repo_root "$repo")
     cd "${repo_root:-$HOME/code/$repo}" 2>/dev/null || exit 1
-    git worktree remove "$wt" --force 2>>/tmp/orch.log
+    git worktree remove "$wt" --force 2>>/tmp/ork.log
     git worktree prune
-    git branch -D "$task" 2>>/tmp/orch.log
-    git push origin --delete "$task" 2>>/tmp/orch.log
+    git branch -D "$task" 2>>/tmp/ork.log
+    git push origin --delete "$task" 2>>/tmp/ork.log
   )
   [[ -d "$wt" ]] && rm -rf "$wt"
   rm -f "$(access_file "$repo" "$task")"
-  echo "$(date '+%H:%M:%S') removed $repo/$task (worktree+branch, local+origin)" >> /tmp/orch.log
+  echo "$(date '+%H:%M:%S') removed $repo/$task (worktree+branch, local+origin)" >> /tmp/ork.log
 
-  # Kill the session LAST: when orch itself runs inside the session being
+  # Kill the session LAST: when ork itself runs inside the session being
   # ended (tmux-keybind window, or plain attach to the same task session),
-  # killing it also kills orch and this very helper process — with the kill
+  # killing it also kills ork and this very helper process — with the kill
   # first, everything below it silently never ran (confirmed live: first
   # ctrl-x killed the session and dropped the client back out, leaving
-  # branch+folder behind; a second ctrl-x from a fresh orch finished the
+  # branch+folder behind; a second ctrl-x from a fresh ork finished the
   # job). Killing last means the cleanup is already done if we die here.
   kill_session_for "$repo" "$task"
 }
 
 # Full-screen fzf yes/no dialog, styled like the picker itself so a
-# confirmation doesn't LOOK like orch exited (the old raw `read` off
+# confirmation doesn't LOOK like ork exited (the old raw `read` off
 # /dev/tty dropped back to a bare shell-style prompt line — jarring). Runs
 # with terminal access (called via fzf's execute(), not reload()); fzf
 # draws its UI on /dev/tty directly, stdout is just the picked line. "no"
@@ -404,7 +404,7 @@ confirm_end_task() {
   if confirm_dialog "DELETE worktree + branch (local & origin) for $repo/$task"; then
     end_task "$repo" "$task"
   else
-    echo "$(date '+%H:%M:%S') skipped $repo/$task (not confirmed)" >> /tmp/orch.log
+    echo "$(date '+%H:%M:%S') skipped $repo/$task (not confirmed)" >> /tmp/ork.log
   fi
 }
 
@@ -413,7 +413,7 @@ confirm_kill_task() {
   if confirm_dialog "kill tmux session for $repo/$task (worktree+branch untouched)"; then
     kill_task "$repo" "$task"
   else
-    echo "$(date '+%H:%M:%S') skipped kill-session for $repo/$task (not confirmed)" >> /tmp/orch.log
+    echo "$(date '+%H:%M:%S') skipped kill-session for $repo/$task (not confirmed)" >> /tmp/ork.log
   fi
 }
 
@@ -421,9 +421,9 @@ confirm_kill_task() {
 # match by cwd, or by a session named after this task (sessions are shared
 # by task name across repos by default). Prints tab-separated pane_info or
 # nothing if there's no live pane.
-_orch_resolve_pane() {
+_ork_resolve_pane() {
   local repo=$1 task=$2
-  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORK_WORKTREES_ROOTS[0]}/$repo/$task"
   local pane_info
   pane_info=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}	#{pane_pid}" 2>/dev/null | \
     awk -F'\t' -v p="$wt" '$2==p{print; exit}')
@@ -438,7 +438,7 @@ _orch_resolve_pane() {
 # repeat them here. Shown in the left half of the preview split.
 info_panel() {
   local repo=$1 task=$2
-  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORK_WORKTREES_ROOTS[0]}/$repo/$task"
   # Always the real branch name — never collapse to "=" even if it happens
   # to match the task/folder name, since that's misleading here (the row
   # list already does the "=" shorthand, this panel is meant to be exact).
@@ -447,7 +447,7 @@ info_panel() {
   echo " branch: ${branch:-none}"
   echo " path:   ${wt/#$HOME/\~}"
   echo
-  tail -n 5 /tmp/orch.log 2>/dev/null
+  tail -n 5 /tmp/ork.log 2>/dev/null
 }
 
 # Tmux session summary, shown as the TMUX column's header (session name,
@@ -458,7 +458,7 @@ info_panel() {
 tmux_summary_line1() {
   local repo=$1 task=$2
   local pane_info
-  pane_info=$(_orch_resolve_pane "$repo" "$task")
+  pane_info=$(_ork_resolve_pane "$repo" "$task")
   [[ -z "$pane_info" ]] && { echo " session: none"; return; }
 
   local sess=$(echo "$pane_info" | cut -f1)
@@ -471,9 +471,9 @@ tmux_summary_line1() {
 
 tmux_summary_line2() {
   local repo=$1 task=$2
-  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORK_WORKTREES_ROOTS[0]}/$repo/$task"
   local pane_info
-  pane_info=$(_orch_resolve_pane "$repo" "$task")
+  pane_info=$(_ork_resolve_pane "$repo" "$task")
   [[ -z "$pane_info" ]] && return
 
   local pane_cwd win_cmd pid
@@ -501,7 +501,7 @@ tmux_summary_line2() {
 pane_preview() {
   local repo=$1 task=$2 want=${3:-40}
   local pane_info
-  pane_info=$(_orch_resolve_pane "$repo" "$task")
+  pane_info=$(_ork_resolve_pane "$repo" "$task")
   if [[ -z "$pane_info" ]]; then
     echo "(no live tmux session)"
     return
@@ -624,7 +624,7 @@ split_preview() {
 # same output you'd see cd'ing in and running it by hand.
 git_status_preview() {
   local repo=$1 task=$2
-  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORK_WORKTREES_ROOTS[0]}/$repo/$task"
   [[ -d "$wt" ]] || { echo "(worktree not found: $wt)"; return; }
   git -C "$wt" status 2>&1
 }

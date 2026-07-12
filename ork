@@ -1,47 +1,47 @@
 #!/usr/bin/env bash
 # Standalone orchestrator binary: control/jump between worktree agents running
 # in tmux. Works from bash or zsh via the thin wrapper function in
-# orch.sh — that wrapper is what actually cd's the caller's shell; this
+# ork.sh — that wrapper is what actually cd's the caller's shell; this
 # binary only ever prints (on stdout, last line) the directory to cd into,
 # if any. All other output goes to stderr so it doesn't get swallowed by the
 # wrapper's `$(...)` capture.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HELPER="$SCRIPT_DIR/orch-helper.sh"
+HELPER="$SCRIPT_DIR/ork-helper.sh"
 
-[[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
+[[ -f "$HOME/.ork.conf" ]] && source "$HOME/.ork.conf"
 
-# Same default as orch-helper.sh — ~/.orch.conf isn't required to set this,
+# Same default as ork-helper.sh — ~/.ork.conf isn't required to set this,
 # so under `set -u` any read of it here (e.g. new_task_finish's fallback wt=)
 # would otherwise blow up as an unbound variable on a fresh/minimal conf.
-ORCH_WORKTREES_ROOTS=("${ORCH_WORKTREES_ROOTS[@]:-$HOME/worktrees}")
+ORK_WORKTREES_ROOTS=("${ORK_WORKTREES_ROOTS[@]:-$HOME/worktrees}")
 
-# ORCH_HOOKS_CONFIG: JSON file mapping repo folder name -> shell command,
+# ORK_HOOKS_CONFIG: JSON file mapping repo folder name -> shell command,
 # run (cwd = new worktree) right after `new-task` creates it. Kept in
-# ~/.config (XDG-conventional, separate from ~/.orch.conf) since it's
+# ~/.config (XDG-conventional, separate from ~/.ork.conf) since it's
 # arbitrary shell commands rather than shell config — plain JSON also means
 # it's not sourced/eval'd as bash, so a hooks file someone shares/pastes
 # can't silently run more than the one command it declares.
-ORCH_HOOKS_CONFIG="${ORCH_HOOKS_CONFIG:-$HOME/.config/orch/hooks.json}"
+ORK_HOOKS_CONFIG="${ORK_HOOKS_CONFIG:-$HOME/.config/ork/hooks.json}"
 
-# run_repo_hook <repo> <worktree-dir>: looks up "$repo" in ORCH_HOOKS_CONFIG
+# run_repo_hook <repo> <worktree-dir>: looks up "$repo" in ORK_HOOKS_CONFIG
 # and runs its command string with cwd set to the worktree. No-ops quietly
 # if the config file is missing, unparsable, or has no entry for this repo
 # — hooks are optional, most repos won't have one.
 run_repo_hook() {
   local repo="$1" wt="$2"
-  [[ -f "$ORCH_HOOKS_CONFIG" ]] || return 0
-  command -v jq >/dev/null 2>&1 || { echo "orch: jq not found, skipping hook for '$repo'" >&2; return 0; }
+  [[ -f "$ORK_HOOKS_CONFIG" ]] || return 0
+  command -v jq >/dev/null 2>&1 || { echo "ork: jq not found, skipping hook for '$repo'" >&2; return 0; }
   local cmd
-  cmd=$(jq -r --arg repo "$repo" '.[$repo] // empty' "$ORCH_HOOKS_CONFIG" 2>/dev/null)
+  cmd=$(jq -r --arg repo "$repo" '.[$repo] // empty' "$ORK_HOOKS_CONFIG" 2>/dev/null)
   [[ -n "$cmd" ]] || return 0
   (cd "$wt" 2>/dev/null && bash -c "$cmd") >&2
 }
 
 # write_claude_profile <repo-root> <worktree-dir>: writes "personal" or
 # "work" into <worktree-dir>/.claude-profile based on whether <repo-root>
-# falls under one of CLAUDE_PERSONAL_DIRS (~/.orch.conf, prefix match, same
+# falls under one of CLAUDE_PERSONAL_DIRS (~/.ork.conf, prefix match, same
 # list ~/.zshrc's claude() wrapper uses). Worktrees live outside those dirs
 # even for personal repos, so claude() can't prefix-match them directly —
 # this marker is what lets it pick the right profile once cd'd into one.
@@ -57,17 +57,17 @@ write_claude_profile() {
   printf '%s' "$profile" > "$wt/.claude-profile" 2>/dev/null
 }
 
-# ORCH_WORKTREES_ROOTS: see orch-helper.sh for the full explanation —
+# ORK_WORKTREES_ROOTS: see ork-helper.sh for the full explanation —
 # defaults to the original ~/worktrees layout. Repos are discovered by
-# scanning $HOME live — no ORCH_CODE_ROOTS to configure.
+# scanning $HOME live — no ORK_CODE_ROOTS to configure.
 #
-# all_repo_dirs/find_repo_root are duplicated in orch-helper.sh rather than
-# sourced from there — orch-helper.sh ends in its own `case "$1" in ...
+# all_repo_dirs/find_repo_root are duplicated in ork-helper.sh rather than
+# sourced from there — ork-helper.sh ends in its own `case "$1" in ...
 # esac` dispatch (it's meant to run standalone via fzf's execute()/reload(),
 # never sourced), so `source`-ing it here would also run that dispatch
-# with orch's own $1, not the intended subcommand. Keep the two prune
+# with ork's own $1, not the intended subcommand. Keep the two prune
 # lists/find expressions identical if you change one.
-_ORCH_SCAN_PRUNE=(node_modules .cache vendor dist build target .venv venv __pycache__ .terraform)
+_ORK_SCAN_PRUNE=(node_modules .cache vendor dist build target .venv venv __pycache__ .terraform)
 
 # Scanning $HOME for .git dirs takes anywhere from under a second to well
 # over ten, depending on what else is hitting disk at the time (confirmed
@@ -77,23 +77,23 @@ _ORCH_SCAN_PRUNE=(node_modules .cache vendor dist build target .venv venv __pyca
 # repeat ctrl-n presses in the same sitting are instant, and print a visible
 # "scanning" message before any cache miss so a slow one doesn't look like
 # a hang.
-_ORCH_REPO_CACHE="$HOME/.cache/orch/repo-scan"
-_ORCH_REPO_CACHE_TTL=60
+_ORK_REPO_CACHE="$HOME/.cache/ork/repo-scan"
+_ORK_REPO_CACHE_TTL=60
 
 all_repo_dirs() {
-  mkdir -p "$(dirname "$_ORCH_REPO_CACHE")"
+  mkdir -p "$(dirname "$_ORK_REPO_CACHE")"
   local age=999999
-  if [[ -f "$_ORCH_REPO_CACHE" ]]; then
-    age=$(( $(date +%s) - $(stat -c '%Y' "$_ORCH_REPO_CACHE" 2>/dev/null || echo 0) ))
+  if [[ -f "$_ORK_REPO_CACHE" ]]; then
+    age=$(( $(date +%s) - $(stat -c '%Y' "$_ORK_REPO_CACHE" 2>/dev/null || echo 0) ))
   fi
-  if (( age <= _ORCH_REPO_CACHE_TTL )); then
-    cat "$_ORCH_REPO_CACHE"
+  if (( age <= _ORK_REPO_CACHE_TTL )); then
+    cat "$_ORK_REPO_CACHE"
     return
   fi
 
-  echo "Scanning \$HOME for repos... (cached for ${_ORCH_REPO_CACHE_TTL}s after this)" >&2
-  local prune_expr=(-name "${_ORCH_SCAN_PRUNE[0]}") name
-  for name in "${_ORCH_SCAN_PRUNE[@]:1}"; do
+  echo "Scanning \$HOME for repos... (cached for ${_ORK_REPO_CACHE_TTL}s after this)" >&2
+  local prune_expr=(-name "${_ORK_SCAN_PRUNE[0]}") name
+  for name in "${_ORK_SCAN_PRUNE[@]:1}"; do
     prune_expr+=(-o -name "$name")
   done
   # -maxdepth 3 covers $HOME/repo and $HOME/group/repo (.git itself is one
@@ -101,9 +101,9 @@ all_repo_dirs() {
   # to single-digit milliseconds (confirmed live), which is the entire
   # reason ctrl-n felt broken in the first place. Costs missing repos
   # nested deeper than that (rare — most people clone at most 1-2 folders
-  # deep); raise it in ~/.orch.conf via ORCH_SCAN_MAXDEPTH if you need more.
-  find "$HOME" -maxdepth "${ORCH_SCAN_MAXDEPTH:-3}" \( -type d \( "${prune_expr[@]}" \) -prune \) -o -type d -name .git -print 2>/dev/null | \
-    sed 's|/\.git$||' | tee "$_ORCH_REPO_CACHE"
+  # deep); raise it in ~/.ork.conf via ORK_SCAN_MAXDEPTH if you need more.
+  find "$HOME" -maxdepth "${ORK_SCAN_MAXDEPTH:-3}" \( -type d \( "${prune_expr[@]}" \) -prune \) -o -type d -name .git -print 2>/dev/null | \
+    sed 's|/\.git$||' | tee "$_ORK_REPO_CACHE"
 }
 
 find_repo_root() {
@@ -115,13 +115,13 @@ find_repo_root() {
 
 find_worktree() {
   local repo=$1 task=$2 root
-  for root in "${ORCH_WORKTREES_ROOTS[@]}"; do
+  for root in "${ORK_WORKTREES_ROOTS[@]}"; do
     [[ -d "$root/$repo/$task" ]] && { printf '%s' "$root/$repo/$task"; return; }
   done
 }
 
 # new-task is a shell function, normally sourced into an interactive shell —
-# orch runs as its own process and never inherits it from the caller, so
+# ork runs as its own process and never inherits it from the caller, so
 # load it directly here too (only new_task() below actually needs it).
 [[ -f "$HOME/scripts/worktree-tasks.sh" ]] && source "$HOME/scripts/worktree-tasks.sh"
 
@@ -130,23 +130,23 @@ if ! command -v fzf &>/dev/null; then
   exit 1
 fi
 
-# --pick-task dispatches straight to _orch_pick_task, defined further down —
+# --pick-task dispatches straight to _ork_pick_task, defined further down —
 # jump there immediately (before any of the marker/--listen/main-fzf-launch
 # setup below, none of which --pick-task needs — that fzf call would
 # otherwise block here waiting on a picker nobody's looking at) as soon as
 # all the functions it depends on (all_repo_dirs, run_repo_hook,
-# write_claude_profile, _orch_goto_session, named_session, new_task_finish,
-# _orch_pick_task itself) have been parsed. See the actual dispatch call
-# right after _orch_pick_task's definition below.
+# write_claude_profile, _ork_goto_session, named_session, new_task_finish,
+# _ork_pick_task itself) have been parsed. See the actual dispatch call
+# right after _ork_pick_task's definition below.
 if [[ "${1:-}" != "--pick-task" ]]; then
 
-marker="/tmp/orch-new-task.marker"
+marker="/tmp/ork-new-task.marker"
 rm -f "$marker"
-: > /tmp/orch.log
+: > /tmp/ork.log
 
-# AGENT (running/waiting) column is push-based: ~/.claude/hooks/orch-agent-state.sh
+# AGENT (running/waiting) column is push-based: ~/.claude/hooks/ork-agent-state.sh
 # writes state directly off Claude Code's own hook events (see
-# orch-helper.sh's cached_agent_state). No poller needed here anymore —
+# ork-helper.sh's cached_agent_state). No poller needed here anymore —
 # tmux-pane scraping was a race against Claude Code's own repaint and
 # unreliable in practice.
 #
@@ -154,10 +154,10 @@ rm -f "$marker"
 # already-open fzf and make it redraw. So we listen on a local port (fzf
 # --listen) and register that port under a well-known dir; the hook script
 # curls every registered port after each write to trigger a reload. Multiple
-# concurrent orch instances (e.g. two terminal tabs) each get their own port
+# concurrent ork instances (e.g. two terminal tabs) each get their own port
 # file and all get poked. Deregister on exit so a stale port doesn't linger
 # and eat a failed curl on every future hook fire.
-FZF_PORTS_DIR="$HOME/.cache/orch/fzf-ports"
+FZF_PORTS_DIR="$HOME/.cache/ork/fzf-ports"
 mkdir -p "$FZF_PORTS_DIR"
 fzf_port=$(( 20000 + RANDOM % 20000 ))
 : > "$FZF_PORTS_DIR/$$"
@@ -168,7 +168,7 @@ trap 'rm -f "$FZF_PORTS_DIR/$$"' EXIT
 # older fzf falls back to the abort+respawn marker flow instead.
 _fzf_ver=$(fzf --version | grep -oE '^[0-9]+\.[0-9]+')
 if awk -v v="$_fzf_ver" 'BEGIN{split(v,a,"."); exit !(a[1]>0 || a[2]>=42)}'; then
-  ctrl_n_bind="ctrl-n:become($SCRIPT_DIR/orch --pick-task)"
+  ctrl_n_bind="ctrl-n:become($SCRIPT_DIR/ork --pick-task)"
 else
   ctrl_n_bind="ctrl-n:execute-silent(touch $marker)+abort"
 fi
@@ -221,19 +221,19 @@ _leave_altscreen() {
 # makes new-session behave like attach-session when the session already
 # exists, and once that happens `-d` no longer means "start detached" —
 # it's reinterpreted as attach-session's "-d" ("detach other clients from
-# this session"). That mattered when orch ran inside a tmux popup (its
-# own ephemeral client context); the tmux keybind now opens orch in a
+# this session"). That mattered when ork ran inside a tmux popup (its
+# own ephemeral client context); the tmux keybind now opens ork in a
 # real new-window instead (see keybind-install.sh — window, not popup,
 # for a border-free full-screen picker), so switch-client's default "the
 # client in use" resolution is just the real client and needs no special
 # targeting. Still guard against -A hitting an existing session: check
 # first, only create if missing, same as before.
-_orch_goto_session() {
+_ork_goto_session() {
   local name=$1 dir=$2
   if [[ -n "${TMUX:-}" ]]; then
     tmux has-session -t "=$name" 2>/dev/null || tmux new -d -s "$name" -c "$dir"
     tmux switch-client -t "$name"
-    # switch-client returns (unlike the exec below) and orch exits back to
+    # switch-client returns (unlike the exec below) and ork exits back to
     # whatever pane it was typed in — restore that pane's primary screen,
     # or the --no-clear'd picker UI stays smeared over the shell prompt.
     _leave_altscreen
@@ -242,16 +242,16 @@ _orch_goto_session() {
   fi
 }
 
-# named_session <repo> <task> — echoes the session name orch uses for a
+# named_session <repo> <task> — echoes the session name ork uses for a
 # worktree. Defaults to just the task name — by design, so one agent can
 # span multiple repos under the same task (e.g. a BE+FE pair worked on
 # together) sharing a single tmux session for context continuity. Tmux
 # session names are global, so this intentionally lets same-named tasks
-# across repos land in the same session; set ORCH_SCOPE_SESSIONS_TO_REPO=1
-# in ~/.orch.conf if you'd rather they never collide.
+# across repos land in the same session; set ORK_SCOPE_SESSIONS_TO_REPO=1
+# in ~/.ork.conf if you'd rather they never collide.
 named_session() {
   local repo=$1 task=$2
-  if [[ "${ORCH_SCOPE_SESSIONS_TO_REPO:-0}" == "1" ]]; then
+  if [[ "${ORK_SCOPE_SESSIONS_TO_REPO:-0}" == "1" ]]; then
     printf '%s\n' "${repo}__${task}"
   else
     printf '%s\n' "$task"
@@ -261,7 +261,7 @@ named_session() {
 # new_task_finish <repo> <task>: the part of new-task that used to run after
 # both fzf pickers returned — creates the worktree, runs hooks, writes the
 # profile marker, and attaches. Shared by new_task() (fallback path) and the
-# ctrl-n `become()` chain (_orch_pick_task, invoked via `orch --pick-task`)
+# ctrl-n `become()` chain (_ork_pick_task, invoked via `ork --pick-task`)
 # so both end up at the exact same worktree/session, just reached via a
 # different picker UI.
 new_task_finish() {
@@ -270,21 +270,21 @@ new_task_finish() {
 
   local wt
   wt=$(find_worktree "$repo" "$task")
-  [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+  [[ -n "$wt" ]] || wt="${ORK_WORKTREES_ROOTS[0]}/$repo/$task"
   run_repo_hook "$repo" "$wt"
   write_claude_profile "$repo_root" "$wt"
 
   # Without this, a freshly created task shows up at the bottom of the list
-  # (sorted by last-used-via-orch) the very next time orch runs, even though
+  # (sorted by last-used-via-ork) the very next time ork runs, even though
   # you're sitting in it right now — landing here counts as using it.
   "$HELPER" touch-access "$repo" "$task"
 
   [[ -d "$wt" ]] || return 1
-  _orch_goto_session "$(named_session "$repo" "$task")" "$wt"
+  _ork_goto_session "$(named_session "$repo" "$task")" "$wt"
 }
 
 # new_task: fallback new-task flow — two separate fzf pickers (repo, then
-# task name), run only if the in-fzf ctrl-n chain (see _orch_pick_task
+# task name), run only if the in-fzf ctrl-n chain (see _ork_pick_task
 # below) isn't available for some reason (fzf too old for `become`, or the
 # in-process chain errors out). Kept as a safety net, not the primary path.
 new_task() {
@@ -298,7 +298,7 @@ new_task() {
   # collapsed into whichever one find_repo_root would've hit first on a
   # SECOND scan — this way the picker and the resolved path always agree,
   # because they come from the same pass.
-  local favorites=("${ORCH_FAVORITES[@]:-}")
+  local favorites=("${ORK_FAVORITES[@]:-}")
   local dir base rest=()
   declare -A repo_path
 
@@ -326,7 +326,7 @@ new_task() {
   new_task_finish "$repo" "$task" "$repo_root"
 }
 
-# _orch_pick_task: single continuous fzf-driven new-task flow — reached via
+# _ork_pick_task: single continuous fzf-driven new-task flow — reached via
 # ctrl-n's `become()`, which execs this same script with --pick-task instead
 # of aborting the main picker and respawning two disconnected fzf calls.
 # `become()` replaces the fzf process rather than nesting under it, so this
@@ -337,23 +337,23 @@ new_task() {
 # three different things (attach row / pick repo / submit task name) turned
 # out to be exactly the kind of multi-field state juggling that's fragile
 # to get right and to debug later, so each stage gets its own straightforward
-# fzf call instead. Still zero shell round-trip through orch.sh's wrapper
+# fzf call instead. Still zero shell round-trip through ork.sh's wrapper
 # and zero marker-file polling — each stage `become()`s straight into the
 # next, and the whole chain reads as one motion from the user's side.
-_orch_pick_task() {
+_ork_pick_task() {
   # Reached via the main picker's become(): execve happens inside the fzf
   # process, whose stdin is the `$HELPER rows |` pipe and whose stdout is
   # the parent's out=$(...) capture pipe — NOT the terminal. That's exactly
   # why this function must NOT create the worktree or attach tmux itself
   # (confirmed live: `exec tmux new -A` from here dies with "open terminal
-  # failed: can't use /dev/tty", and the parent orch would race back to the
+  # failed: can't use /dev/tty", and the parent ork would race back to the
   # shell prompt anyway the moment the pipe closed). The nested fzf pickers
   # below are fine — fzf opens /dev/tty directly for its UI — so this stage
   # only PICKS, then prints its result into the capture pipe in the same
-  # line-1-key/line-2-payload shape --expect uses. The parent orch, which
+  # line-1-key/line-2-payload shape --expect uses. The parent ork, which
   # still owns the real terminal stdio, reads it and does the actual
   # new_task_finish + tmux attach.
-  local favorites=("${ORCH_FAVORITES[@]:-}")
+  local favorites=("${ORK_FAVORITES[@]:-}")
   local dir base rest=()
   declare -A repo_path
 
@@ -390,7 +390,7 @@ _orch_pick_task() {
   task=$(printf '%s\n' "$task_out" | sed -n '1p')
   [[ -z "$task" ]] && exit 1
 
-  # Hand the pick back to the parent orch through the capture pipe — repo
+  # Hand the pick back to the parent ork through the capture pipe — repo
   # and task are single tokens (branch names), repo_root goes last so a
   # path with spaces still parses (parent takes "field 3 to end").
   printf 'pick-task\n%s %s %s\n' "$repo" "$task" "$repo_root"
@@ -399,7 +399,7 @@ _orch_pick_task() {
 
 # --pick-task dispatches here — all its deps (above) are now defined.
 if [[ "${1:-}" == "--pick-task" ]]; then
-  _orch_pick_task
+  _ork_pick_task
   exit 0
 fi
 
@@ -412,7 +412,7 @@ if [[ -f "$marker" ]]; then
   exit 0
 fi
 
-# ctrl-n chain handed back a pick (see _orch_pick_task above): the become'd
+# ctrl-n chain handed back a pick (see _ork_pick_task above): the become'd
 # picker only chooses repo/task — worktree creation and the tmux attach
 # happen HERE, in the parent, which still has its stdio on the real
 # terminal (a tmux client can't start on the picker's inherited pipes).
@@ -430,7 +430,7 @@ if [[ "$key" == "pick-task" ]]; then
     # error output is sitting on the alt screen, so restore AFTER pointing
     # at it would erase it; restore first, then re-state the failure.
     _leave_altscreen
-    echo "new-task failed for $repo/$task — check /tmp/orch.log" >&2
+    echo "new-task failed for $repo/$task — check /tmp/ork.log" >&2
     exit 1
   fi
   exit 0
@@ -445,9 +445,9 @@ fi
 repo=$(echo "$sel" | awk '{print $1}')
 task=$(echo "$sel" | awk '{print $2}')
 wt=$(find_worktree "$repo" "$task")
-[[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+[[ -n "$wt" ]] || wt="${ORK_WORKTREES_ROOTS[0]}/$repo/$task"
 
-# Record "actually landed here via orch" for the LAST USED column — worktree
+# Record "actually landed here via ork" for the LAST USED column — worktree
 # mtime only changes on file edits, not on cd/attach, so it drifts from what
 # the user actually did. This is the real signal.
 "$HELPER" touch-access "$repo" "$task"
@@ -455,7 +455,7 @@ wt=$(find_worktree "$repo" "$task")
 # alt-ENTER: cd only, no tmux session — for when you just want to look at
 # a folder (check status, poke around) without spawning/attaching an agent
 # session for it. Deliberately no fallback to the session path here: this
-# is the one case where NOT touching tmux is the whole point. orch.sh's
+# is the one case where NOT touching tmux is the whole point. ork.sh's
 # wrapper cd's into whatever this prints as the last stdout line.
 if [[ "$key" == "alt-enter" ]]; then
   _leave_altscreen
@@ -464,5 +464,5 @@ if [[ "$key" == "alt-enter" ]]; then
 fi
 
 # Plain ENTER always attach-or-creates the session for this worktree by
-# task name. See named_session and _orch_goto_session above.
-_orch_goto_session "$(named_session "$repo" "$task")" "$wt"
+# task name. See named_session and _ork_goto_session above.
+_ork_goto_session "$(named_session "$repo" "$task")" "$wt"
