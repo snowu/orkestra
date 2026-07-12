@@ -149,13 +149,22 @@ fzf_port=$(( 20000 + RANDOM % 20000 ))
 printf '%s' "$fzf_port" > "$FZF_PORTS_DIR/$$"
 trap 'rm -f "$FZF_PORTS_DIR/$$"' EXIT
 
+# become() (used for the ctrl-n new-task chain below) needs fzf >=0.42 —
+# older fzf falls back to the abort+respawn marker flow instead.
+_fzf_ver=$(fzf --version | grep -oE '^[0-9]+\.[0-9]+')
+if awk -v v="$_fzf_ver" 'BEGIN{split(v,a,"."); exit !(a[1]>0 || a[2]>=42)}'; then
+  ctrl_n_bind="ctrl-n:become($SCRIPT_DIR/orch --pick-task)"
+else
+  ctrl_n_bind="ctrl-n:execute-silent(touch $marker)+abort"
+fi
+
 help_line="ENTER=attach tmux   alt-ENTER=cd only (no session)   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   ?=toggle info panel   ctrl-s=git status"
 column_header=$(printf "%-16s %-32s %-14s %-8s %-8s %-16s %-9s %s" "REPO" "TASK" "BRANCH" "STATE" "AGENT" "SESSION" "LAST USED" "CMD")
 header="$help_line"$'\n'"$column_header"
 out=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline --header="$header" \
   --listen "$fzf_port" \
   --expect="alt-enter" \
-  --bind "ctrl-n:execute-silent(touch $marker)+abort" \
+  --bind "$ctrl_n_bind" \
   --bind "ctrl-x:execute($HELPER confirm-end-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-k:execute($HELPER confirm-kill-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-r:reload($HELPER rows)" \
@@ -211,6 +220,35 @@ named_session() {
   fi
 }
 
+# new_task_finish <repo> <task>: the part of new-task that used to run after
+# both fzf pickers returned — creates the worktree, runs hooks, writes the
+# profile marker, and attaches. Shared by new_task() (fallback path) and the
+# ctrl-n `become()` chain (_orch_pick_task, invoked via `orch --pick-task`)
+# so both end up at the exact same worktree/session, just reached via a
+# different picker UI.
+new_task_finish() {
+  local repo="$1" task="$2" repo_root="$3"
+  (cd "$repo_root" && new-task "$task") >&2
+
+  local wt
+  wt=$(find_worktree "$repo" "$task")
+  [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+  run_repo_hook "$repo" "$wt"
+  write_claude_profile "$repo_root" "$wt"
+
+  # Without this, a freshly created task shows up at the bottom of the list
+  # (sorted by last-used-via-orch) the very next time orch runs, even though
+  # you're sitting in it right now — landing here counts as using it.
+  "$HELPER" touch-access "$repo" "$task"
+
+  [[ -d "$wt" ]] || return 1
+  _orch_goto_session "$(named_session "$repo" "$task")" "$wt"
+}
+
+# new_task: fallback new-task flow — two separate fzf pickers (repo, then
+# task name), run only if the in-fzf ctrl-n chain (see _orch_pick_task
+# below) isn't available for some reason (fzf too old for `become`, or the
+# in-process chain errors out). Kept as a safety net, not the primary path.
 new_task() {
   if ! declare -f new-task >/dev/null 2>&1; then
     echo "new-task not found. Install ~/scripts/worktree-tasks.sh or source your own." >&2
@@ -247,22 +285,63 @@ new_task() {
         --print-query --bind "enter:print-query" | head -1)
   [[ -z "$task" ]] && return 1
 
-  (cd "$repo_root" && new-task "$task") >&2
-
-  local wt
-  wt=$(find_worktree "$repo" "$task")
-  [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
-  run_repo_hook "$repo" "$wt"
-  write_claude_profile "$repo_root" "$wt"
-
-  # Without this, a freshly created task shows up at the bottom of the list
-  # (sorted by last-used-via-orch) the very next time orch runs, even though
-  # you're sitting in it right now — landing here counts as using it.
-  "$HELPER" touch-access "$repo" "$task"
-
-  [[ -d "$wt" ]] || return 1
-  _orch_goto_session "$(named_session "$repo" "$task")" "$wt"
+  new_task_finish "$repo" "$task" "$repo_root"
 }
+
+# _orch_pick_task: single continuous fzf-driven new-task flow — reached via
+# ctrl-n's `become()`, which execs this same script with --pick-task instead
+# of aborting the main picker and respawning two disconnected fzf calls.
+# `become()` replaces the fzf process rather than nesting under it, so this
+# still reads as "one picker" to the user, just chained across three fzf
+# invocations (list -> repo -> task name) instead of one process handling
+# all three internally — fzf's reload/transform state machine can swap an
+# input source in place, but re-purposing a single `enter` binding to mean
+# three different things (attach row / pick repo / submit task name) turned
+# out to be exactly the kind of multi-field state juggling that's fragile
+# to get right and to debug later, so each stage gets its own straightforward
+# fzf call instead. Still zero shell round-trip through orch.sh's wrapper
+# and zero marker-file polling — each stage `become()`s straight into the
+# next, and the whole chain reads as one motion from the user's side.
+_orch_pick_task() {
+  local favorites=("${ORCH_FAVORITES[@]:-}")
+  local dir base rest=()
+  declare -A repo_path
+
+  while IFS= read -r dir; do
+    base=$(basename "$dir")
+    repo_path[$base]="$dir"
+    [[ " ${favorites[*]} " == *" $base "* ]] && continue
+    rest+=("$base")
+  done < <(all_repo_dirs)
+
+  local repo
+  repo=$( { printf '%s\n' "${favorites[@]}"; printf '%s\n' "${rest[@]}" | sort; } | \
+    fzf --prompt="repo> " --header="ctrl-n new-task: pick a repo (esc to cancel)" +s \
+        --bind "esc:abort")
+  [[ -z "$repo" ]] && exit 1
+
+  local repo_root="${repo_path[$repo]:-}"
+  [[ -n "$repo_root" ]] || { echo "repo '$repo' not found under \$HOME" >&2; exit 1; }
+
+  local task
+  task=$(git -C "$repo_root" branch --format='%(refname:short)' 2>/dev/null | \
+    fzf --prompt="task '$repo'> " \
+        --header="type new task/branch name (list is existing branches for reference, esc to cancel)" \
+        --print-query --bind "enter:print-query" --bind "esc:abort" | head -1)
+  [[ -z "$task" ]] && exit 1
+
+  [[ -f "$HOME/scripts/worktree-tasks.sh" ]] && source "$HOME/scripts/worktree-tasks.sh"
+  if ! declare -f new-task >/dev/null 2>&1; then
+    echo "new-task not found. Install ~/scripts/worktree-tasks.sh or source your own." >&2
+    exit 1
+  fi
+  new_task_finish "$repo" "$task" "$repo_root"
+  exit 0
+}
+
+if [[ "${1:-}" == "--pick-task" ]]; then
+  _orch_pick_task
+fi
 
 if [[ -f "$marker" ]]; then
   rm -f "$marker"

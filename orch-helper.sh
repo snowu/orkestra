@@ -293,7 +293,7 @@ fortune_sidebar() {
   local row_width=103
   local gap=44
   local fortune_block
-  fortune_block=$(fortune -s | fold -s -w 21 | cowsay -n 2>/dev/null)
+  fortune_block=$(fortune -s | fold -s -w 35 | cowsay -n 2>/dev/null)
   local fortune_lines=()
   IFS=$'\n' read -rd '' -a fortune_lines <<<"$fortune_block"$'\0'
 
