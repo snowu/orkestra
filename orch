@@ -12,6 +12,11 @@ HELPER="$SCRIPT_DIR/orch-helper.sh"
 
 [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
 
+# new-task is a shell function, normally sourced into an interactive shell —
+# orch runs as its own process and never inherits it from the caller, so
+# load it directly here too (only new_task() below actually needs it).
+[[ -f "$HOME/scripts/worktree-tasks.sh" ]] && source "$HOME/scripts/worktree-tasks.sh"
+
 if ! command -v fzf &>/dev/null; then
   echo "fzf not installed. Run: brew install fzf / apt install fzf" >&2
   exit 1
@@ -21,14 +26,24 @@ marker="/tmp/orch-new-task.marker"
 rm -f "$marker"
 : > /tmp/orch.log
 
-header="ENTER=jump(live)/launch(idle)  ctrl-n=new-task  ctrl-x=end-task  ctrl-r=refresh"
-sel=$("$HELPER" rows | fzf --header="$header" \
+help_line="ENTER=attach tmux session (live) / cd into folder (idle)   alt-enter=open tmux session named after task   ctrl-n=new-task   ctrl-x=end-task   ctrl-r=refresh   ?=toggle info panel"
+column_header=$(printf "%-16s %-32s %-14s %-8s %-16s %-9s %s" "REPO" "TASK" "BRANCH" "STATE" "SESSION" "LAST USED" "CMD")
+header="$help_line"$'\n'"$column_header"
+sel=$("$HELPER" rows | fzf --layout=reverse --header-first --info=inline --header="$header" \
   --bind "ctrl-n:execute-silent(touch $marker)+abort" \
   --bind "ctrl-x:execute($HELPER confirm-end-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-r:reload($HELPER rows)" \
-  --preview "tail -n 5 /tmp/orch.log 2>/dev/null" --preview-window "down,3,wrap")
+  --bind "?:toggle-preview" \
+  --preview-window "down,10,wrap" \
+  --expect "alt-enter" \
+  --preview "$HELPER full-row {1} {2}")
 
 new_task() {
+  if ! declare -f new-task >/dev/null 2>&1; then
+    echo "new-task not found. Install ~/scripts/worktree-tasks.sh or source your own." >&2
+    return 1
+  fi
+
   # Favorites first (from ~/.orch.conf), rest sorted after.
   local favorites=("${ORCH_FAVORITES[@]:-}")
   local repo d rest=()
@@ -67,23 +82,52 @@ if [[ -f "$marker" ]]; then
   exit 0
 fi
 
+# With --expect, fzf's output is: pressed-key on line 1, selected line after.
+key=$(echo "$sel" | sed -n '1p')
+sel=$(echo "$sel" | sed -n '2p')
+
 [[ -z "$sel" ]] && exit 0
 
 repo=$(echo "$sel" | awk '{print $1}')
 task=$(echo "$sel" | awk '{print $2}')
 state=$(echo "$sel" | awk '{print $4}')
+session=$(echo "$sel" | awk '{print $5}')
 wt="$HOME/worktrees/$repo/$task"
 
-if [[ "$state" == "live" ]]; then
-  target=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}" 2>/dev/null | \
-    awk -F'\t' -v p="$wt" '$2==p{print $1; exit}')
-  session="${target%%:*}"
+# `tmux new -A -s <name>` attaches if a session by that name exists, creates
+# it otherwise. If we're not already inside a tmux client, exec straight
+# into it — replaces this process, takes over the terminal cleanly. If we
+# ARE already inside tmux, exec'ing would try to nest (tmux refuses this by
+# default), so instead create the session detached and switch *this* client
+# to it — safe here because it's this one client the user explicitly asked
+# to move, not some other window/session being yanked involuntarily.
+_orch_goto_session() {
+  local name=$1 dir=$2
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux new -A -s "$name" -c "$dir" -d
+    tmux switch-client -t "$name"
+  else
+    exec tmux new -A -s "$name" -c "$dir"
+  fi
+}
 
-  # `tmux new -A -s` attaches if the session exists, creates it otherwise —
-  # runs right here in whatever terminal orch was invoked from, no need to
-  # detect/spawn a terminal emulator. exec replaces this process so it takes
-  # over the terminal cleanly instead of nesting under it.
-  exec tmux new -A -s "$session"
+# Record "actually landed here via orch" for the LAST USED column — worktree
+# mtime only changes on file edits, not on cd/attach, so it drifts from what
+# the user actually did. This is the real signal.
+"$HELPER" touch-access "$repo" "$task"
+
+if [[ "$key" == "alt-enter" ]]; then
+  # Named session for this task: if one's already live for this worktree
+  # (any name), go there instead of spinning up a second, redundant session
+  # against the same folder. Only fall back to creating a fresh "$task"-named
+  # session when nothing is running here yet.
+  if [[ "$state" == "live" ]]; then
+    _orch_goto_session "$session" "$wt"
+  else
+    _orch_goto_session "$task" "$wt"
+  fi
+elif [[ "$state" == "live" ]]; then
+  _orch_goto_session "$session" "$wt"
 else
   [[ -d "$wt" ]] || exit 1
   git -C "$wt" status >&2
