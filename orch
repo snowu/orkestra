@@ -77,7 +77,13 @@ wt="$HOME/worktrees/$repo/$task"
 if [[ "$state" == "live" ]]; then
   target=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}" 2>/dev/null | \
     awk -F'\t' -v p="$wt" '$2==p{print $1; exit}')
-  tmux switch-client -t "$target" 2>/dev/null || tmux select-window -t "$target"
+  session="${target%%:*}"
+
+  # `tmux new -A -s` attaches if the session exists, creates it otherwise —
+  # runs right here in whatever terminal orch was invoked from, no need to
+  # detect/spawn a terminal emulator. exec replaces this process so it takes
+  # over the terminal cleanly instead of nesting under it.
+  exec tmux new -A -s "$session"
 else
   [[ -d "$wt" ]] || exit 1
   git -C "$wt" status >&2

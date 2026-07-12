@@ -5,12 +5,14 @@
 set -u
 
 rows() {
+  # Sorted by worktree folder mtime, most recently touched first.
   for wt in "$HOME"/worktrees/*/*/; do
     wt="${wt%/}"
     [[ -d "$wt" ]] || continue
     repo=$(basename "$(dirname "$wt")")
     task=$(basename "$wt")
     branch=$(git -C "$wt" branch --show-current 2>/dev/null)
+    mtime=$(stat -c '%Y' "$wt" 2>/dev/null || echo 0)
 
     pane_info=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}" 2>/dev/null | \
       awk -F'\t' -v p="$wt" '$2==p{print; exit}')
@@ -23,8 +25,8 @@ rows() {
 
     local branch_col="$branch"
     [[ "$branch" == "$task" ]] && branch_col="="
-    printf "%-16s %-30s %-14s %-8s %s\n" "$repo" "$task" "${branch_col:-none}" "$state" "$cmd"
-  done
+    printf "%s\t%-16s %-30s %-14s %-8s %s\n" "$mtime" "$repo" "$task" "${branch_col:-none}" "$state" "$cmd"
+  done | sort -t$'\t' -k1,1rn | cut -f2-
 }
 
 end_task() {
