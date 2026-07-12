@@ -36,10 +36,15 @@ classify_pane_text() {
   # prompt line is "❯" followed by an actual U+00A0, not a regular space, so
   # the class silently failed to match. Match explicit byte alternatives
   # instead of relying on locale-aware whitespace classes.
-  if printf '%s' "$text" | grep -qE 'tokens\)[ \t]*$'; then
-    printf 'running'
-  elif printf '%s' "$text" | grep -qP '^❯[\s\x{00A0}]*$'; then
+  # Check "waiting" FIRST: a completed run leaves its old "...tokens)" status
+  # line sitting higher up in the tail even after the agent's back to a bare
+  # prompt — confirmed live, that stale line kept classifying a genuinely
+  # idle pane as "running". The bare prompt at the bottom is the authoritative
+  # signal; only fall back to the tokens-line check when it's absent.
+  if printf '%s' "$text" | grep -qP '^❯[\s\x{00A0}]*$'; then
     printf 'waiting'
+  elif printf '%s' "$text" | grep -qE 'tokens\)[ \t]*$'; then
+    printf 'running'
   fi
 }
 
@@ -59,7 +64,12 @@ refresh_agent_states() {
   while IFS= read -r sess; do
     [[ -n "$sess" ]] || continue
     local text state
-    text=$(timeout 2 tmux capture-pane -pt "$sess" 2>/dev/null | tail -n 8)
+    # A plain `tail -n 8` can land entirely on trailing blank padding when
+    # the pane is taller than its actual content (confirmed live: an
+    # otherwise-normal "waiting" pane showed up as 8 blank lines and thus
+    # unknown) — strip trailing blank lines first, then take the tail of
+    # what's left.
+    text=$(timeout 2 tmux capture-pane -pt "$sess" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n 8)
     state=$(classify_pane_text "$text")
     printf '%s' "$state" > "$(agent_state_file "$sess")"
   done < <(timeout 2 tmux list-sessions -F '#{session_name}' 2>/dev/null)

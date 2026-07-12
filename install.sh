@@ -67,16 +67,18 @@ ask_yn() {
 }
 
 if [[ "$KEYBIND" != "no" && -t 0 ]]; then
-  ask_yn "Use a tmux window for the orch keybind? (recommended — works safely inside vim, Claude Code, or anything else running in the pane) [Y/n] " y
-  if [[ "$REPLY_YN" == y ]]; then
-    TMUX_KEY=o
-    read -r -p "tmux key (after prefix)? [o]: " reply || reply=""
-    [[ -n "$reply" ]] && TMUX_KEY="$reply"
-    echo "Using tmux key: prefix + $TMUX_KEY"
-    "$DIR/keybind-install.sh" tmux ctrl+alt+o "$TMUX_KEY"
+  if command -v tmux >/dev/null 2>&1; then
+    ask_yn "Add a tmux keybind for orch (prefix + key opens it in a pane on top of current pan, same rules as other tmux commands)? [Y/n] " y
+    if [[ "$REPLY_YN" == y ]]; then
+      TMUX_KEY=o
+      read -r -p "tmux key (after prefix)? [o]: " reply || reply=""
+      [[ -n "$reply" ]] && TMUX_KEY="$reply"
+      echo "Using tmux key: prefix + $TMUX_KEY"
+      "$DIR/keybind-install.sh" tmux ctrl+alt+o "$TMUX_KEY"
+    fi
   fi
 
-  ask_yn "Install a terminal-emulator keybind too? [y/N] " n
+  ask_yn "Install a terminal-emulator keybind too? [Y/n] " y
   if [[ "$REPLY_YN" == y ]]; then
     picks=""
     if command -v fzf >/dev/null 2>&1; then

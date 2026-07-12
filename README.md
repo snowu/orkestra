@@ -110,8 +110,8 @@ no manual cleanup, and it's not a floating popup, so there's no border
 eating into the screen (tmux 3.2a's `display-popup` always draws one; a
 plain window doesn't).
 
-**Terminal-emulator keybinds** — an optional second layer, off by default,
-using a standalone chord (default **ctrl+alt+o**). Only terminals with
+**Terminal-emulator keybinds** — an optional second layer, using a
+standalone chord (default **ctrl+alt+o**). Only terminals with
 their *own* built-in keybind engine are supported (Ghostty, kitty,
 Alacritty) — each types `orch` + Enter into the shell you're already
 looking at. The existing `orch()` wrapper runs normally and its
@@ -145,13 +145,15 @@ What gets written:
 - **Alacritty** (`~/.config/alacritty/alacritty.toml`) — `[[keyboard.bindings]]`
   with `mods = "Control|Alt"`, `key = "O"`, `chars = "orch\r"`
 
-`./install.sh` asks about the tmux window first (default yes, prompts for
-the key after the prefix, default `o`), then whether to also set up a
-terminal-emulator keybind (default no) via a numbered menu
-(comma-separated multi-pick, e.g. `1,3`), prompting separately for that
-layer's chord (default `ctrl+alt+o`). Use `--no-keybind` to skip both
-prompts non-interactively; scripted runs (no tty) always skip them
-regardless of flags, since there's no terminal to prompt.
+`./install.sh` asks about the tmux keybind first (skipped entirely if
+`tmux` isn't installed; otherwise default yes, prompts for the key after
+the prefix, default `o`), then whether to also set up a terminal-emulator
+keybind (default yes too — bare Enter accepts every prompt in the
+installer, consistently) via a numbered menu (comma-separated multi-pick,
+e.g. `1,3`), prompting separately for that layer's chord (default
+`ctrl+alt+o`). Use `--no-keybind` to skip both prompts non-interactively;
+scripted runs (no tty) always skip them regardless of flags, since there's
+no terminal to prompt.
 
 You can also run
 `./keybind-install.sh <terminal>[,<terminal>...] [CHORD] [TMUX_KEY]`
