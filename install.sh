@@ -105,35 +105,80 @@ if [[ "$CONF_EXISTED" -eq 0 ]]; then
   cp "$DIR/orch.conf.example" "$CONF"
 fi
 
-# Prompts for a list of existing directories, one per line, empty line to
-# finish. Falls back to $2 if the user enters nothing at all.
+# Prompts for one or more existing directories. Uses fzf's own directory
+# walker (multi-select: tab/space, enter to confirm) — 0.36+ has --walker,
+# and this repo already requires 0.74 (see README/fzf pin). --print-query
+# means whatever you've typed into the query box is captured too, so a
+# path that doesn't exist yet (a scratch dir you haven't created) still
+# works, matched literally against the typed text rather than requiring it
+# to already be walkable. Falls back to the old type-one-per-line loop if
+# fzf is missing or too old to have --walker. Falls back to $2 (the
+# original default) if the user selects/types nothing at all.
 prompt_dirs() {
-  local label="$1" default="$2" dirs=() reply first=1
+  local label="$1" default="$2" dirs=() reply
   # Prompt text goes to stderr, not stdout — this function's stdout is
   # captured by `mapfile < <(prompt_dirs ...)` at the call site, so
   # anything printed here on stdout besides the final path list would leak
   # straight into the resulting array (confirmed live: the label/hint text
   # ended up as bogus entries in ORCH_CODE_ROOTS).
   printf '%s%s%s\n' "$CYAN" "$label" "$RESET" >&2
-  printf '%s%s%s\n' "$DIM" "(one path per line, ~ ok, empty line to finish; default: $default)" "$RESET" >&2
-  while true; do
-    printf '> ' >&2
-    read -r reply || reply=""
-    if [[ -z "$reply" ]]; then
-      [[ "$first" -eq 1 ]] && dirs=("$default")
-      break
+
+  if command -v fzf >/dev/null 2>&1 && fzf --help 2>&1 | grep -q -- '--walker'; then
+    dim "tab/space: select, enter: confirm, type to filter or type a brand-new path (default: $default)" >&2
+    local out
+    out=$(fzf --walker=dir,hidden --walker-root="$HOME" --multi --print-query \
+      --bind 'tab:toggle+down,space:toggle+down' \
+      --header "$label (tab: multi-select, enter: confirm)" \
+      </dev/tty || true)
+    mapfile -t dirs <<< "$out"
+    # --print-query's line 1 is the typed query, which is blank unless you
+    # typed something no walked entry matched — drop it when real
+    # selections exist underneath, keep it as the sole candidate otherwise.
+    if [[ ${#dirs[@]} -gt 1 && -z "${dirs[0]}" ]]; then
+      dirs=("${dirs[@]:1}")
     fi
-    first=0
-    reply="${reply/#\~/$HOME}"
-    dirs+=("$reply")
+    if [[ ${#dirs[@]} -eq 0 || ( ${#dirs[@]} -eq 1 && -z "${dirs[0]}" ) ]]; then
+      dirs=("$default")
+    fi
+  else
+    dim "(one path per line, ~ ok, empty line to finish; default: $default)" >&2
+    local first=1
+    while true; do
+      printf '> ' >&2
+      read -r reply || reply=""
+      if [[ -z "$reply" ]]; then
+        [[ "$first" -eq 1 ]] && dirs=("$default")
+        break
+      fi
+      first=0
+      dirs+=("$reply")
+    done
+  fi
+
+  local d
+  for d in "${dirs[@]}"; do
+    printf '%s\n' "${d/#\~/$HOME}"
   done
-  printf '%s\n' "${dirs[@]}"
 }
 
+reconfigure_roots=1
 if [[ "$CONF_EXISTED" -eq 1 ]]; then
-  note "~/.orch.conf already exists — leaving ORCH_CODE_ROOTS/ORCH_WORKTREES_ROOTS"
-  note "as-is. Edit $CONF directly to change them."
-elif [[ -t 0 ]]; then
+  existing_code=$(grep '^ORCH_CODE_ROOTS=' "$CONF" 2>/dev/null || true)
+  existing_wt=$(grep '^ORCH_WORKTREES_ROOTS=' "$CONF" 2>/dev/null || true)
+  echo
+  note "~/.orch.conf already exists."
+  [[ -n "$existing_code" ]] && dim "  $existing_code"
+  [[ -n "$existing_wt" ]] && dim "  $existing_wt"
+  if [[ -t 0 ]]; then
+    ask_yn "Reconfigure ORCH_CODE_ROOTS / ORCH_WORKTREES_ROOTS now? [y/N] " n
+    [[ "$REPLY_YN" == y ]] || reconfigure_roots=0
+  else
+    reconfigure_roots=0
+  fi
+  [[ "$reconfigure_roots" -eq 0 ]] && note "Leaving them as-is. Edit $CONF directly to change them."
+fi
+
+if [[ "$reconfigure_roots" -eq 1 && -t 0 ]]; then
   echo
   dim "orch needs to know where to find your repos and where to put worktrees."
   dim "These don't have to be ~/code and ~/worktrees — pick whatever layout"
@@ -158,12 +203,23 @@ elif [[ -t 0 ]]; then
   code_line="ORCH_CODE_ROOTS=$(fmt_array "${code_roots[@]}")"
   wt_line="ORCH_WORKTREES_ROOTS=$(fmt_array "${wt_roots[@]}")"
 
+  # Substitutes the line in-place if the key already exists (works for both
+  # a fresh copy of orch.conf.example AND a pre-existing conf that already
+  # has these keys, e.g. from a previous run of this same prompt);
+  # otherwise appends it — covers a pre-existing ~/.orch.conf from before
+  # this feature existed, which has neither key yet.
   python3 - "$CONF" "$code_line" "$wt_line" <<'PYEOF'
 import re, sys
 conf_path, code_line, wt_line = sys.argv[1], sys.argv[2], sys.argv[3]
 text = open(conf_path).read()
-text = re.sub(r'^ORCH_CODE_ROOTS=.*$', code_line, text, count=1, flags=re.M)
-text = re.sub(r'^ORCH_WORKTREES_ROOTS=.*$', wt_line, text, count=1, flags=re.M)
+for key, line in (("ORCH_CODE_ROOTS", code_line), ("ORCH_WORKTREES_ROOTS", wt_line)):
+    pattern = rf'^{key}=.*$'
+    if re.search(pattern, text, flags=re.M):
+        text = re.sub(pattern, line, text, count=1, flags=re.M)
+    else:
+        if not text.endswith("\n"):
+            text += "\n"
+        text += line + "\n"
 open(conf_path, "w").write(text)
 PYEOF
 
@@ -173,7 +229,7 @@ PYEOF
   ok "Wrote to $CONF:"
   dim "  $code_line"
   dim "  $wt_line"
-else
+elif [[ "$reconfigure_roots" -eq 1 ]]; then
   note "Non-interactive — created $CONF with defaults (~/code, ~/worktrees)."
   note "Edit ORCH_CODE_ROOTS / ORCH_WORKTREES_ROOTS in $CONF to change them."
 fi
