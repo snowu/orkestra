@@ -71,6 +71,31 @@ ORCH_HOOK_my_frontend() {
 
 Repos without a matching `ORCH_HOOK_*` just skip the hook step.
 
+## Terminal keybind (optional)
+
+The installer can bind a keybind (default **ctrl+alt+o**) so your terminal
+types `orch` + Enter into the focused shell — the `orch()` wrapper runs and
+its cd-on-exit works as usual. It only fires usefully when a shell prompt is
+focused.
+
+Supported (config must already exist under `~/.config/<terminal>/`):
+
+- **Ghostty** — `keybind = ctrl+alt+o=text:orch\n`
+- **kitty** — `map ctrl+alt+o send_text all orch\r`
+- **Alacritty** — `[[keyboard.bindings]]` with `mods = "Control|Alt"`, `key = "O"`, `chars = "orch\r"`
+
+`./install.sh` asks before installing it, then asks for the chord (Enter
+keeps the default); use `--keybind` / `--no-keybind` to skip the first
+prompt. You can also run `./keybind-install.sh [CHORD]` directly, e.g.
+`./keybind-install.sh ctrl+shift+k`. Re-running (with the same or a
+different chord) replaces the previous binding rather than stacking — it's
+fenced with `# >>> orch keybind >>>` markers, and `./uninstall.sh` removes
+it. `ctrl+shift+o` is deliberately not the default: it collides with
+Ghostty's built-in new-split binding.
+
+Other terminals: add an equivalent "send text" binding yourself — PRs
+welcome.
+
 ## Uninstall
 
 ```sh

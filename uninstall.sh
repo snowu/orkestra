@@ -34,6 +34,21 @@ else
   echo "Left ~/.orch.conf in place (pass --purge-config to remove it too)."
 fi
 
+# Remove the keybind block installed by keybind-install.sh, if any.
+for cfg in "$HOME/.config/ghostty/config" \
+           "$HOME/.config/kitty/kitty.conf" \
+           "$HOME/.config/alacritty/alacritty.toml"; do
+  [[ -f "$cfg" ]] || continue
+  grep -qF '# >>> orch keybind >>>' "$cfg" || continue
+  tmp="$(mktemp)"
+  awk '
+    $0 == "# >>> orch keybind >>>" { skip = 1; next }
+    $0 == "# <<< orch keybind <<<" { skip = 0; next }
+    !skip
+  ' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
+  echo "Removed orch keybind from $cfg"
+done
+
 rm -f /tmp/orch.log /tmp/orch-new-task.marker
 
 echo

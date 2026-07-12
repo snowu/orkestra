@@ -6,6 +6,14 @@
 # Works with bash or zsh.
 set -eu
 
+KEYBIND=ask   # ask | yes | no
+for arg in "$@"; do
+  case "$arg" in
+    --keybind)    KEYBIND=yes ;;
+    --no-keybind) KEYBIND=no ;;
+  esac
+done
+
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DEST="$HOME/.local/bin"
 SCRIPTS_DEST="$HOME/scripts"
@@ -42,6 +50,24 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     echo "Added 'source ~/scripts/orch.sh' to $rc"
   fi
 done
+
+if [[ "$KEYBIND" == "ask" ]]; then
+  if [[ -t 0 ]]; then
+    read -r -p "Install a terminal keybind for detected terminals (ghostty/kitty/alacritty)? [y/N] " reply || reply=n
+    [[ "$reply" == [yY]* ]] && KEYBIND=yes || KEYBIND=no
+  else
+    KEYBIND=no
+  fi
+fi
+if [[ "$KEYBIND" == "yes" ]]; then
+  CHORD=ctrl+alt+o
+  if [[ -t 0 ]]; then
+    read -r -p "Keybind chord? [ctrl+alt+o]: " reply || reply=""
+    [[ -n "$reply" ]] && CHORD="$reply"
+  fi
+  echo "Using chord: $CHORD"
+  "$DIR/keybind-install.sh" "$CHORD"
+fi
 
 echo
 echo "Done. Requires: tmux, fzf."

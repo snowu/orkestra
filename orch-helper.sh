@@ -35,9 +35,18 @@ repo_color() {
   printf '\033[38;5;%sm' "${REPO_COLOR_PALETTE[$idx]}"
 }
 
-RESET='\033[0m'
-GREEN='\033[38;5;114m'
-YELLOW='\033[38;5;179m'
+# $'...' (ANSI-C quoting) is required here so \033 becomes the actual ESC
+# byte at assignment time — plain '...' stores the literal 4 characters
+# "\033" instead, which only renders correctly when later passed through
+# printf's own format-string interpretation (%b or a literal in the format
+# string), and silently prints as garbage text everywhere else (e.g. awk -v,
+# bash string substitution).
+RESET=$'\033[0m'
+GREEN=$'\033[38;5;114m'
+YELLOW=$'\033[38;5;179m'
+CYAN=$'\033[38;5;80m'
+DIM=$'\033[38;5;244m'
+BOLD_WHITE=$'\033[1;38;5;254m'
 
 # Human-readable "time ago" for a unix timestamp, e.g. "5m ago", "3h ago".
 ago() {
@@ -175,8 +184,8 @@ info_panel() {
   # list already does the "=" shorthand, this panel is meant to be exact).
   local branch=$(git -C "$wt" branch --show-current 2>/dev/null)
 
-  echo "branch: ${branch:-none}"
-  echo "path:   ${wt/#$HOME/\~}"
+  echo " branch: ${branch:-none}"
+  echo " path:   ${wt/#$HOME/\~}"
   echo
   tail -n 5 /tmp/orch.log 2>/dev/null
 }
@@ -190,13 +199,13 @@ tmux_summary_line1() {
   local repo=$1 task=$2
   local pane_info
   pane_info=$(_orch_resolve_pane "$repo" "$task")
-  [[ -z "$pane_info" ]] && { echo "session: none"; return; }
+  [[ -z "$pane_info" ]] && { echo " session: none"; return; }
 
   local sess=$(echo "$pane_info" | cut -f1)
   local nwin nclients
   nwin=$(tmux list-windows -t "${sess%%:*}" 2>/dev/null | wc -l)
   nclients=$(tmux list-clients -t "${sess%%:*}" 2>/dev/null | wc -l)
-  printf 'session: %s | windows: %s | %s' \
+  printf ' session: %s | windows: %s | %s' \
     "${sess%%:*}" "$nwin" "$([[ $nclients -gt 0 ]] && echo attached || echo detached)"
 }
 
@@ -214,7 +223,7 @@ tmux_summary_line2() {
 
   local note=""
   [[ "$pane_cwd" != "$wt" ]] && note="  (shared, cwd: ${pane_cwd/#$HOME/\~})"
-  printf 'running: %s (pid %s)%s' "$win_cmd" "$pid" "$note"
+  printf " running: %s (pid %s)%s" "$win_cmd" "$pid" "$note"
 }
 
 # Right half of the preview split: the live tmux pane's actual content, if
@@ -291,12 +300,55 @@ split_preview() {
   tmux_l1=$(tmux_summary_line1 "$repo" "$task" | cut -c1-"$right_w")
   tmux_l2=$(tmux_summary_line2 "$repo" "$task" | cut -c1-"$right_w")
 
-  printf '%-*s|%s\n' "$left_w" " INFO" " TMUX"
+  printf "${BOLD_WHITE}%-*s${RESET}|${BOLD_WHITE}%s${RESET}\n" "$left_w" " INFO" " TMUX"
   printf '%s+%s\n' "$(printf '%*s' "$left_w" '' | tr ' ' '-')" "$(printf '%*s' "$right_w" '' | tr ' ' '-')"
+
+  # Pad to fixed width on PLAIN text first (escape codes would corrupt the
+  # width math if counted), THEN colorize by splitting each line on its
+  # known "label: value" shape and re-joining with color codes — plain bash
+  # substring ops instead of sed, since sed backreferences kept fighting
+  # with the literal escape bytes in the color variables.
+  local info_l1_plain info_l2_plain
+  info_l1_plain=$(printf '%s\n' "$info_text" | sed -n '1p' | awk -v w="$left_w" '{printf "%-"w"."w"s", $0}')
+  info_l2_plain=$(printf '%s\n' "$info_text" | sed -n '2p' | awk -v w="$left_w" '{printf "%-"w"."w"s", $0}')
+  local info_rest
+  info_rest=$(printf '%s\n' "$info_text" | tail -n +3 | grep -v '^$' | awk -v w="$left_w" '{printf "%-"w"."w"s|\n", $0}')
+
+  colorize_label() {
+    local line=$1 label=$2 value_color=$3
+    local prefix="${line%%:*}:"
+    local rest="${line#*:}"
+    printf '%b%s%b%b%s%b' "$CYAN" "$prefix" "$RESET" "$value_color" "$rest" "$RESET"
+  }
+
+  local info_l1 info_l2
+  info_l1=$(colorize_label "$info_l1_plain" branch "$BOLD_WHITE")
+  info_l2=$(colorize_label "$info_l2_plain" path "$DIM")
+
+  local tmux_l1_colored tmux_l2_colored
+  if [[ "$tmux_l1" == \ session:* ]]; then
+    tmux_l1_colored=$(colorize_label "$tmux_l1" session "$BOLD_WHITE")
+    local status_color status_word
+    if [[ "$tmux_l1" == *attached* ]]; then
+      status_color="$GREEN" status_word="attached"
+    else
+      status_color="$DIM" status_word="detached"
+    fi
+    tmux_l1_colored=$(printf '%s' "$tmux_l1_colored" | awk -v w="$status_word" -v c="$status_color" -v r="$RESET" \
+      '{gsub(w, c w r); print}')
+  else
+    tmux_l1_colored="$tmux_l1"
+  fi
+  if [[ "$tmux_l2" == \ running:* ]]; then
+    tmux_l2_colored=$(colorize_label "$tmux_l2" running "$GREEN")
+  else
+    tmux_l2_colored="$tmux_l2"
+  fi
+
   paste -d'|' \
-    <(printf '%s\n' "$info_text" | awk -v w="$left_w" '{printf "%-"w"."w"s\n", $0}' | head -2) \
-    <(printf '%s\n%s\n' "$tmux_l1" "$tmux_l2")
-  printf '%s\n' "$info_text" | tail -n +3 | awk -v w="$left_w" '{printf "%-"w"."w"s|\n", $0}'
+    <(printf '%s\n%s\n' "$info_l1" "$info_l2") \
+    <(printf '%s\n%s\n' "$tmux_l1_colored" "$tmux_l2_colored")
+  [[ -n "$info_rest" ]] && printf '%s\n' "$info_rest"
 
   # Full-width divider (no blank line before it), then the live pane content
   # spans the entire width.
