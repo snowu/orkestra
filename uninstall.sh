@@ -41,6 +41,18 @@ for cfg in "$HOME/.tmux.conf" \
            "$HOME/.config/alacritty/alacritty.toml"; do
   [[ -f "$cfg" ]] || continue
   grep -qF '# >>> orch keybind >>>' "$cfg" || continue
+
+  # For tmux specifically: capture the bound key from the fenced block
+  # BEFORE stripping it, so we can unbind it from any live server below —
+  # `tmux source-file` only applies bindings present in the file, it does
+  # NOT remove a key that's simply absent from the new content (confirmed
+  # live), so without an explicit unbind the stale binding stays active
+  # until the server restarts.
+  if [[ "$cfg" == "$HOME/.tmux.conf" ]]; then
+    tmux_key="$(sed -n '/^# >>> orch keybind >>>$/,/^# <<< orch keybind <<<$/p' "$cfg" | \
+      grep -o '^bind-key [^ ]*' | awk '{print $2}')"
+  fi
+
   tmp="$(mktemp)"
   awk '
     $0 == "# >>> orch keybind >>>" { skip = 1; next }
@@ -49,6 +61,17 @@ for cfg in "$HOME/.tmux.conf" \
   ' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
   echo "Removed orch keybind from $cfg"
 done
+
+# Unbind live, if a tmux server is running — see comment above for why
+# source-file alone isn't enough.
+if [[ -n "${tmux_key:-}" ]] && command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
+  tmux unbind-key -T prefix "$tmux_key" 2>/dev/null || true
+  if tmux source-file "$HOME/.tmux.conf" >/dev/null 2>&1; then
+    echo "tmux: unbound prefix + $tmux_key and reloaded ~/.tmux.conf live."
+  else
+    echo "WARNING: unbound prefix + $tmux_key but 'tmux source-file ~/.tmux.conf' failed — reload manually." >&2
+  fi
+fi
 
 rm -f /tmp/orch.log /tmp/orch-new-task.marker
 
