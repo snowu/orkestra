@@ -54,6 +54,11 @@ rows() {
       last_used="-"
     fi
 
+    # Live if either: a pane's cwd is exactly this worktree, OR a tmux
+    # session is named after this task — sessions are shared by task name by
+    # default (one agent spanning multiple repos), so a BE worktree should
+    # show live too once the FE worktree's alt-enter started "task-x", even
+    # though no pane's cwd points at the BE folder.
     pane_info=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}" 2>/dev/null | \
       awk -F'\t' -v p="$wt" '$2==p{print; exit}')
 
@@ -61,6 +66,10 @@ rows() {
     if [[ -n "$pane_info" ]]; then
       session=$(echo "$pane_info" | cut -f1 | cut -d: -f1)
       cmd=$(echo "$pane_info" | cut -f3)
+      state="live"
+    elif tmux has-session -t "=$task" 2>/dev/null; then
+      session="$task"
+      cmd=$(tmux list-panes -t "=$task" -F "#{pane_current_command}" 2>/dev/null | head -1)
       state="live"
     fi
 
@@ -124,13 +133,20 @@ full_row() {
   echo "branch:  ${branch:-none}"
   echo "path:    $wt"
 
+  # Same live rule as rows(): match by cwd, or by a session named after this
+  # task (sessions are shared by task name by default across repos).
   local pane_info
   pane_info=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}	#{pane_pid}" 2>/dev/null | \
     awk -F'\t' -v p="$wt" '$2==p{print; exit}')
 
+  if [[ -z "$pane_info" ]] && tmux has-session -t "=$task" 2>/dev/null; then
+    pane_info=$(tmux list-panes -t "=$task" -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}	#{pane_pid}" 2>/dev/null | head -1)
+  fi
+
   if [[ -n "$pane_info" ]]; then
-    local sess win_cmd pid
+    local sess win_cmd pid pane_cwd
     sess=$(echo "$pane_info" | cut -f1)
+    pane_cwd=$(echo "$pane_info" | cut -f2)
     win_cmd=$(echo "$pane_info" | cut -f3)
     pid=$(echo "$pane_info" | cut -f4)
     local nwin nclients
@@ -139,6 +155,7 @@ full_row() {
     echo
     echo "tmux session: ${sess%%:*}"
     echo "  pane:      $sess (pid $pid, running: $win_cmd)"
+    [[ "$pane_cwd" != "$wt" ]] && echo "  pane cwd:  $pane_cwd (shared session, different repo's worktree)"
     echo "  windows:   $nwin"
     echo "  attached:  $([[ $nclients -gt 0 ]] && echo "yes ($nclients client(s))" || echo "no")"
   else

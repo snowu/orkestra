@@ -96,10 +96,15 @@ wt="$HOME/worktrees/$repo/$task"
 # The SESSION column in the list is truncated for display — never use it to
 # actually attach (a truncated name won't match the real session, so tmux
 # would silently create a new one instead of reattaching). Re-resolve the
-# real, untruncated session name straight from tmux by matching cwd.
+# real, untruncated session name straight from tmux: match by cwd, or by a
+# session named after this task (sessions are shared by task name across
+# repos by default — see named_session below).
 session=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}" 2>/dev/null | \
   awk -F'\t' -v p="$wt" '$2==p{print $1; exit}')
 session="${session%%:*}"
+if [[ -z "$session" ]] && tmux has-session -t "=$task" 2>/dev/null; then
+  session="$task"
+fi
 
 # `tmux new -A -s <name>` attaches if a session by that name exists, creates
 # it otherwise. If we're not already inside a tmux client, exec straight
