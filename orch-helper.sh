@@ -361,8 +361,6 @@ end_task() {
   local repo=$1 task=$2
   local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
 
-  kill_session_for "$repo" "$task"
-
   (
     repo_root=$(find_repo_root "$repo")
     cd "${repo_root:-$HOME/code/$repo}" 2>/dev/null || exit 1
@@ -374,29 +372,45 @@ end_task() {
   [[ -d "$wt" ]] && rm -rf "$wt"
   rm -f "$(access_file "$repo" "$task")"
   echo "$(date '+%H:%M:%S') removed $repo/$task (worktree+branch, local+origin)" >> /tmp/orch.log
+
+  # Kill the session LAST: when orch itself runs inside the session being
+  # ended (tmux-keybind window, or plain attach to the same task session),
+  # killing it also kills orch and this very helper process — with the kill
+  # first, everything below it silently never ran (confirmed live: first
+  # ctrl-x killed the session and dropped the client back out, leaving
+  # branch+folder behind; a second ctrl-x from a fresh orch finished the
+  # job). Killing last means the cleanup is already done if we die here.
+  kill_session_for "$repo" "$task"
 }
 
-# Runs with terminal access (called via fzf's execute(), not reload()) so it
-# can prompt interactively before deleting anything.
+# Full-screen fzf yes/no dialog, styled like the picker itself so a
+# confirmation doesn't LOOK like orch exited (the old raw `read` off
+# /dev/tty dropped back to a bare shell-style prompt line — jarring). Runs
+# with terminal access (called via fzf's execute(), not reload()); fzf
+# draws its UI on /dev/tty directly, stdout is just the picked line. "no"
+# is first so a reflexive ENTER (or esc) is always the safe answer.
+# Returns 0 only on an explicit "yes".
+confirm_dialog() {
+  local header=$1
+  local choice
+  choice=$(printf 'no  — cancel, do nothing\nyes — %s\n' "$header" | \
+    fzf --layout=reverse --no-info --prompt="confirm> " \
+        --header="$header — pick one" --bind "esc:abort")
+  [[ "$choice" == yes* ]]
+}
+
 confirm_end_task() {
   local repo=$1 task=$2
-  printf "Delete worktree + branch (local & origin) for %s/%s? [y/N] " "$repo" "$task" > /dev/tty
-  local ans
-  read -r ans < /dev/tty
-  if [[ "$ans" =~ ^[Yy]$ ]]; then
+  if confirm_dialog "DELETE worktree + branch (local & origin) for $repo/$task"; then
     end_task "$repo" "$task"
   else
     echo "$(date '+%H:%M:%S') skipped $repo/$task (not confirmed)" >> /tmp/orch.log
   fi
 }
 
-# Same terminal-access pattern as confirm_end_task, for ctrl-k.
 confirm_kill_task() {
   local repo=$1 task=$2
-  printf "Kill tmux session for %s/%s? (y/n) " "$repo" "$task" > /dev/tty
-  local ans
-  read -r ans < /dev/tty
-  if [[ "$ans" =~ ^[Yy]$ ]]; then
+  if confirm_dialog "kill tmux session for $repo/$task (worktree+branch untouched)"; then
     kill_task "$repo" "$task"
   else
     echo "$(date '+%H:%M:%S') skipped kill-session for $repo/$task (not confirmed)" >> /tmp/orch.log

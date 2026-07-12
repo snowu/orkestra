@@ -176,7 +176,13 @@ fi
 help_line="ENTER=attach tmux   alt-ENTER=cd only (no session)   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   ?=toggle info panel   ctrl-s=git status"
 column_header=$(printf "%-16s %-32s %-14s %-8s %-8s %-16s %-9s %s" "REPO" "TASK" "BRANCH" "STATE" "AGENT" "SESSION" "LAST USED" "CMD")
 header="$help_line"$'\n'"$column_header"
+# --no-clear: don't drop back to the primary screen when fzf exits — every
+# exit path from this picker leads either into another full-screen program
+# (tmux attach, or the ctrl-n become() chain's next fzf) or to an explicit
+# _leave_altscreen call below, so the intermediate flash of the shell
+# prompt between steps was pure flicker.
 out=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline --header="$header" \
+  --no-clear \
   --listen "$fzf_port" \
   --expect="alt-enter" \
   --bind "$ctrl_n_bind" \
@@ -196,6 +202,15 @@ sel=$(printf '%s\n' "$out" | sed -n '2p')
 fi  # end of the setup+launch guard opened above; functions below are
     # unconditional so --pick-task (which skipped the block above) can use
     # them too.
+
+# Counterpart of the pickers' --no-clear: switch the terminal back to the
+# primary screen. Must be called on every path that actually returns to the
+# shell (quit/esc, alt-enter cd, fallback flows, errors) — paths that end in
+# a tmux attach or another fzf skip it on purpose, that's the whole
+# anti-flicker trick.
+_leave_altscreen() {
+  tput rmcup > /dev/tty 2>/dev/null || printf '\033[?1049l' > /dev/tty
+}
 
 # Attach-or-create a tmux session by name. If we're not already inside a
 # tmux client, exec straight into it — replaces this process, takes over
@@ -218,6 +233,10 @@ _orch_goto_session() {
   if [[ -n "${TMUX:-}" ]]; then
     tmux has-session -t "=$name" 2>/dev/null || tmux new -d -s "$name" -c "$dir"
     tmux switch-client -t "$name"
+    # switch-client returns (unlike the exec below) and orch exits back to
+    # whatever pane it was typed in — restore that pane's primary screen,
+    # or the --no-clear'd picker UI stays smeared over the shell prompt.
+    _leave_altscreen
   else
     exec tmux new -A -s "$name" -c "$dir"
   fi
@@ -345,18 +364,26 @@ _orch_pick_task() {
     rest+=("$base")
   done < <(all_repo_dirs)
 
+  # Both stages run --no-clear like the main picker: every hop either chains
+  # into the next full-screen draw (fzf, then tmux via the parent) or exits
+  # through the parent's empty-sel path, which restores the primary screen.
+  # Without it, each stage boundary flashed the shell prompt for a frame.
   local repo
   repo=$( { printf '%s\n' "${favorites[@]}"; printf '%s\n' "${rest[@]}" | sort; } | \
-    fzf --prompt="repo> " --header="ctrl-n new-task: pick a repo (esc to cancel)" +s \
+    fzf --no-clear --prompt="repo> " --header="ctrl-n new-task: pick a repo (esc to cancel)" +s \
         --bind "esc:abort")
   [[ -z "$repo" ]] && exit 1
 
   local repo_root="${repo_path[$repo]:-}"
-  [[ -n "$repo_root" ]] || { echo "repo '$repo' not found under \$HOME" >&2; exit 1; }
+  if [[ -z "$repo_root" ]]; then
+    _leave_altscreen
+    echo "repo '$repo' not found under \$HOME" >&2
+    exit 1
+  fi
 
   local task_out
   task_out=$(git -C "$repo_root" branch --format='%(refname:short)' 2>/dev/null | \
-    fzf --prompt="task '$repo'> " \
+    fzf --no-clear --prompt="task '$repo'> " \
         --header="type new task/branch name (list is existing branches for reference, esc to cancel)" \
         --print-query --bind "enter:print-query" --bind "esc:abort")
   local task
@@ -378,6 +405,9 @@ fi
 
 if [[ -f "$marker" ]]; then
   rm -f "$marker"
+  # Fallback flow runs its own plain fzf calls without --no-clear — restore
+  # the primary screen first so it starts from a normal terminal.
+  _leave_altscreen
   new_task
   exit 0
 fi
@@ -391,14 +421,26 @@ if [[ "$key" == "pick-task" ]]; then
   task=$(echo "$sel" | awk '{print $2}')
   repo_root=$(echo "$sel" | cut -d' ' -f3-)
   if ! declare -f new-task >/dev/null 2>&1; then
+    _leave_altscreen
     echo "new-task not found. Install ~/scripts/worktree-tasks.sh or source your own." >&2
     exit 1
   fi
-  new_task_finish "$repo" "$task" "$repo_root"
+  if ! new_task_finish "$repo" "$task" "$repo_root"; then
+    # Only reached when the worktree never appeared — new_task_finish's
+    # error output is sitting on the alt screen, so restore AFTER pointing
+    # at it would erase it; restore first, then re-state the failure.
+    _leave_altscreen
+    echo "new-task failed for $repo/$task — check /tmp/orch.log" >&2
+    exit 1
+  fi
   exit 0
 fi
 
-[[ -z "$sel" ]] && exit 0
+# esc / ctrl-c on the main picker: plain quit back to the shell.
+if [[ -z "$sel" ]]; then
+  _leave_altscreen
+  exit 0
+fi
 
 repo=$(echo "$sel" | awk '{print $1}')
 task=$(echo "$sel" | awk '{print $2}')
@@ -416,6 +458,7 @@ wt=$(find_worktree "$repo" "$task")
 # is the one case where NOT touching tmux is the whole point. orch.sh's
 # wrapper cd's into whatever this prints as the last stdout line.
 if [[ "$key" == "alt-enter" ]]; then
+  _leave_altscreen
   printf '%s\n' "$wt"
   exit 0
 fi
