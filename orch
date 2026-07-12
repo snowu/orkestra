@@ -12,6 +12,11 @@ HELPER="$SCRIPT_DIR/orch-helper.sh"
 
 [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
 
+# Same default as orch-helper.sh — ~/.orch.conf isn't required to set this,
+# so under `set -u` any read of it here (e.g. new_task_finish's fallback wt=)
+# would otherwise blow up as an unbound variable on a fresh/minimal conf.
+ORCH_WORKTREES_ROOTS=("${ORCH_WORKTREES_ROOTS[@]:-$HOME/worktrees}")
+
 # ORCH_HOOKS_CONFIG: JSON file mapping repo folder name -> shell command,
 # run (cwd = new worktree) right after `new-task` creates it. Kept in
 # ~/.config (XDG-conventional, separate from ~/.orch.conf) since it's
@@ -125,6 +130,16 @@ if ! command -v fzf &>/dev/null; then
   exit 1
 fi
 
+# --pick-task dispatches straight to _orch_pick_task, defined further down —
+# jump there immediately (before any of the marker/--listen/main-fzf-launch
+# setup below, none of which --pick-task needs — that fzf call would
+# otherwise block here waiting on a picker nobody's looking at) as soon as
+# all the functions it depends on (all_repo_dirs, run_repo_hook,
+# write_claude_profile, _orch_goto_session, named_session, new_task_finish,
+# _orch_pick_task itself) have been parsed. See the actual dispatch call
+# right after _orch_pick_task's definition below.
+if [[ "${1:-}" != "--pick-task" ]]; then
+
 marker="/tmp/orch-new-task.marker"
 rm -f "$marker"
 : > /tmp/orch.log
@@ -177,6 +192,10 @@ out=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline 
 # default enter), the selected row on line 2 — see man fzf's --expect.
 key=$(printf '%s\n' "$out" | sed -n '1p')
 sel=$(printf '%s\n' "$out" | sed -n '2p')
+
+fi  # end of the setup+launch guard opened above; functions below are
+    # unconditional so --pick-task (which skipped the block above) can use
+    # them too.
 
 # Attach-or-create a tmux session by name. If we're not already inside a
 # tmux client, exec straight into it — replaces this process, takes over
@@ -303,6 +322,18 @@ new_task() {
 # and zero marker-file polling — each stage `become()`s straight into the
 # next, and the whole chain reads as one motion from the user's side.
 _orch_pick_task() {
+  # Reached via the main picker's become(): execve happens inside the fzf
+  # process, whose stdin is the `$HELPER rows |` pipe and whose stdout is
+  # the parent's out=$(...) capture pipe — NOT the terminal. That's exactly
+  # why this function must NOT create the worktree or attach tmux itself
+  # (confirmed live: `exec tmux new -A` from here dies with "open terminal
+  # failed: can't use /dev/tty", and the parent orch would race back to the
+  # shell prompt anyway the moment the pipe closed). The nested fzf pickers
+  # below are fine — fzf opens /dev/tty directly for its UI — so this stage
+  # only PICKS, then prints its result into the capture pipe in the same
+  # line-1-key/line-2-payload shape --expect uses. The parent orch, which
+  # still owns the real terminal stdio, reads it and does the actual
+  # new_task_finish + tmux attach.
   local favorites=("${ORCH_FAVORITES[@]:-}")
   local dir base rest=()
   declare -A repo_path
@@ -323,29 +354,47 @@ _orch_pick_task() {
   local repo_root="${repo_path[$repo]:-}"
   [[ -n "$repo_root" ]] || { echo "repo '$repo' not found under \$HOME" >&2; exit 1; }
 
-  local task
-  task=$(git -C "$repo_root" branch --format='%(refname:short)' 2>/dev/null | \
+  local task_out
+  task_out=$(git -C "$repo_root" branch --format='%(refname:short)' 2>/dev/null | \
     fzf --prompt="task '$repo'> " \
         --header="type new task/branch name (list is existing branches for reference, esc to cancel)" \
-        --print-query --bind "enter:print-query" --bind "esc:abort" | head -1)
+        --print-query --bind "enter:print-query" --bind "esc:abort")
+  local task
+  task=$(printf '%s\n' "$task_out" | sed -n '1p')
   [[ -z "$task" ]] && exit 1
 
-  [[ -f "$HOME/scripts/worktree-tasks.sh" ]] && source "$HOME/scripts/worktree-tasks.sh"
-  if ! declare -f new-task >/dev/null 2>&1; then
-    echo "new-task not found. Install ~/scripts/worktree-tasks.sh or source your own." >&2
-    exit 1
-  fi
-  new_task_finish "$repo" "$task" "$repo_root"
+  # Hand the pick back to the parent orch through the capture pipe — repo
+  # and task are single tokens (branch names), repo_root goes last so a
+  # path with spaces still parses (parent takes "field 3 to end").
+  printf 'pick-task\n%s %s %s\n' "$repo" "$task" "$repo_root"
   exit 0
 }
 
+# --pick-task dispatches here — all its deps (above) are now defined.
 if [[ "${1:-}" == "--pick-task" ]]; then
   _orch_pick_task
+  exit 0
 fi
 
 if [[ -f "$marker" ]]; then
   rm -f "$marker"
   new_task
+  exit 0
+fi
+
+# ctrl-n chain handed back a pick (see _orch_pick_task above): the become'd
+# picker only chooses repo/task — worktree creation and the tmux attach
+# happen HERE, in the parent, which still has its stdio on the real
+# terminal (a tmux client can't start on the picker's inherited pipes).
+if [[ "$key" == "pick-task" ]]; then
+  repo=$(echo "$sel" | awk '{print $1}')
+  task=$(echo "$sel" | awk '{print $2}')
+  repo_root=$(echo "$sel" | cut -d' ' -f3-)
+  if ! declare -f new-task >/dev/null 2>&1; then
+    echo "new-task not found. Install ~/scripts/worktree-tasks.sh or source your own." >&2
+    exit 1
+  fi
+  new_task_finish "$repo" "$task" "$repo_root"
   exit 0
 fi
 
