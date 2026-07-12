@@ -4,9 +4,63 @@
 # job-control issues when invoked from fzf's execute()/reload().
 set -u
 
+[[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
+
+# ORCH_CODE_ROOTS / ORCH_WORKTREES_ROOTS: where repos and their worktrees
+# live. Defaults match the original hardcoded layout (~/code, ~/worktrees)
+# for backward compat — override in ~/.orch.conf as arrays to scan any
+# folder(s) on disk instead of assuming everything lives under one
+# personal convention (e.g. ORCH_CODE_ROOTS=(~/code ~/personal ~/work)).
+ORCH_CODE_ROOTS=("${ORCH_CODE_ROOTS[@]:-$HOME/code}")
+ORCH_WORKTREES_ROOTS=("${ORCH_WORKTREES_ROOTS[@]:-$HOME/worktrees}")
+
+# Finds a repo's checkout dir by name across all configured code roots.
+# Echoes the first match; empty if none of the roots have it.
+find_repo_root() {
+  local repo=$1 root
+  for root in "${ORCH_CODE_ROOTS[@]}"; do
+    [[ -d "$root/$repo/.git" ]] && { printf '%s' "$root/$repo"; return; }
+  done
+}
+
+# Finds a task's worktree dir by repo+task across all configured worktree
+# roots (a worktree root may itself contain one folder-per-repo, matching
+# worktree-tasks.sh's ~/worktrees/<repo>/<task> layout). Echoes the first
+# match; empty if none exist yet (e.g. about to be created).
+find_worktree() {
+  local repo=$1 task=$2 root
+  for root in "${ORCH_WORKTREES_ROOTS[@]}"; do
+    [[ -d "$root/$repo/$task" ]] && { printf '%s' "$root/$repo/$task"; return; }
+  done
+}
+
+# Lists every <root>/<repo>/<task>/ dir across ALL configured worktree
+# roots, one per line — the multi-root equivalent of a single `for wt in
+# "$HOME"/worktrees/*/*/` glob. Callers that used to loop over one
+# hardcoded root now loop over this instead.
+all_worktree_dirs() {
+  local root
+  for root in "${ORCH_WORKTREES_ROOTS[@]}"; do
+    for wt in "$root"/*/*/; do
+      [[ -d "$wt" ]] || continue
+      printf '%s\n' "${wt%/}"
+    done
+  done
+}
+
 ACCESS_DIR="$HOME/.cache/orch/access"
 AGENT_STATE_DIR="$HOME/.cache/orch/agent-state"
-AGENT_STATE_STALE_SECS=10
+# Push-based, not polled: ~/.claude/hooks/orch-agent-state.sh writes
+# running/waiting into this dir directly off Claude Code's own hook events
+# (UserPromptSubmit+PreToolUse -> running, Stop+Notification -> waiting).
+# Scraping tmux pane text for a "tokens)" substring was a race against
+# Claude Code's own repaint (that suffix is only on-screen for the ~100ms
+# it's mid-render) — confirmed live: it showed "waiting" almost always
+# because the running window was too narrow for a 3s poll to ever land in
+# it. A generous staleness window is still needed here, but only to catch
+# sessions that died without ever firing Stop (killed pane, crashed
+# process) — NOT as the primary freshness mechanism.
+AGENT_STATE_STALE_SECS=600
 
 # Path of the access-marker file for a repo/task pair.
 access_file() {
@@ -14,91 +68,15 @@ access_file() {
 }
 
 # Path of the agent-state cache file for a tmux session name. Kept by
-# session name (not repo/task) since that's what the poller actually
-# inspects, and the same session can be shared across repos.
+# session name (not repo/task) since hooks resolve TMUX_PANE -> session name
+# themselves, and the same session can be shared across repos.
 agent_state_file() {
   printf '%s/%s' "$AGENT_STATE_DIR" "$1"
 }
 
-# Classify a captured pane's tail as running/waiting/"" (unknown) — "" is
-# deliberately not a guess: mid-typing, permission dialogs, etc. don't match
-# either pattern and we'd rather show nothing than something wrong.
-#   running: Claude Code's status line ends in "tokens)" while working, e.g.
-#            "✶ Kneading… (1m 14s · ↓ 1.9k tokens)" — the verb rotates, the
-#            "tokens)" suffix doesn't, so it's the stable anchor.
-#   waiting: a line that's just the bare "❯" prompt with nothing typed after
-#            it and no running-line present — idle, waiting on you.
-classify_pane_text() {
-  local text=$1
-  # [[:space:]] is locale-dependent and does NOT match U+00A0 (non-breaking
-  # space) under the minimal "C.UTF-8" locale this script runs under (no
-  # env inherited from an interactive shell) — confirmed live: Claude Code's
-  # prompt line is "❯" followed by an actual U+00A0, not a regular space, so
-  # the class silently failed to match. Match explicit byte alternatives
-  # instead of relying on locale-aware whitespace classes.
-  # Check "waiting" FIRST: a completed run leaves its old "...tokens)" status
-  # line sitting higher up in the tail even after the agent's back to a bare
-  # prompt — confirmed live, that stale line kept classifying a genuinely
-  # idle pane as "running". The bare prompt at the bottom is the authoritative
-  # signal; only fall back to the tokens-line check when it's absent.
-  if printf '%s' "$text" | grep -qP '^❯[\s\x{00A0}]*$'; then
-    printf 'waiting'
-  elif printf '%s' "$text" | grep -qE 'tokens\)[ \t]*$'; then
-    printf 'running'
-  fi
-}
-
-# Refreshes the agent-state cache for every currently live tmux session, once.
-# Meant to be called in a loop by a short-lived poller (spawned by `orch` for
-# the duration of one picker session, killed when it exits) — NOT a
-# standalone daemon, so there's no pidfile/lifecycle management here.
-refresh_agent_states() {
-  mkdir -p "$AGENT_STATE_DIR"
-  local sess
-  # Every tmux call here is wrapped in `timeout` — a contended/wedged tmux
-  # socket must never be able to hang this loop indefinitely, since that's
-  # what makes the poller un-killable-in-a-hurry (confirmed live: a hung
-  # capture-pane blocked the whole refresh cycle, and the outer `kill` on
-  # just the poller's own PID couldn't interrupt a syscall already blocked
-  # inside a tmux child process).
-  while IFS= read -r sess; do
-    [[ -n "$sess" ]] || continue
-    local text state
-    # A plain `tail -n 8` can land entirely on trailing blank padding when
-    # the pane is taller than its actual content (confirmed live: an
-    # otherwise-normal "waiting" pane showed up as 8 blank lines and thus
-    # unknown) — strip trailing blank lines first, then take the tail of
-    # what's left.
-    text=$(timeout 2 tmux capture-pane -pt "$sess" 2>/dev/null | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}' | tail -n 8)
-    state=$(classify_pane_text "$text")
-    printf '%s' "$state" > "$(agent_state_file "$sess")"
-  done < <(timeout 2 tmux list-sessions -F '#{session_name}' 2>/dev/null)
-
-  # Drop cache files for sessions that no longer exist, so a killed
-  # session's last-known state doesn't linger and get read as current.
-  local f name
-  for f in "$AGENT_STATE_DIR"/*; do
-    [[ -f "$f" ]] || continue
-    name=$(basename "$f")
-    timeout 2 tmux has-session -t "=$name" 2>/dev/null || rm -f "$f"
-  done
-}
-
-# Poller entry point: refresh on a fixed interval, forever — `orch` runs this
-# as a background job tied to its own process lifetime (killed automatically
-# when orch/fzf exits), not a persistent daemon.
-agent_state_poll() {
-  local interval=${1:-3}
-  while true; do
-    refresh_agent_states
-    sleep "$interval"
-  done
-}
-
 # Reads the cached state for a session — treated as unknown (empty) if the
-# cache is missing or older than AGENT_STATE_STALE_SECS, e.g. the poller
-# hasn't ticked yet (first render) or isn't running at all (orch not
-# currently open, cache calls made some other way).
+# cache is missing or older than AGENT_STATE_STALE_SECS (session likely dead
+# without ever firing a Stop hook).
 cached_agent_state() {
   local sess=$1
   local f
@@ -163,9 +141,46 @@ rows() {
   # substitute (it moves on file edits, not on cd/attach, so it's just
   # wrong) — those show "never" and sort last.
   local now=$(date +%s)
-  for wt in "$HOME"/worktrees/*/*/; do
-    wt="${wt%/}"
-    [[ -d "$wt" ]] || continue
+
+  # Session resolution used to run independently per worktree row: each row
+  # only looked for a pane whose cwd matched ITS OWN folder, falling back to
+  # a bare task-named session only when that failed. Two sibling worktrees
+  # sharing a task (BE+FE under the same task name) could then resolve to
+  # different sessions — whichever one had the exact-cwd pane got the real
+  # session, the other silently fell back and, on any naming mismatch (e.g.
+  # ORCH_SCOPE_SESSIONS_TO_REPO), disagreed entirely — the exact "waiting
+  # shows in one folder but not the other" bug. Resolve once per TASK here,
+  # up front, from a single tmux snapshot, so every sibling worktree of the
+  # same task shares one session and therefore one cached agent state.
+  local all_panes
+  all_panes=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}" 2>/dev/null)
+
+  declare -A task_session task_cmd task_agent
+  while IFS= read -r wt; do
+    local t=$(basename "$wt")
+    [[ -n "${task_session[$t]+x}" ]] && continue
+
+    local pane_info
+    pane_info=$(printf '%s\n' "$all_panes" | awk -F'\t' -v p="$wt" '$2==p{print; exit}')
+    if [[ -n "$pane_info" ]]; then
+      task_session[$t]=$(echo "$pane_info" | cut -f1 | cut -d: -f1)
+      task_cmd[$t]=$(echo "$pane_info" | cut -f3)
+    elif tmux has-session -t "=$t" 2>/dev/null; then
+      task_session[$t]="$t"
+      task_cmd[$t]=$(tmux list-panes -t "=$t" -F "#{pane_current_command}" 2>/dev/null | head -1)
+    fi
+
+    # Read the agent-state cache HERE, once per task, in the same pass as
+    # session resolution — reading it again per-row later (once per sibling
+    # worktree) let a hook write land in between two rows() iterations
+    # (each iteration also does a git call, real wall-clock time), so two
+    # rows sharing the identical session could observe two different
+    # values within a single rows() invocation. One read per task closes
+    # that window entirely.
+    [[ -n "${task_session[$t]:-}" ]] && task_agent[$t]=$(cached_agent_state "${task_session[$t]}")
+  done < <(all_worktree_dirs)
+
+  while IFS= read -r wt; do
     repo=$(basename "$(dirname "$wt")")
     task=$(basename "$wt")
     branch=$(git -C "$wt" branch --show-current 2>/dev/null)
@@ -179,22 +194,12 @@ rows() {
       last_used="-"
     fi
 
-    # Live if either: a pane's cwd is exactly this worktree, OR a tmux
-    # session is named after this task — sessions are shared by task name by
-    # default (one agent spanning multiple repos), so a BE worktree should
-    # show live too once ENTER on the FE worktree started session "task-x",
-    # even though no pane's cwd points at the BE folder.
-    pane_info=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}" 2>/dev/null | \
-      awk -F'\t' -v p="$wt" '$2==p{print; exit}')
-
+    # Shared across every sibling worktree of this task — see resolution
+    # pass above.
     session="-" cmd="-" state="idle"
-    if [[ -n "$pane_info" ]]; then
-      session=$(echo "$pane_info" | cut -f1 | cut -d: -f1)
-      cmd=$(echo "$pane_info" | cut -f3)
-      state="live"
-    elif tmux has-session -t "=$task" 2>/dev/null; then
-      session="$task"
-      cmd=$(tmux list-panes -t "=$task" -F "#{pane_current_command}" 2>/dev/null | head -1)
+    if [[ -n "${task_session[$task]:-}" ]]; then
+      session="${task_session[$task]}"
+      cmd="${task_cmd[$task]}"
       state="live"
     fi
 
@@ -204,18 +209,13 @@ rows() {
     local state_color="$YELLOW"
     [[ "$state" == "live" ]] && state_color="$GREEN"
 
-    # Read-only cache lookup (near-free) — the actual tmux capture-pane work
-    # happens in the background poller `orch` spawns for the picker's
-    # lifetime, not here, so this doesn't slow down rows() at all. Only
-    # meaningful when a session exists; idle worktrees have nothing to poll.
-    local agent="" agent_color="$DIM"
-    if [[ "$session" != "-" ]]; then
-      agent=$(cached_agent_state "$session")
-      case "$agent" in
-        running) agent_color="$GREEN" ;;
-        waiting) agent_color="$CYAN" ;;
-      esac
-    fi
+    # Resolved once per task in the pass above — every sibling worktree of
+    # this task reads the identical value here, no re-fetch.
+    local agent="${task_agent[$task]:-}" agent_color="$DIM"
+    case "$agent" in
+      running) agent_color="$GREEN" ;;
+      waiting) agent_color="$CYAN" ;;
+    esac
 
     # repo/task (fields 1,2) are used verbatim by fzf's {1}/{2} for
     # end-task/jump/full-row lookups — color codes are safe here since fzf
@@ -231,7 +231,7 @@ rows() {
     printf "%s\t$(repo_color "$repo")%s${RESET} %-32s %-14s ${state_color}%s${RESET} ${agent_color}%s${RESET} %-16s %-9s %s\n" "$mtime" \
       "$repo_padded" "$task_padded" "$(trunc "${branch_col:-none}" 14)" \
       "$state_padded" "$agent_padded" "$(trunc "$session" 16)" "$last_used" "$(trunc "$cmd" 12)"
-  done | sort -t$'\t' -k1,1rn | cut -f2-
+  done < <(all_worktree_dirs) | sort -t$'\t' -k1,1rn | cut -f2-
 }
 
 # Kill whatever tmux session(s) belong to a worktree, without touching the
@@ -249,7 +249,7 @@ rows() {
 # under a still-active sibling.
 kill_session_for() {
   local repo=$1 task=$2
-  local wt="$HOME/worktrees/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
 
   local target
   target=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}" 2>/dev/null | \
@@ -260,12 +260,14 @@ kill_session_for() {
   tmux has-session -t "=$repo_session" 2>/dev/null && tmux kill-session -t "=$repo_session" 2>/dev/null
 
   if tmux has-session -t "=$task" 2>/dev/null; then
-    local d has_sibling=0
-    for d in "$HOME"/worktrees/*/"$task"; do
-      [[ -d "$d" ]] || continue
-      [[ "$d" == "$wt" ]] && continue
-      has_sibling=1
-      break
+    local d has_sibling=0 root
+    for root in "${ORCH_WORKTREES_ROOTS[@]}"; do
+      for d in "$root"/*/"$task"; do
+        [[ -d "$d" ]] || continue
+        [[ "$d" == "$wt" ]] && continue
+        has_sibling=1
+        break 2
+      done
     done
     [[ "$has_sibling" -eq 0 ]] && tmux kill-session -t "=$task" 2>/dev/null
   fi
@@ -283,12 +285,13 @@ kill_task() {
 
 end_task() {
   local repo=$1 task=$2
-  local wt="$HOME/worktrees/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
 
   kill_session_for "$repo" "$task"
 
   (
-    cd "$HOME/code/$repo" 2>/dev/null || exit 1
+    repo_root=$(find_repo_root "$repo")
+    cd "${repo_root:-$HOME/code/$repo}" 2>/dev/null || exit 1
     git worktree remove "$wt" --force 2>>/tmp/orch.log
     git worktree prune
     git branch -D "$task" 2>>/tmp/orch.log
@@ -332,7 +335,7 @@ confirm_kill_task() {
 # nothing if there's no live pane.
 _orch_resolve_pane() {
   local repo=$1 task=$2
-  local wt="$HOME/worktrees/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
   local pane_info
   pane_info=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}	#{pane_pid}" 2>/dev/null | \
     awk -F'\t' -v p="$wt" '$2==p{print; exit}')
@@ -347,7 +350,7 @@ _orch_resolve_pane() {
 # repeat them here. Shown in the left half of the preview split.
 info_panel() {
   local repo=$1 task=$2
-  local wt="$HOME/worktrees/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
   # Always the real branch name — never collapse to "=" even if it happens
   # to match the task/folder name, since that's misleading here (the row
   # list already does the "=" shorthand, this panel is meant to be exact).
@@ -380,7 +383,7 @@ tmux_summary_line1() {
 
 tmux_summary_line2() {
   local repo=$1 task=$2
-  local wt="$HOME/worktrees/$repo/$task"
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
   local pane_info
   pane_info=$(_orch_resolve_pane "$repo" "$task")
   [[ -z "$pane_info" ]] && return
@@ -527,6 +530,17 @@ split_preview() {
   pane_preview "$repo" "$task" "$n"
 }
 
+# ctrl-s preview: `git status` for the selected worktree, in place of the
+# usual info+tmux split. Deliberately just `git status` (not --short or a
+# diff) — the ask was to check status without spawning a session, i.e. the
+# same output you'd see cd'ing in and running it by hand.
+git_status_preview() {
+  local repo=$1 task=$2
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+  [[ -d "$wt" ]] || { echo "(worktree not found: $wt)"; return; }
+  git -C "$wt" status 2>&1
+}
+
 case "$1" in
   rows) rows ;;
   end-task) end_task "$2" "$3"; rows ;;
@@ -534,7 +548,7 @@ case "$1" in
   kill-task) kill_task "$2" "$3"; rows ;;
   confirm-kill-task) confirm_kill_task "$2" "$3" ;;
   split-preview) split_preview "$2" "$3" ;;
+  git-status-preview) git_status_preview "$2" "$3" ;;
   touch-access) touch_access "$2" "$3" ;;
-  agent-state-poll) agent_state_poll "$2" ;;
-  *) echo "usage: $0 rows|end-task|confirm-end-task|kill-task|confirm-kill-task|split-preview|touch-access|agent-state-poll <repo> <task>" >&2; exit 1 ;;
+  *) echo "usage: $0 rows|end-task|confirm-end-task|kill-task|confirm-kill-task|split-preview|git-status-preview|touch-access <repo> <task>" >&2; exit 1 ;;
 esac

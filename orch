@@ -12,6 +12,25 @@ HELPER="$SCRIPT_DIR/orch-helper.sh"
 
 [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
 
+# ORCH_CODE_ROOTS / ORCH_WORKTREES_ROOTS: see orch-helper.sh for the full
+# explanation — defaults preserve the original ~/code, ~/worktrees layout.
+ORCH_CODE_ROOTS=("${ORCH_CODE_ROOTS[@]:-$HOME/code}")
+ORCH_WORKTREES_ROOTS=("${ORCH_WORKTREES_ROOTS[@]:-$HOME/worktrees}")
+
+find_repo_root() {
+  local repo=$1 root
+  for root in "${ORCH_CODE_ROOTS[@]}"; do
+    [[ -d "$root/$repo/.git" ]] && { printf '%s' "$root/$repo"; return; }
+  done
+}
+
+find_worktree() {
+  local repo=$1 task=$2 root
+  for root in "${ORCH_WORKTREES_ROOTS[@]}"; do
+    [[ -d "$root/$repo/$task" ]] && { printf '%s' "$root/$repo/$task"; return; }
+  done
+}
+
 # new-task is a shell function, normally sourced into an interactive shell —
 # orch runs as its own process and never inherits it from the caller, so
 # load it directly here too (only new_task() below actually needs it).
@@ -26,41 +45,45 @@ marker="/tmp/orch-new-task.marker"
 rm -f "$marker"
 : > /tmp/orch.log
 
-# Background poller: refreshes the AGENT (running/waiting) column's cache
-# every few seconds for as long as the picker is open. Tied to THIS
-# process — no setsid/disown — so it's killed automatically the moment orch
-# exits (fzf closes), whether normally or via ctrl-c. Not a persistent
-# daemon: nothing keeps polling once you're not looking at the list.
+# AGENT (running/waiting) column is push-based: ~/.claude/hooks/orch-agent-state.sh
+# writes state directly off Claude Code's own hook events (see
+# orch-helper.sh's cached_agent_state). No poller needed here anymore —
+# tmux-pane scraping was a race against Claude Code's own repaint and
+# unreliable in practice.
 #
-# `-m` (job control) so the poller gets its OWN process group — a plain
-# `kill $poller_pid` only signals that one shell, not the tmux child it may
-# be blocked inside at that exact instant, so ctrl-c/exit could hang for a
-# while waiting on a wedged tmux call (confirmed live: this made the whole
-# picker un-closable). Signal the group instead, and escalate to -9 if it's
-# still around after a beat — the poller's own internal `timeout` calls
-# (see orch-helper.sh) mean this should rarely be needed, but the escalation
-# is the actual guarantee that ctrl-c/exit is never allowed to hang.
-set -m
-"$HELPER" agent-state-poll 3 &
-poller_pid=$!
-set +m
-_orch_kill_poller() {
-  kill -- "-$poller_pid" 2>/dev/null
-  ( sleep 0.5; kill -9 -- "-$poller_pid" 2>/dev/null ) &
-}
-trap _orch_kill_poller EXIT
+# The hook only writes the cache file though — it can't reach into an
+# already-open fzf and make it redraw. So we listen on a local port (fzf
+# --listen) and register that port under a well-known dir; the hook script
+# curls every registered port after each write to trigger a reload. Multiple
+# concurrent orch instances (e.g. two terminal tabs) each get their own port
+# file and all get poked. Deregister on exit so a stale port doesn't linger
+# and eat a failed curl on every future hook fire.
+FZF_PORTS_DIR="$HOME/.cache/orch/fzf-ports"
+mkdir -p "$FZF_PORTS_DIR"
+fzf_port=$(( 20000 + RANDOM % 20000 ))
+: > "$FZF_PORTS_DIR/$$"
+printf '%s' "$fzf_port" > "$FZF_PORTS_DIR/$$"
+trap 'rm -f "$FZF_PORTS_DIR/$$"' EXIT
 
-help_line="ENTER=attach tmux session (creates one if needed)   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   ?=toggle info panel"
+help_line="ENTER=attach tmux   alt-ENTER=cd only (no session)   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   ?=toggle info panel   ctrl-s=git status"
 column_header=$(printf "%-16s %-32s %-14s %-8s %-8s %-16s %-9s %s" "REPO" "TASK" "BRANCH" "STATE" "AGENT" "SESSION" "LAST USED" "CMD")
 header="$help_line"$'\n'"$column_header"
-sel=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline --header="$header" \
+out=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline --header="$header" \
+  --listen "$fzf_port" \
+  --expect="alt-enter" \
   --bind "ctrl-n:execute-silent(touch $marker)+abort" \
   --bind "ctrl-x:execute($HELPER confirm-end-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-k:execute($HELPER confirm-kill-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-r:reload($HELPER rows)" \
   --bind "?:toggle-preview" \
+  --bind "ctrl-s:change-preview($HELPER git-status-preview {1} {2}|$HELPER split-preview {1} {2})+change-preview-window(right,50%,border-left|down,70%,wrap,border-none)" \
   --preview-window "down,70%,wrap,border-none" \
   --preview "$HELPER split-preview {1} {2}")
+
+# --expect puts the key that triggered acceptance on line 1 (empty for the
+# default enter), the selected row on line 2 — see man fzf's --expect.
+key=$(printf '%s\n' "$out" | sed -n '1p')
+sel=$(printf '%s\n' "$out" | sed -n '2p')
 
 # Attach-or-create a tmux session by name. If we're not already inside a
 # tmux client, exec straight into it — replaces this process, takes over
@@ -112,28 +135,36 @@ new_task() {
 
   # Favorites first (from ~/.orch.conf), rest sorted after.
   local favorites=("${ORCH_FAVORITES[@]:-}")
-  local repo d rest=()
+  local repo d root rest=()
 
-  for d in "$HOME"/code/*/; do
-    d=$(basename "$d")
-    [[ -d "$HOME/code/$d/.git" ]] || continue
-    [[ " ${favorites[*]} " == *" $d "* ]] && continue
-    rest+=("$d")
+  for root in "${ORCH_CODE_ROOTS[@]}"; do
+    for d in "$root"/*/; do
+      d=$(basename "$d")
+      [[ -d "$root/$d/.git" ]] || continue
+      [[ " ${favorites[*]} " == *" $d "* ]] && continue
+      rest+=("$d")
+    done
   done
 
   repo=$( { printf '%s\n' "${favorites[@]}"; printf '%s\n' "${rest[@]}" | sort; } | \
     fzf --prompt="repo> " --header="pick a repo (type to filter, tab to select)" +s)
   [[ -z "$repo" ]] && return 1
 
+  local repo_root
+  repo_root=$(find_repo_root "$repo")
+  [[ -n "$repo_root" ]] || { echo "repo '$repo' not found under any ORCH_CODE_ROOTS" >&2; return 1; }
+
   local task
-  task=$(git -C "$HOME/code/$repo" branch --format='%(refname:short)' 2>/dev/null | \
+  task=$(git -C "$repo_root" branch --format='%(refname:short)' 2>/dev/null | \
     fzf --prompt="new task name> " --header="type new task/branch name (list is existing branches for reference)" \
         --print-query --bind "enter:print-query" | head -1)
   [[ -z "$task" ]] && return 1
 
-  (cd "$HOME/code/$repo" && new-task "$task") >&2
+  (cd "$repo_root" && new-task "$task") >&2
 
-  local wt="$HOME/worktrees/$repo/$task"
+  local wt
+  wt=$(find_worktree "$repo" "$task")
+  [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
   local hook_fn="ORCH_HOOK_${repo//[^a-zA-Z0-9]/_}"
   if declare -f "$hook_fn" >/dev/null 2>&1; then
     (cd "$wt" 2>/dev/null && "$hook_fn") >&2
@@ -158,14 +189,24 @@ fi
 
 repo=$(echo "$sel" | awk '{print $1}')
 task=$(echo "$sel" | awk '{print $2}')
-wt="$HOME/worktrees/$repo/$task"
+wt=$(find_worktree "$repo" "$task")
+[[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
 
 # Record "actually landed here via orch" for the LAST USED column — worktree
 # mtime only changes on file edits, not on cd/attach, so it drifts from what
 # the user actually did. This is the real signal.
 "$HELPER" touch-access "$repo" "$task"
 
-# tmux is required — ENTER always attach-or-creates the session for this
-# worktree by task name (no separate "idle" cd-only path). See named_session
-# and _orch_goto_session above.
+# alt-ENTER: cd only, no tmux session — for when you just want to look at
+# a folder (check status, poke around) without spawning/attaching an agent
+# session for it. Deliberately no fallback to the session path here: this
+# is the one case where NOT touching tmux is the whole point. orch.sh's
+# wrapper cd's into whatever this prints as the last stdout line.
+if [[ "$key" == "alt-enter" ]]; then
+  printf '%s\n' "$wt"
+  exit 0
+fi
+
+# Plain ENTER always attach-or-creates the session for this worktree by
+# task name. See named_session and _orch_goto_session above.
 _orch_goto_session "$(named_session "$repo" "$task")" "$wt"
