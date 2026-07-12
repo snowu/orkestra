@@ -35,7 +35,8 @@ else
 fi
 
 # Remove the keybind block installed by keybind-install.sh, if any.
-for cfg in "$HOME/.config/ghostty/config" \
+for cfg in "$HOME/.tmux.conf" \
+           "$HOME/.config/ghostty/config" \
            "$HOME/.config/kitty/kitty.conf" \
            "$HOME/.config/alacritty/alacritty.toml"; do
   [[ -f "$cfg" ]] || continue

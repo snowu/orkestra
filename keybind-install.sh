@@ -1,20 +1,52 @@
 #!/usr/bin/env bash
-# Adds a keybind (default ctrl+alt+o) that types `orch` + Enter into the
-# focused shell, for each supported terminal whose config dir already
-# exists:
-#   Ghostty   ~/.config/ghostty/config
-#   kitty     ~/.config/kitty/kitty.conf
-#   Alacritty ~/.config/alacritty/alacritty.toml
-# Usage: keybind-install.sh [CHORD]   (CHORD like "ctrl+alt+o", "super+o")
-# Idempotent: an existing "# >>> orch keybind >>>" block is replaced.
+# Wires a keybind that opens the `orch` picker, for whichever terminal(s)
+# you name.
+#
+# Usage: keybind-install.sh <terminal>[,<terminal>...] [CHORD] [TMUX_KEY]
+#   terminal: tmux | ghostty | kitty | alacritty
+#   CHORD:    e.g. ctrl+alt+o, super+o (default: ctrl+alt+o) — used by
+#             ghostty/kitty/alacritty.
+#   TMUX_KEY: single key pressed after the tmux prefix, e.g. o (default: o)
+#             — used only by tmux. Kept separate from CHORD so tmux's
+#             prefix-table binding never shares (or collides with) the
+#             standalone terminal-emulator chord.
+#
+# tmux: opens `orch` in a floating popup over whatever pane is focused, on
+#   prefix + TMUX_KEY (tmux's own prefix system, e.g. ctrl-b then the key —
+#   never fires unless you've pressed the prefix first, and never leaks
+#   into the pane's own program). Recommended.
+# Ghostty/kitty/Alacritty: injects `orch` + Enter into the focused shell
+#   (existing orch() wrapper's cd-on-exit applies). Config must already
+#   exist for that terminal, or this warns and fails for that terminal.
+#
+# Only terminals with their own built-in keybind engine are supported —
+# gnome-terminal and macOS Terminal.app have no such mechanism (they rely
+# on an external, desktop-environment-specific global-hotkey system, which
+# this script can't reliably configure). Wire those by hand in your WM/DE.
+#
+# Idempotent: rerunning (same or different chord/key) replaces the previous
+# binding for each terminal named, it never stacks duplicates.
 # Other terminals: add the equivalent yourself, or open a PR.
 set -eu
 
-CHORD="${1:-ctrl+alt+o}"
+usage() {
+  echo "Usage: keybind-install.sh <terminal>[,<terminal>...] [CHORD] [TMUX_KEY]" >&2
+  echo "  terminal: tmux | ghostty | kitty | alacritty" >&2
+  echo "  CHORD:    e.g. ctrl+alt+o (default: ctrl+alt+o) — non-tmux terminals" >&2
+  echo "  TMUX_KEY: single key after tmux prefix, e.g. o (default: o) — tmux only" >&2
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+TERMLIST="$1"
+CHORD="${2:-ctrl+alt+o}"
+TMUX_KEY="${3:-o}"
 FENCE_OPEN='# >>> orch keybind >>>'
 FENCE_CLOSE='# <<< orch keybind <<<'
 ERRORS=0
-INSTALLED=""
 
 # alacritty_mods_key <chord> — prints "Mod1|Mod2 KEY" (space-separated)
 alacritty_mods_key() {
@@ -49,12 +81,14 @@ remove_fence() {
   ' "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
-# add_keybind <config-dir> <config-file> <name> <payload...>
-add_keybind() {
+# add_inject_keybind <config-dir> <config-file> <name> <payload...>
+# config-dir "" means "no directory prerequisite" (used for tmux, whose
+# config file lives directly in $HOME, which always exists).
+add_inject_keybind() {
   local dir="$1" file="$2" name="$3"; shift 3
-  if [[ ! -d "$dir" ]]; then
-    echo "skip: $name (no $dir)"
-    return 0
+  if [[ -n "$dir" && ! -d "$dir" ]]; then
+    echo "WARNING: $name config dir not found ($dir) — skipping $name" >&2
+    ERRORS=1; return 0
   fi
   if ! { [[ -f "$file" ]] || : > "$file"; } 2>/dev/null; then
     echo "WARNING: cannot create $file — skipped $name" >&2
@@ -70,26 +104,73 @@ add_keybind() {
     ERRORS=1; return 0
   fi
   echo "installed: $name ($file)"
-  INSTALLED=1
 }
 
-read -r ALA_MODS ALA_KEY <<<"$(alacritty_mods_key "$CHORD")"
+add_tmux() {
+  if ! command -v tmux >/dev/null 2>&1; then
+    echo "WARNING: tmux not found on \$PATH — skipping tmux" >&2
+    ERRORS=1; return 0
+  fi
+  add_inject_keybind "" "$HOME/.tmux.conf" tmux \
+    "bind-key ${TMUX_KEY} display-popup -E orch"
+  # Reload live, if a tmux server is already running — `source-file` (unlike
+  # `source`, a shell builtin) is a tmux command; it applies the new binding
+  # to every attached client immediately, no restart needed.
+  if tmux list-sessions >/dev/null 2>&1; then
+    if tmux source-file "$HOME/.tmux.conf" >/dev/null 2>&1; then
+      echo "tmux: reloaded ~/.tmux.conf — the new binding is live now."
+    else
+      echo "WARNING: tmux is running but 'tmux source-file ~/.tmux.conf' failed — reload manually." >&2
+    fi
+  fi
+}
 
-add_keybind "$HOME/.config/ghostty" "$HOME/.config/ghostty/config" ghostty \
-  "keybind = ${CHORD}=text:orch\\n"
+add_ghostty() {
+  add_inject_keybind "$HOME/.config/ghostty" "$HOME/.config/ghostty/config" ghostty \
+    "keybind = ${CHORD}=text:orch\\n"
+}
 
-add_keybind "$HOME/.config/kitty" "$HOME/.config/kitty/kitty.conf" kitty \
-  "map ${CHORD} send_text all orch\\r"
+add_kitty() {
+  add_inject_keybind "$HOME/.config/kitty" "$HOME/.config/kitty/kitty.conf" kitty \
+    "map ${CHORD} send_text all orch\\r"
+}
 
-add_keybind "$HOME/.config/alacritty" "$HOME/.config/alacritty/alacritty.toml" alacritty \
-  '[[keyboard.bindings]]' \
-  "key = \"${ALA_KEY}\"" \
-  "mods = \"${ALA_MODS}\"" \
-  'chars = "orch\r"'
+add_alacritty() {
+  local mods key
+  read -r mods key <<<"$(alacritty_mods_key "$CHORD")"
+  add_inject_keybind "$HOME/.config/alacritty" "$HOME/.config/alacritty/alacritty.toml" alacritty \
+    '[[keyboard.bindings]]' \
+    "key = \"${key}\"" \
+    "mods = \"${mods}\"" \
+    'chars = "orch\r"'
+}
 
-echo "Chord: $CHORD"
-if [[ -z "$INSTALLED" && "$ERRORS" -eq 0 ]]; then
-  echo "No supported terminal config found (ghostty/kitty/alacritty) — nothing to do."
+IFS=',' read -r -a TERMS <<<"$TERMLIST"
+for term in "${TERMS[@]}"; do
+  case "$term" in
+    tmux)            add_tmux ;;
+    ghostty)         add_ghostty ;;
+    kitty)           add_kitty ;;
+    alacritty)       add_alacritty ;;
+    *)
+      echo "WARNING: unknown terminal '$term' (expected: tmux, ghostty, kitty, alacritty)" >&2
+      ERRORS=1
+      ;;
+  esac
+done
+
+if [[ "$TERMLIST" == *tmux* ]]; then
+  echo "tmux key: prefix + ${TMUX_KEY}"
 fi
-[[ -n "$INSTALLED" ]] && echo "Reload/restart your terminal to pick up the keybind."
+if [[ "$TERMLIST" =~ (ghostty|kitty|alacritty) ]]; then
+  echo "Chord: $CHORD"
+fi
+if [[ "$TERMLIST" == *ghostty* ]]; then
+  echo "Ghostty: press ctrl+shift+, INSIDE Ghostty (that's the reload_config keybind, not a shell command) or restart Ghostty to pick up the change. There's no way to reload it from the command line."
+fi
+if [[ "$TERMLIST" == *tmux* ]] && ! command -v tmux >/dev/null 2>&1; then
+  : # already warned above
+elif [[ "$TERMLIST" == *tmux* ]] && ! tmux list-sessions >/dev/null 2>&1; then
+  echo "tmux: no server running yet — the binding will apply next time you start tmux."
+fi
 exit "$ERRORS"

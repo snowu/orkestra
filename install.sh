@@ -51,22 +51,68 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   fi
 done
 
-if [[ "$KEYBIND" == "ask" ]]; then
-  if [[ -t 0 ]]; then
-    read -r -p "Install a terminal keybind for detected terminals (ghostty/kitty/alacritty)? [y/N] " reply || reply=n
-    [[ "$reply" == [yY]* ]] && KEYBIND=yes || KEYBIND=no
-  else
-    KEYBIND=no
+# ask_yn <prompt> <default: y|n> — strict y/Y/n/N/empty only, re-prompts
+# on anything else. Prints result via $REPLY_YN (y or n).
+ask_yn() {
+  local prompt="$1" default="$2" reply
+  while true; do
+    read -r -p "$prompt" reply || reply="$default"
+    case "$reply" in
+      y|Y) REPLY_YN=y; return ;;
+      n|N) REPLY_YN=n; return ;;
+      "")  REPLY_YN="$default"; return ;;
+      *)   echo "Please answer y or n." ;;
+    esac
+  done
+}
+
+GHOSTTY_PICKED=0
+if [[ "$KEYBIND" != "no" && -t 0 ]]; then
+  ask_yn "Use tmux popup for the orch keybind? (recommended — works safely inside vim, Claude Code, or anything else running in the pane) [Y/n] " y
+  if [[ "$REPLY_YN" == y ]]; then
+    TMUX_KEY=o
+    read -r -p "tmux key (after prefix)? [o]: " reply || reply=""
+    [[ -n "$reply" ]] && TMUX_KEY="$reply"
+    echo "Using tmux key: prefix + $TMUX_KEY"
+    "$DIR/keybind-install.sh" tmux ctrl+alt+o "$TMUX_KEY"
+    echo "Run 'tmux source-file ~/.tmux.conf' (or restart tmux) to pick this up."
   fi
+
+  ask_yn "Install a terminal-emulator keybind too? [y/N] " n
+  if [[ "$REPLY_YN" == y ]]; then
+    echo "Which terminal(s)? (comma-separated numbers)"
+    echo "  1) Ghostty"
+    echo "  2) kitty"
+    echo "  3) Alacritty"
+    read -r -p "> " picks || picks=""
+    TERMLIST=""
+    IFS=',' read -r -a PICK_NUMS <<<"$picks"
+    for n in "${PICK_NUMS[@]}"; do
+      n="$(echo "$n" | tr -d '[:space:]')"
+      case "$n" in
+        1) t=ghostty ;;
+        2) t=kitty ;;
+        3) t=alacritty ;;
+        *) t="" ;;
+      esac
+      [[ -n "$t" ]] && TERMLIST="${TERMLIST:+$TERMLIST,}$t"
+    done
+    if [[ -z "$TERMLIST" ]]; then
+      echo "No valid terminal selected — skipping terminal-emulator keybind install."
+    else
+      [[ "$TERMLIST" == *ghostty* ]] && GHOSTTY_PICKED=1
+      CHORD=ctrl+alt+o
+      read -r -p "Keybind chord? [ctrl+alt+o]: " reply || reply=""
+      [[ -n "$reply" ]] && CHORD="$reply"
+      echo "Using chord: $CHORD"
+      "$DIR/keybind-install.sh" "$TERMLIST" "$CHORD"
+    fi
+  fi
+elif [[ "$KEYBIND" != "no" ]]; then
+  echo "NOTE: no terminal to prompt for (non-interactive) — skipping keybind install."
 fi
-if [[ "$KEYBIND" == "yes" ]]; then
-  CHORD=ctrl+alt+o
-  if [[ -t 0 ]]; then
-    read -r -p "Keybind chord? [ctrl+alt+o]: " reply || reply=""
-    [[ -n "$reply" ]] && CHORD="$reply"
-  fi
-  echo "Using chord: $CHORD"
-  "$DIR/keybind-install.sh" "$CHORD"
+if [[ "$GHOSTTY_PICKED" -eq 1 ]]; then
+  echo "Ghostty: reload config (ctrl+shift+, / reload_config) or restart Ghostty to pick up the change."
 fi
 
 echo
