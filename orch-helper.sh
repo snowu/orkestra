@@ -261,6 +261,7 @@ rows() {
     case "$agent" in
       running) agent_color="$GREEN" ;;
       waiting) agent_color="$CYAN" ;;
+      input) agent_color="$YELLOW" ;;
     esac
 
     # repo/task (fields 1,2) are used verbatim by fzf's {1}/{2} for
