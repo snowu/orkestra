@@ -142,42 +142,51 @@ _orch_resolve_pane() {
 info_panel() {
   local repo=$1 task=$2
   local wt="$HOME/worktrees/$repo/$task"
+  # Always the real branch name — never collapse to "=" even if it happens
+  # to match the task/folder name, since that's misleading here (the row
+  # list already does the "=" shorthand, this panel is meant to be exact).
   local branch=$(git -C "$wt" branch --show-current 2>/dev/null)
-  [[ "$branch" == "$task" ]] && branch="="
 
   echo "branch: ${branch:-none}"
-  echo "path:   $wt"
+  echo "path:   ${wt/#$HOME/\~}"
   echo
   tail -n 5 /tmp/orch.log 2>/dev/null
 }
 
-# One-line tmux session summary, shown as the TMUX column's header (session
-# name, window count, attached state, running command) — tmux details live
-# here, not in info_panel, so they sit next to the pane content they
-# describe instead of off to the side.
-tmux_summary() {
+# Tmux session summary, shown as the TMUX column's header (session name,
+# window count, attached state, running command) — split across 2 lines so
+# it lines up row-for-row with info_panel's own 2 content lines (branch,
+# path). Tmux details live here, not in info_panel, so they sit next to the
+# pane content they describe instead of off to the side.
+tmux_summary_line1() {
+  local repo=$1 task=$2
+  local pane_info
+  pane_info=$(_orch_resolve_pane "$repo" "$task")
+  [[ -z "$pane_info" ]] && { echo "session: none"; return; }
+
+  local sess=$(echo "$pane_info" | cut -f1)
+  local nwin nclients
+  nwin=$(tmux list-windows -t "${sess%%:*}" 2>/dev/null | wc -l)
+  nclients=$(tmux list-clients -t "${sess%%:*}" 2>/dev/null | wc -l)
+  printf 'session: %s | windows: %s | %s' \
+    "${sess%%:*}" "$nwin" "$([[ $nclients -gt 0 ]] && echo attached || echo detached)"
+}
+
+tmux_summary_line2() {
   local repo=$1 task=$2
   local wt="$HOME/worktrees/$repo/$task"
   local pane_info
   pane_info=$(_orch_resolve_pane "$repo" "$task")
+  [[ -z "$pane_info" ]] && return
 
-  if [[ -z "$pane_info" ]]; then
-    echo "none"
-    return
-  fi
-
-  local sess win_cmd pid pane_cwd nwin nclients
-  sess=$(echo "$pane_info" | cut -f1)
+  local pane_cwd win_cmd pid
   pane_cwd=$(echo "$pane_info" | cut -f2)
   win_cmd=$(echo "$pane_info" | cut -f3)
   pid=$(echo "$pane_info" | cut -f4)
-  nwin=$(tmux list-windows -t "${sess%%:*}" 2>/dev/null | wc -l)
-  nclients=$(tmux list-clients -t "${sess%%:*}" 2>/dev/null | wc -l)
 
   local note=""
-  [[ "$pane_cwd" != "$wt" ]] && note=" (shared, cwd: $pane_cwd)"
-  printf '%s | %s windows | %s | running: %s%s' \
-    "${sess%%:*}" "$nwin" "$([[ $nclients -gt 0 ]] && echo attached || echo detached)" "$win_cmd" "$note"
+  [[ "$pane_cwd" != "$wt" ]] && note="  (shared, cwd: ${pane_cwd/#$HOME/\~})"
+  printf 'running: %s (pid %s)%s' "$win_cmd" "$pid" "$note"
 }
 
 # Right half of the preview split: the live tmux pane's actual content, if
@@ -224,28 +233,39 @@ split_preview() {
   local repo=$1 task=$2
   local cols=${FZF_PREVIEW_COLUMNS:-160}
   local lines=${FZF_PREVIEW_LINES:-20}
-  local half=$(( (cols - 3) / 2 ))
-  (( half < 20 )) && half=20
+  # INFO gets 40% of the width, TMUX header gets the remaining 60% — the "-1"
+  # reserves exactly one column for the "|" separator so left_w + 1 +
+  # right_w == cols precisely (a mismatch here is what caused the header's
+  # "|" to drift out of line with the divider below it).
+  local left_w=$(( cols * 4 / 10 ))
+  (( left_w < 20 )) && left_w=20
+  local right_w=$(( cols - left_w - 1 ))
 
   local info_text
-  info_text=$(info_panel "$repo" "$task" | cut -c1-"$half")
+  info_text=$(info_panel "$repo" "$task" | cut -c1-"$left_w")
   local info_line_count
   info_line_count=$(printf '%s\n' "$info_text" | wc -l)
 
-  # Top block: INFO on the left, tmux session summary heading the right side
-  # — only the header row is actually two columns; info_panel's own content
-  # just fills the left column for as many lines as it has.
-  local tmux_line
-  tmux_line=$(tmux_summary "$repo" "$task" | cut -c1-"$((cols - half - 1))")
-  printf '%-*s| %s\n' "$half" " INFO" "$tmux_line"
-  printf '%s+%s\n' "$(printf '%*s' "$half" '' | tr ' ' '-')" "$(printf '%*s' "$((cols - half - 1))" '' | tr ' ' '-')"
-  printf '%s\n' "$info_text" | awk -v w="$half" '{printf "%-"w"."w"s|\n", $0}'
-  echo
+  # Top block: INFO on the left, tmux summary on the right — its two lines
+  # (session/windows/attached, running cmd) line up with info_panel's first
+  # two content lines (branch, path) instead of one long line spanning past
+  # where INFO's content ends.
+  local tmux_l1 tmux_l2
+  tmux_l1=$(tmux_summary_line1 "$repo" "$task" | cut -c1-"$right_w")
+  tmux_l2=$(tmux_summary_line2 "$repo" "$task" | cut -c1-"$right_w")
 
-  # Full-width divider, then the live pane content spans the entire width.
+  printf '%-*s|%s\n' "$left_w" " INFO" " TMUX"
+  printf '%s+%s\n' "$(printf '%*s' "$left_w" '' | tr ' ' '-')" "$(printf '%*s' "$right_w" '' | tr ' ' '-')"
+  paste -d'|' \
+    <(printf '%s\n' "$info_text" | awk -v w="$left_w" '{printf "%-"w"."w"s\n", $0}' | head -2) \
+    <(printf '%s\n%s\n' "$tmux_l1" "$tmux_l2")
+  printf '%s\n' "$info_text" | tail -n +3 | awk -v w="$left_w" '{printf "%-"w"."w"s|\n", $0}'
+
+  # Full-width divider (no blank line before it), then the live pane content
+  # spans the entire width.
   printf '%s\n' "$(printf '%*s' "$cols" '' | tr ' ' '-')"
 
-  local n=$(( lines > info_line_count + 4 ? lines - info_line_count - 4 : 1 ))
+  local n=$(( lines > info_line_count + 3 ? lines - info_line_count - 3 : 1 ))
   pane_preview "$repo" "$task" "$n"
 }
 
