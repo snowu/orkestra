@@ -1,28 +1,28 @@
 # Agent state column
 
-`orch` shows a live per-worktree agent state (running/waiting/needs
+`ork` shows a live per-worktree agent state (running/waiting/needs
 input) in its picker, colored green/cyan/yellow. This is driven entirely by
-Claude Code hooks pushing state to `~/.cache/orch/agent-state/<tmux-session>`
-— `orch` itself just reads that file (see the `rows()` case in
-`orch-helper.sh` around line 262).
+Claude Code hooks pushing state to `~/.cache/ork/agent-state/<tmux-session>`
+— `ork` itself just reads that file (see the `rows()` case in
+`ork-helper.sh` around line 262).
 
 This is **not wired up by the installer on purpose** — it edits your global
 `~/.claude/settings.json`, which we don't want to touch automatically for
 other people's machines. Set it up manually if you want it; takes a couple
 minutes.
 
-If you're already on a recent-ish Claude Code version, the `orch-helper.sh`
+If you're already on a recent-ish Claude Code version, the `ork-helper.sh`
 side of this (reading the state file, coloring the column) works out of the
 box with no setup — it's just a no-op until something writes to
-`~/.cache/orch/agent-state/<session>`. The manual step below is only needed
+`~/.cache/ork/agent-state/<session>`. The manual step below is only needed
 to make Claude Code itself start writing that state.
 
 ## Setup
 
-1. `hooks/orch-agent-state.sh` in this repo is the script. Symlink or copy
+1. `hooks/ork-agent-state.sh` in this repo is the script. Symlink or copy
    it somewhere stable, e.g.:
    ```sh
-   ln -s "$(pwd)/hooks/orch-agent-state.sh" ~/.claude/hooks/orch-agent-state.sh
+   ln -s "$(pwd)/hooks/ork-agent-state.sh" ~/.claude/hooks/ork-agent-state.sh
    ```
 
 2. Add these hook entries to your `~/.claude/settings.json` (merge into
@@ -30,12 +30,12 @@ to make Claude Code itself start writing that state.
 
    ```json
    "hooks": {
-     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/orch-agent-state.sh running" }] }],
-     "PreToolUse":       [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/orch-agent-state.sh running" }] }],
-     "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/orch-agent-state.sh running" }] }],
-     "Stop":             [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/orch-agent-state.sh waiting" }] }],
-     "Notification":     [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/orch-agent-state.sh input" }] }],
-     "PermissionRequest":[{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/orch-agent-state.sh input" }] }]
+     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/ork-agent-state.sh running" }] }],
+     "PreToolUse":       [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/ork-agent-state.sh running" }] }],
+     "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/ork-agent-state.sh running" }] }],
+     "Stop":             [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/ork-agent-state.sh waiting" }] }],
+     "Notification":     [{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/ork-agent-state.sh input" }] }],
+     "PermissionRequest":[{ "hooks": [{ "type": "command", "command": "~/.claude/hooks/ork-agent-state.sh input" }] }]
    }
    ```
 
@@ -61,5 +61,5 @@ synchronous — no debounce, no stale lag in either direction.
 ## Uninstall
 
 Just remove the six hook entries from `~/.claude/settings.json` and delete
-the symlink. `orch` degrades gracefully — the STATE column just won't
+the symlink. `ork` degrades gracefully — the STATE column just won't
 update; nothing else depends on it.

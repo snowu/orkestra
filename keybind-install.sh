@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Wires a keybind that opens the `orch` picker, for whichever terminal(s)
+# Wires a keybind that opens the `ork` picker, for whichever terminal(s)
 # you name.
 #
 # Usage: keybind-install.sh <terminal>[,<terminal>...] [CHORD] [TMUX_KEY]
@@ -11,12 +11,12 @@
 #             prefix-table binding never shares (or collides with) the
 #             standalone terminal-emulator chord.
 #
-# tmux: opens `orch` in a floating popup over whatever pane is focused, on
+# tmux: opens `ork` in a floating popup over whatever pane is focused, on
 #   prefix + TMUX_KEY (tmux's own prefix system, e.g. ctrl-b then the key —
 #   never fires unless you've pressed the prefix first, and never leaks
 #   into the pane's own program). Recommended.
-# Ghostty/kitty/Alacritty: injects `orch` + Enter into the focused shell
-#   (existing orch() wrapper's cd-on-exit applies). Config must already
+# Ghostty/kitty/Alacritty: injects `ork` + Enter into the focused shell
+#   (existing ork() wrapper's cd-on-exit applies). Config must already
 #   exist for that terminal, or this warns and fails for that terminal.
 #
 # Only terminals with their own built-in keybind engine are supported —
@@ -44,8 +44,8 @@ fi
 TERMLIST="$1"
 CHORD="${2:-ctrl+alt+o}"
 TMUX_KEY="${3:-o}"
-FENCE_OPEN='# >>> orch keybind >>>'
-FENCE_CLOSE='# <<< orch keybind <<<'
+FENCE_OPEN='# >>> ork keybind >>>'
+FENCE_CLOSE='# <<< ork keybind <<<'
 ERRORS=0
 
 # alacritty_mods_key <chord> — prints "Mod1|Mod2 KEY" (space-separated)
@@ -116,12 +116,12 @@ add_tmux() {
   # itself no matter the -w/-h size (confirmed live, and there's no
   # border-removal flag until tmux 3.3+). "When the shell command
   # completes, the window closes" (tmux(1)) — no manual cleanup needed;
-  # orch exiting (after ENTER/ctrl-x) closes this window automatically.
+  # ork exiting (after ENTER/ctrl-x) closes this window automatically.
   # A window is a real part of the session, not a popup's ephemeral
   # overlay, so switch-client from inside it resolves to the real client
-  # on its own — no ORCH_TMUX_CLIENT targeting workaround needed here.
+  # on its own — no ORK_TMUX_CLIENT targeting workaround needed here.
   add_inject_keybind "" "$HOME/.tmux.conf" tmux \
-    "bind-key ${TMUX_KEY} new-window -n orch orch"
+    "bind-key ${TMUX_KEY} new-window -n ork ork"
   # Reload live, if a tmux server is already running — `source-file` (unlike
   # `source`, a shell builtin) is a tmux command; it applies the new binding
   # to every attached client immediately, no restart needed.
@@ -136,12 +136,12 @@ add_tmux() {
 
 add_ghostty() {
   add_inject_keybind "$HOME/.config/ghostty" "$HOME/.config/ghostty/config" ghostty \
-    "keybind = ${CHORD}=text:orch\\n"
+    "keybind = ${CHORD}=text:ork\\n"
 }
 
 add_kitty() {
   add_inject_keybind "$HOME/.config/kitty" "$HOME/.config/kitty/kitty.conf" kitty \
-    "map ${CHORD} send_text all orch\\r"
+    "map ${CHORD} send_text all ork\\r"
 }
 
 add_alacritty() {
@@ -151,7 +151,7 @@ add_alacritty() {
     '[[keyboard.bindings]]' \
     "key = \"${key}\"" \
     "mods = \"${mods}\"" \
-    'chars = "orch\r"'
+    'chars = "ork\r"'
 }
 
 IFS=',' read -r -a TERMS <<<"$TERMLIST"

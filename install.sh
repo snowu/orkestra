@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Installs worktree-orch:
-#   - orch, orch-helper.sh -> ~/.local/bin (real executable, on $PATH like mise/nvim)
-#   - worktree-tasks.sh, orch.sh -> ~/scripts (sourced from your shell rc)
-#   - ~/.orch.conf from the example, with your code/worktree roots filled in
+# Installs orkestra:
+#   - ork, ork-helper.sh -> ~/.local/bin (real executable, on $PATH like mise/nvim)
+#   - worktree-tasks.sh, ork.sh -> ~/scripts (sourced from your shell rc)
+#   - ~/.ork.conf from the example, with your code/worktree roots filled in
 # Works with bash or zsh.
 set -eu
 
@@ -18,7 +18,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DEST="$HOME/.local/bin"
 SCRIPTS_DEST="$HOME/scripts"
 
-# Same palette as orch-helper.sh, so the install experience matches the
+# Same palette as ork-helper.sh, so the install experience matches the
 # picker's own look. Disabled automatically when stdout isn't a terminal
 # (piped install, CI) so logs don't fill up with escape codes.
 if [[ -t 1 ]]; then
@@ -63,19 +63,19 @@ ask_yn() {
   done
 }
 
-section "worktree-orch install"
+section "orkestra install"
 
 # ── 1. Install the executables ─────────────────────────────────────────
 subsection "Installing scripts"
 mkdir -p "$BIN_DEST" "$SCRIPTS_DEST"
 
-cp "$DIR/orch" "$BIN_DEST/orch"
-cp "$DIR/orch-helper.sh" "$BIN_DEST/orch-helper.sh"
-chmod +x "$BIN_DEST/orch" "$BIN_DEST/orch-helper.sh"
+cp "$DIR/ork" "$BIN_DEST/ork"
+cp "$DIR/ork-helper.sh" "$BIN_DEST/ork-helper.sh"
+chmod +x "$BIN_DEST/ork" "$BIN_DEST/ork-helper.sh"
 
 cp "$DIR/worktree-tasks.sh" "$SCRIPTS_DEST/worktree-tasks.sh"
-cp "$DIR/orch.sh" "$SCRIPTS_DEST/orch.sh"
-ok "orch -> $BIN_DEST, worktree-tasks.sh/orch.sh -> $SCRIPTS_DEST"
+cp "$DIR/ork.sh" "$SCRIPTS_DEST/ork.sh"
+ok "ork -> $BIN_DEST, worktree-tasks.sh/ork.sh -> $SCRIPTS_DEST"
 
 case ":$PATH:" in
   *":$BIN_DEST:"*) ;;
@@ -88,40 +88,40 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     echo "source ~/scripts/worktree-tasks.sh" >> "$rc"
     ok "Added 'source ~/scripts/worktree-tasks.sh' to $rc"
   fi
-  if ! grep -q "source ~/scripts/orch.sh" "$rc" 2>/dev/null; then
-    echo "source ~/scripts/orch.sh" >> "$rc"
-    ok "Added 'source ~/scripts/orch.sh' to $rc"
+  if ! grep -q "source ~/scripts/ork.sh" "$rc" 2>/dev/null; then
+    echo "source ~/scripts/ork.sh" >> "$rc"
+    ok "Added 'source ~/scripts/ork.sh' to $rc"
   fi
 done
 
 # ── 2. Configure where your worktrees live ──────────────────────────────
-subsection "Configuring ~/.orch.conf"
+subsection "Configuring ~/.ork.conf"
 
-CONF="$HOME/.orch.conf"
+CONF="$HOME/.ork.conf"
 CONF_EXISTED=0
 [[ -f "$CONF" ]] && CONF_EXISTED=1
 
 if [[ "$CONF_EXISTED" -eq 0 ]]; then
-  cp "$DIR/orch.conf.example" "$CONF"
-elif grep -q '^ORCH_CODE_ROOTS=' "$CONF" 2>/dev/null; then
-  # Repos are no longer configured — orch scans $HOME live instead — so a
-  # leftover ORCH_CODE_ROOTS from an older install is now dead config.
+  cp "$DIR/ork.conf.example" "$CONF"
+elif grep -q '^ORK_CODE_ROOTS=' "$CONF" 2>/dev/null; then
+  # Repos are no longer configured — ork scans $HOME live instead — so a
+  # leftover ORK_CODE_ROOTS from an older install is now dead config.
   # Strip it so it doesn't sit there implying it still does something.
-  sed -i.bak '/^ORCH_CODE_ROOTS=/d' "$CONF"
+  sed -i.bak '/^ORK_CODE_ROOTS=/d' "$CONF"
   rm -f "$CONF.bak"
-  note "Removed ORCH_CODE_ROOTS from $CONF — repos are now discovered by"
+  note "Removed ORK_CODE_ROOTS from $CONF — repos are now discovered by"
   note "scanning \$HOME live, no config needed for that anymore."
 fi
 
-# ORCH_HOOK_<repo> bash functions are no longer read by orch — replaced by
-# a JSON file (see orch.conf.example) so a hooks file can't execute
+# ORK_HOOK_<repo> bash functions are no longer read by ork — replaced by
+# a JSON file (see ork.conf.example) so a hooks file can't execute
 # anything beyond the one command string it declares. Flag any leftover
 # functions from an older install so they don't just silently stop firing.
-if [[ "$CONF_EXISTED" -eq 1 ]] && grep -q '^ORCH_HOOK_[a-zA-Z0-9_]*() {' "$CONF" 2>/dev/null; then
+if [[ "$CONF_EXISTED" -eq 1 ]] && grep -q '^ORK_HOOK_[a-zA-Z0-9_]*() {' "$CONF" 2>/dev/null; then
   echo
-  note "Found ORCH_HOOK_<repo>() functions in $CONF — orch no longer reads"
-  note "these; they've stopped firing. Move them to ~/.config/orch/hooks.json"
-  note "(plain JSON, one command string per repo — see orch.conf.example for"
+  note "Found ORK_HOOK_<repo>() functions in $CONF — ork no longer reads"
+  note "these; they've stopped firing. Move them to ~/.config/ork/hooks.json"
+  note "(plain JSON, one command string per repo — see ork.conf.example for"
   note "the format), then delete the old functions from $CONF."
 fi
 
@@ -140,7 +140,7 @@ prompt_dirs() {
   # captured by `mapfile < <(prompt_dirs ...)` at the call site, so
   # anything printed here on stdout besides the final path list would leak
   # straight into the resulting array (confirmed live: the label/hint text
-  # ended up as bogus entries in ORCH_CODE_ROOTS).
+  # ended up as bogus entries in ORK_CODE_ROOTS).
   printf '%s%s%s\n' "$CYAN" "$label" "$RESET" >&2
 
   if command -v fzf >/dev/null 2>&1 && fzf --help 2>&1 | grep -q -- '--walker'; then
@@ -148,11 +148,11 @@ prompt_dirs() {
     local out
     # fzf's built-in --walker has no depth limit of its own — an unbounded
     # walk of all of $HOME can take several seconds on a big/slow disk
-    # (same latency issue orch's own repo scan hit — see orch's
+    # (same latency issue ork's own repo scan hit — see ork's
     # all_repo_dirs comment). Feed it an explicit depth-bounded `find` via
     # FZF_DEFAULT_COMMAND instead of using --walker directly, capped to the
-    # same ORCH_SCAN_MAXDEPTH default (3) the rest of orch uses.
-    out=$(FZF_DEFAULT_COMMAND="find '$HOME' -maxdepth ${ORCH_SCAN_MAXDEPTH:-3} -type d 2>/dev/null" \
+    # same ORK_SCAN_MAXDEPTH default (3) the rest of ork uses.
+    out=$(FZF_DEFAULT_COMMAND="find '$HOME' -maxdepth ${ORK_SCAN_MAXDEPTH:-3} -type d 2>/dev/null" \
       fzf --multi --print-query \
       --bind 'tab:toggle+down,space:toggle+down' \
       --header "$label (tab: multi-select, enter: confirm)" \
@@ -165,7 +165,7 @@ prompt_dirs() {
     # that partial query non-empty on line 1, and the old "only drop line 1
     # if it's blank" check kept it as the answer, silently ignoring the
     # actual selection underneath (a folder named after the leftover
-    # partial query got created and saved into ORCH_WORKTREES_ROOTS instead
+    # partial query got created and saved into ORK_WORKTREES_ROOTS instead
     # of the folder actually picked). Line 1 is ONLY the real answer when
     # there's NOTHING selected below it — i.e. you typed a brand-new path
     # and hit Enter with no match highlighted/selected.
@@ -198,12 +198,12 @@ prompt_dirs() {
 
 reconfigure_roots=1
 if [[ "$CONF_EXISTED" -eq 1 ]]; then
-  existing_wt=$(grep '^ORCH_WORKTREES_ROOTS=' "$CONF" 2>/dev/null || true)
+  existing_wt=$(grep '^ORK_WORKTREES_ROOTS=' "$CONF" 2>/dev/null || true)
   echo
-  note "~/.orch.conf already exists."
+  note "~/.ork.conf already exists."
   [[ -n "$existing_wt" ]] && dim "  $existing_wt"
   if [[ -t 0 ]]; then
-    ask_yn "Reconfigure ORCH_WORKTREES_ROOTS now? [y/N] " n
+    ask_yn "Reconfigure ORK_WORKTREES_ROOTS now? [y/N] " n
     [[ "$REPLY_YN" == y ]] || reconfigure_roots=0
   else
     reconfigure_roots=0
@@ -213,7 +213,7 @@ fi
 
 if [[ "$reconfigure_roots" -eq 1 && -t 0 ]]; then
   echo
-  dim "orch needs to know where to put new task worktrees (repos themselves"
+  dim "ork needs to know where to put new task worktrees (repos themselves"
   dim "are found automatically — no config needed for those). This doesn't"
   dim "have to be ~/worktrees — pick whatever layout you already use. You"
   dim "can list more than one; the FIRST entry is where new ones get created."
@@ -231,18 +231,18 @@ if [[ "$reconfigure_roots" -eq 1 && -t 0 ]]; then
     printf '%s' "$out"
   }
 
-  wt_line="ORCH_WORKTREES_ROOTS=$(fmt_array "${wt_roots[@]}")"
+  wt_line="ORK_WORKTREES_ROOTS=$(fmt_array "${wt_roots[@]}")"
 
   # Substitutes the line in-place if the key already exists (works for both
-  # a fresh copy of orch.conf.example AND a pre-existing conf that already
+  # a fresh copy of ork.conf.example AND a pre-existing conf that already
   # has the key, e.g. from a previous run of this same prompt); otherwise
-  # appends it — covers a pre-existing ~/.orch.conf from before this
+  # appends it — covers a pre-existing ~/.ork.conf from before this
   # feature existed, which has neither key yet.
   python3 - "$CONF" "$wt_line" <<'PYEOF'
 import re, sys
 conf_path, wt_line = sys.argv[1], sys.argv[2]
 text = open(conf_path).read()
-pattern = r'^ORCH_WORKTREES_ROOTS=.*$'
+pattern = r'^ORK_WORKTREES_ROOTS=.*$'
 if re.search(pattern, text, flags=re.M):
     text = re.sub(pattern, wt_line, text, count=1, flags=re.M)
 else:
@@ -258,21 +258,21 @@ PYEOF
   ok "Wrote to $CONF:"
   dim "  $wt_line"
 elif [[ "$reconfigure_roots" -eq 1 ]]; then
-  note "Non-interactive — created $CONF with default ORCH_WORKTREES_ROOTS (~/worktrees)."
-  note "Edit ORCH_WORKTREES_ROOTS in $CONF to change it."
+  note "Non-interactive — created $CONF with default ORK_WORKTREES_ROOTS (~/worktrees)."
+  note "Edit ORK_WORKTREES_ROOTS in $CONF to change it."
 fi
 
 echo
-dim "Review $CONF for ORCH_FAVORITES."
-dim "Per-repo setup hooks go in ~/.config/orch/hooks.json — see"
-dim "orch.conf.example for the format."
+dim "Review $CONF for ORK_FAVORITES."
+dim "Per-repo setup hooks go in ~/.config/ork/hooks.json — see"
+dim "ork.conf.example for the format."
 
 # ── 3. Keybinds ─────────────────────────────────────────────────────────
 subsection "Keybinds"
 
 if [[ "$KEYBIND" != "no" && -t 0 ]]; then
   if command -v tmux >/dev/null 2>&1; then
-    ask_yn "Add a tmux keybind for orch (prefix + key opens it in a pane on top of current pan, same rules as other tmux commands)? [Y/n] " y
+    ask_yn "Add a tmux keybind for ork (prefix + key opens it in a pane on top of current pan, same rules as other tmux commands)? [Y/n] " y
     if [[ "$REPLY_YN" == y ]]; then
       TMUX_KEY=o
       dim "tmux uses ITS OWN prefix (ctrl-b by default) — this is just the single"

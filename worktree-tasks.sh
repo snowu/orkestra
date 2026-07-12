@@ -1,4 +1,4 @@
-# Minimal worktree lifecycle helpers used by agent-orch.zsh's new-task/end-task
+# Minimal worktree lifecycle helpers used by agent-ork.zsh's new-task/end-task
 # flows.
 
 new-task() {
@@ -18,8 +18,8 @@ new-task() {
   git worktree prune
 
   local REPO_NAME=$(basename "$REPO_ROOT")
-  [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
-  local WORKTREE_ROOT="${ORCH_WORKTREES_ROOTS[0]:-$HOME/worktrees}"
+  [[ -f "$HOME/.ork.conf" ]] && source "$HOME/.ork.conf"
+  local WORKTREE_ROOT="${ORK_WORKTREES_ROOTS[0]:-$HOME/worktrees}"
   local WORKTREE_BASE="$WORKTREE_ROOT/$REPO_NAME"
 
   # A hardcoded "master" broke on any repo whose default branch is "main"
@@ -52,10 +52,10 @@ new-task() {
 end-task() {
   local TASK_NAME=$1
 
-  [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
+  [[ -f "$HOME/.ork.conf" ]] && source "$HOME/.ork.conf"
   if [ -z "$TASK_NAME" ]; then
     local root in_worktree=0
-    for root in "${ORCH_WORKTREES_ROOTS[@]:-$HOME/worktrees}"; do
+    for root in "${ORK_WORKTREES_ROOTS[@]:-$HOME/worktrees}"; do
       [[ "$PWD" == "$root/"* ]] && { in_worktree=1; break; }
     done
     if [[ "$in_worktree" -eq 1 ]]; then
@@ -74,8 +74,8 @@ end-task() {
   fi
 
   local REPO_NAME=$(basename "$REPO_ROOT")
-  [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
-  local WORKTREE_ROOT="${ORCH_WORKTREES_ROOTS[0]:-$HOME/worktrees}"
+  [[ -f "$HOME/.ork.conf" ]] && source "$HOME/.ork.conf"
+  local WORKTREE_ROOT="${ORK_WORKTREES_ROOTS[0]:-$HOME/worktrees}"
   local WORKTREE_PATH="$WORKTREE_ROOT/$REPO_NAME/$TASK_NAME"
 
   if [[ "$PWD" == "$WORKTREE_PATH"* ]]; then
@@ -83,7 +83,7 @@ end-task() {
     # WORKTREE's own root when run from inside one, not the main checkout —
     # cd'ing there would just land back in the directory we're about to
     # remove. The main checkout is always the first entry `git worktree
-    # list` prints, regardless of where ORCH_CODE_ROOTS/ORCH_WORKTREES_ROOTS
+    # list` prints, regardless of where ORK_CODE_ROOTS/ORK_WORKTREES_ROOTS
     # or any other config says repos/worktrees live.
     local main_checkout
     main_checkout=$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null | \
