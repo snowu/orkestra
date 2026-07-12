@@ -113,6 +113,18 @@ elif grep -q '^ORCH_CODE_ROOTS=' "$CONF" 2>/dev/null; then
   note "scanning \$HOME live, no config needed for that anymore."
 fi
 
+# ORCH_HOOK_<repo> bash functions are no longer read by orch — replaced by
+# a JSON file (see orch.conf.example) so a hooks file can't execute
+# anything beyond the one command string it declares. Flag any leftover
+# functions from an older install so they don't just silently stop firing.
+if [[ "$CONF_EXISTED" -eq 1 ]] && grep -q '^ORCH_HOOK_[a-zA-Z0-9_]*() {' "$CONF" 2>/dev/null; then
+  echo
+  note "Found ORCH_HOOK_<repo>() functions in $CONF — orch no longer reads"
+  note "these; they've stopped firing. Move them to ~/.config/orch/hooks.json"
+  note "(plain JSON, one command string per repo — see orch.conf.example for"
+  note "the format), then delete the old functions from $CONF."
+fi
+
 # Prompts for one or more existing directories. Uses fzf's own directory
 # walker (multi-select: tab/space, enter to confirm) — 0.36+ has --walker,
 # and this repo already requires 0.74 (see README/fzf pin). --print-query
@@ -251,7 +263,9 @@ elif [[ "$reconfigure_roots" -eq 1 ]]; then
 fi
 
 echo
-dim "Review $CONF for ORCH_FAVORITES and per-repo ORCH_HOOK_<repo> setup hooks."
+dim "Review $CONF for ORCH_FAVORITES."
+dim "Per-repo setup hooks go in ~/.config/orch/hooks.json — see"
+dim "orch.conf.example for the format."
 
 # ── 3. Keybinds ─────────────────────────────────────────────────────────
 subsection "Keybinds"

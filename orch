@@ -12,6 +12,28 @@ HELPER="$SCRIPT_DIR/orch-helper.sh"
 
 [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
 
+# ORCH_HOOKS_CONFIG: JSON file mapping repo folder name -> shell command,
+# run (cwd = new worktree) right after `new-task` creates it. Kept in
+# ~/.config (XDG-conventional, separate from ~/.orch.conf) since it's
+# arbitrary shell commands rather than shell config — plain JSON also means
+# it's not sourced/eval'd as bash, so a hooks file someone shares/pastes
+# can't silently run more than the one command it declares.
+ORCH_HOOKS_CONFIG="${ORCH_HOOKS_CONFIG:-$HOME/.config/orch/hooks.json}"
+
+# run_repo_hook <repo> <worktree-dir>: looks up "$repo" in ORCH_HOOKS_CONFIG
+# and runs its command string with cwd set to the worktree. No-ops quietly
+# if the config file is missing, unparsable, or has no entry for this repo
+# — hooks are optional, most repos won't have one.
+run_repo_hook() {
+  local repo="$1" wt="$2"
+  [[ -f "$ORCH_HOOKS_CONFIG" ]] || return 0
+  command -v jq >/dev/null 2>&1 || { echo "orch: jq not found, skipping hook for '$repo'" >&2; return 0; }
+  local cmd
+  cmd=$(jq -r --arg repo "$repo" '.[$repo] // empty' "$ORCH_HOOKS_CONFIG" 2>/dev/null)
+  [[ -n "$cmd" ]] || return 0
+  (cd "$wt" 2>/dev/null && bash -c "$cmd") >&2
+}
+
 # ORCH_WORKTREES_ROOTS: see orch-helper.sh for the full explanation —
 # defaults to the original ~/worktrees layout. Repos are discovered by
 # scanning $HOME live — no ORCH_CODE_ROOTS to configure.
@@ -212,10 +234,7 @@ new_task() {
   local wt
   wt=$(find_worktree "$repo" "$task")
   [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
-  local hook_fn="ORCH_HOOK_${repo//[^a-zA-Z0-9]/_}"
-  if declare -f "$hook_fn" >/dev/null 2>&1; then
-    (cd "$wt" 2>/dev/null && "$hook_fn") >&2
-  fi
+  run_repo_hook "$repo" "$wt"
 
   # Without this, a freshly created task shows up at the bottom of the list
   # (sorted by last-used-via-orch) the very next time orch runs, even though

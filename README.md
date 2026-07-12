@@ -33,6 +33,7 @@ worktrees + tmux. Built on `fzf` + `tmux`. Ships as a standalone executable
 - `tmux`, `fzf` — both required, no fallback without them
 - `bash` or `zsh`
 - git (worktrees)
+- `jq` — only needed if you use per-repo setup hooks (`~/.config/orch/hooks.json`)
 
 ## Install
 
@@ -68,19 +69,26 @@ exist, it doesn't care how they're implemented.
 ```sh
 # Repos shown first in the ctrl-n repo picker.
 ORCH_FAVORITES=(my-backend my-frontend)
+```
 
-# Optional: runs after `new-task` creates a worktree for that repo (cwd =
-# the new worktree). Function name = repo folder name, non-alnum -> "_".
-ORCH_HOOK_my_backend() {
-  cp -rpvu "$HOME/code/my-backend/infra" .
-}
+### Per-repo setup hooks — `~/.config/orch/hooks.json`
 
-ORCH_HOOK_my_frontend() {
-  bun install
+Optional: runs a shell command after `new-task` creates a worktree for that
+repo (cwd = the new worktree). Kept as plain JSON in its own file (not
+shell-sourced like `~/.orch.conf`) so a hooks file you copy from elsewhere
+can't execute anything beyond the one command string it declares for a
+given repo.
+
+```json
+{
+  "my-backend": "cp -rpvu \"$HOME/code/my-backend/infra\" .",
+  "my-frontend": "bun install"
 }
 ```
 
-Repos without a matching `ORCH_HOOK_*` just skip the hook step.
+Key = repo folder basename. Repos without a matching key just skip the hook
+step. Point at a different file with `ORCH_HOOKS_CONFIG` in `~/.orch.conf`.
+Requires `jq`.
 
 ### Session naming
 

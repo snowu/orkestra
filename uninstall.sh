@@ -28,8 +28,8 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
 done
 
 if [[ "$PURGE_CONFIG" -eq 1 ]]; then
-  rm -f "$HOME/.orch.conf"
-  echo "Removed ~/.orch.conf"
+  rm -f "$HOME/.orch.conf" "$HOME/.config/orch/hooks.json"
+  echo "Removed ~/.orch.conf, ~/.config/orch/hooks.json"
 elif [[ -f "$HOME/.orch.conf" ]]; then
   # Strip only the ORCH_WORKTREES_ROOTS line install.sh wrote (plus a
   # leftover ORCH_CODE_ROOTS from an older install, if present — that key
