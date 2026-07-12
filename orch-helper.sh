@@ -225,6 +225,10 @@ tmux_summary_line2() {
 # the caller to whatever actually fits, otherwise a later `head` on top of a
 # fixed "last 40" tail just shows an arbitrary earlier slice, not the true
 # bottom of the pane).
+# No rewrapping needed: with the preview window's border removed
+# (border-none), its width matches the real pane width exactly, so tmux's
+# own wrapping is already correct — re-wrapping was only a workaround for
+# the border eating a couple of columns.
 pane_preview() {
   local repo=$1 task=$2 want=${3:-40}
   local pane_info
@@ -261,6 +265,11 @@ split_preview() {
   local repo=$1 task=$2
   local cols=${FZF_PREVIEW_COLUMNS:-160}
   local lines=${FZF_PREVIEW_LINES:-20}
+
+  # border-none removed all visual separation between the list above and
+  # this preview pane — draw one line of our own as the boundary.
+  printf '%s\n' "$(printf '%*s' "$cols" '' | tr ' ' '-')"
+
   # INFO gets 40% of the width, TMUX header gets the remaining 60% — the "-1"
   # reserves exactly one column for the "|" separator so left_w + 1 +
   # right_w == cols precisely (a mismatch here is what caused the header's
@@ -293,7 +302,7 @@ split_preview() {
   # spans the entire width.
   printf '%s\n' "$(printf '%*s' "$cols" '' | tr ' ' '-')"
 
-  local n=$(( lines > info_line_count + 3 ? lines - info_line_count - 3 : 1 ))
+  local n=$(( lines > info_line_count + 4 ? lines - info_line_count - 4 : 1 ))
   pane_preview "$repo" "$task" "$n"
 }
 

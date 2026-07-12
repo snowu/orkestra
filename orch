@@ -34,7 +34,7 @@ sel=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline 
   --bind "ctrl-x:execute($HELPER confirm-end-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-r:reload($HELPER rows)" \
   --bind "?:toggle-preview" \
-  --preview-window "down,75%,wrap" \
+  --preview-window "down,70%,wrap,border-none" \
   --expect "alt-enter" \
   --preview "$HELPER split-preview {1} {2}")
 
