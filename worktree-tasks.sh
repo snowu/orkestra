@@ -18,7 +18,9 @@ new-task() {
   git worktree prune
 
   local REPO_NAME=$(basename "$REPO_ROOT")
-  local WORKTREE_BASE=~/worktrees/$REPO_NAME
+  [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
+  local WORKTREE_ROOT="${ORCH_WORKTREES_ROOTS[0]:-$HOME/worktrees}"
+  local WORKTREE_BASE="$WORKTREE_ROOT/$REPO_NAME"
 
   mkdir -p "$WORKTREE_BASE"
   git worktree add "$WORKTREE_BASE/$TASK_NAME" -b "$TASK_NAME" master
@@ -35,8 +37,13 @@ new-task() {
 end-task() {
   local TASK_NAME=$1
 
+  [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
   if [ -z "$TASK_NAME" ]; then
-    if [[ "$PWD" == *"/worktrees/"* ]]; then
+    local root in_worktree=0
+    for root in "${ORCH_WORKTREES_ROOTS[@]:-$HOME/worktrees}"; do
+      [[ "$PWD" == "$root/"* ]] && { in_worktree=1; break; }
+    done
+    if [[ "$in_worktree" -eq 1 ]]; then
       TASK_NAME=$(basename "$PWD")
     else
       echo "Usage: end-task <task-name>"
@@ -52,10 +59,12 @@ end-task() {
   fi
 
   local REPO_NAME=$(basename "$REPO_ROOT")
-  local WORKTREE_PATH=~/worktrees/$REPO_NAME/$TASK_NAME
+  [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
+  local WORKTREE_ROOT="${ORCH_WORKTREES_ROOTS[0]:-$HOME/worktrees}"
+  local WORKTREE_PATH="$WORKTREE_ROOT/$REPO_NAME/$TASK_NAME"
 
   if [[ "$PWD" == "$WORKTREE_PATH"* ]]; then
-    cd ~/code/$REPO_NAME 2>/dev/null || cd ~
+    cd "${ORCH_CODE_ROOTS[0]:-$HOME/code}/$REPO_NAME" 2>/dev/null || cd ~
   fi
 
   git worktree remove "$WORKTREE_PATH" --force 2>/dev/null
