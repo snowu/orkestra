@@ -12,16 +12,60 @@ HELPER="$SCRIPT_DIR/orch-helper.sh"
 
 [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
 
-# ORCH_CODE_ROOTS / ORCH_WORKTREES_ROOTS: see orch-helper.sh for the full
-# explanation — defaults preserve the original ~/code, ~/worktrees layout.
-ORCH_CODE_ROOTS=("${ORCH_CODE_ROOTS[@]:-$HOME/code}")
-ORCH_WORKTREES_ROOTS=("${ORCH_WORKTREES_ROOTS[@]:-$HOME/worktrees}")
+# ORCH_WORKTREES_ROOTS: see orch-helper.sh for the full explanation —
+# defaults to the original ~/worktrees layout. Repos are discovered by
+# scanning $HOME live — no ORCH_CODE_ROOTS to configure.
+#
+# all_repo_dirs/find_repo_root are duplicated in orch-helper.sh rather than
+# sourced from there — orch-helper.sh ends in its own `case "$1" in ...
+# esac` dispatch (it's meant to run standalone via fzf's execute()/reload(),
+# never sourced), so `source`-ing it here would also run that dispatch
+# with orch's own $1, not the intended subcommand. Keep the two prune
+# lists/find expressions identical if you change one.
+_ORCH_SCAN_PRUNE=(node_modules .cache vendor dist build target .venv venv __pycache__ .terraform)
+
+# Scanning $HOME for .git dirs takes anywhere from under a second to well
+# over ten, depending on what else is hitting disk at the time (confirmed
+# live: identical `find` invocations back-to-back ranged 0.7s-17s on the
+# same machine, page-cache eviction from unrelated activity) — with no
+# feedback, ctrl-n just looked frozen. Cache the result on disk for 60s so
+# repeat ctrl-n presses in the same sitting are instant, and print a visible
+# "scanning" message before any cache miss so a slow one doesn't look like
+# a hang.
+_ORCH_REPO_CACHE="$HOME/.cache/orch/repo-scan"
+_ORCH_REPO_CACHE_TTL=60
+
+all_repo_dirs() {
+  mkdir -p "$(dirname "$_ORCH_REPO_CACHE")"
+  local age=999999
+  if [[ -f "$_ORCH_REPO_CACHE" ]]; then
+    age=$(( $(date +%s) - $(stat -c '%Y' "$_ORCH_REPO_CACHE" 2>/dev/null || echo 0) ))
+  fi
+  if (( age <= _ORCH_REPO_CACHE_TTL )); then
+    cat "$_ORCH_REPO_CACHE"
+    return
+  fi
+
+  echo "Scanning \$HOME for repos... (cached for ${_ORCH_REPO_CACHE_TTL}s after this)" >&2
+  local prune_expr=(-name "${_ORCH_SCAN_PRUNE[0]}") name
+  for name in "${_ORCH_SCAN_PRUNE[@]:1}"; do
+    prune_expr+=(-o -name "$name")
+  done
+  # -maxdepth 3 covers $HOME/repo and $HOME/group/repo (.git itself is one
+  # level below the repo dir) — this alone took the scan from 0.7-17s down
+  # to single-digit milliseconds (confirmed live), which is the entire
+  # reason ctrl-n felt broken in the first place. Costs missing repos
+  # nested deeper than that (rare — most people clone at most 1-2 folders
+  # deep); raise it in ~/.orch.conf via ORCH_SCAN_MAXDEPTH if you need more.
+  find "$HOME" -maxdepth "${ORCH_SCAN_MAXDEPTH:-3}" \( -type d \( "${prune_expr[@]}" \) -prune \) -o -type d -name .git -print 2>/dev/null | \
+    sed 's|/\.git$||' | tee "$_ORCH_REPO_CACHE"
+}
 
 find_repo_root() {
-  local repo=$1 root
-  for root in "${ORCH_CODE_ROOTS[@]}"; do
-    [[ -d "$root/$repo/.git" ]] && { printf '%s' "$root/$repo"; return; }
-  done
+  local repo=$1 dir
+  while IFS= read -r dir; do
+    [[ "$(basename "$dir")" == "$repo" ]] && { printf '%s' "$dir"; return; }
+  done < <(all_repo_dirs)
 }
 
 find_worktree() {
@@ -133,26 +177,29 @@ new_task() {
     return 1
   fi
 
-  # Favorites first (from ~/.orch.conf), rest sorted after.
+  # One scan, mapping basename -> path so a repeated basename (two repos
+  # on disk that happen to share a folder name) doesn't get silently
+  # collapsed into whichever one find_repo_root would've hit first on a
+  # SECOND scan — this way the picker and the resolved path always agree,
+  # because they come from the same pass.
   local favorites=("${ORCH_FAVORITES[@]:-}")
-  local repo d root rest=()
+  local dir base rest=()
+  declare -A repo_path
 
-  for root in "${ORCH_CODE_ROOTS[@]}"; do
-    for d in "$root"/*/; do
-      d=$(basename "$d")
-      [[ -d "$root/$d/.git" ]] || continue
-      [[ " ${favorites[*]} " == *" $d "* ]] && continue
-      rest+=("$d")
-    done
-  done
+  while IFS= read -r dir; do
+    base=$(basename "$dir")
+    repo_path[$base]="$dir"
+    [[ " ${favorites[*]} " == *" $base "* ]] && continue
+    rest+=("$base")
+  done < <(all_repo_dirs)
 
+  local repo
   repo=$( { printf '%s\n' "${favorites[@]}"; printf '%s\n' "${rest[@]}" | sort; } | \
     fzf --prompt="repo> " --header="pick a repo (type to filter, tab to select)" +s)
   [[ -z "$repo" ]] && return 1
 
-  local repo_root
-  repo_root=$(find_repo_root "$repo")
-  [[ -n "$repo_root" ]] || { echo "repo '$repo' not found under any ORCH_CODE_ROOTS" >&2; return 1; }
+  local repo_root="${repo_path[$repo]:-}"
+  [[ -n "$repo_root" ]] || { echo "repo '$repo' not found under \$HOME" >&2; return 1; }
 
   local task
   task=$(git -C "$repo_root" branch --format='%(refname:short)' 2>/dev/null | \

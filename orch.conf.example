@@ -2,11 +2,11 @@
 # install.sh will offer to generate the ROOTS section below for you
 # interactively; everything else you're expected to hand-edit.
 
-# ── Where your repos and worktrees live ──────────────────────────────────
-# ORCH_CODE_ROOTS: folders to scan for git repos (one level deep — each
-# subfolder with a .git dir is treated as a repo). Add as many as you like;
-# orch searches all of them when listing/picking repos.
-ORCH_CODE_ROOTS=("$HOME/code")
+# ── Where your worktrees live ─────────────────────────────────────────────
+# Repos themselves aren't configured — orch scans $HOME live for any
+# directory containing a .git (fast: ~0.6s on a normal dev machine),
+# so there's nothing to keep in sync with wherever you actually clone
+# things.
 
 # ORCH_WORKTREES_ROOTS: folders where per-task worktrees get created, one
 # subfolder per repo (e.g. <root>/<repo>/<task>). The FIRST entry is where
@@ -22,12 +22,13 @@ ORCH_FAVORITES=(cr-managament cr-frontend)
 
 # ── Per-repo setup hooks ───────────────────────────────────────────────────
 # ORCH_HOOK_<repo>: optional function run (cwd = new worktree) right after
-# `new-task` creates it. Name must match the repo folder name under one of
-# ORCH_CODE_ROOTS, with non-alnum chars turned into underscores. Use this to
-# install dependencies, copy env files, etc. — whatever a fresh worktree of
-# that repo needs before an agent can start working in it.
+# `new-task` creates it. Name must match the repo's folder basename
+# (wherever it lives under $HOME), with non-alnum chars turned into
+# underscores. Use this to install dependencies, copy env files, etc. —
+# whatever a fresh worktree of that repo needs before an agent can start
+# working in it.
 ORCH_HOOK_cr_managament() {
-  cp -rpvu "${ORCH_CODE_ROOTS[0]}/cr-managament/infra" .
+  cp -rpvu "$HOME/code/cr-managament/infra" .
 }
 
 ORCH_HOOK_cr_frontend() {
@@ -35,8 +36,9 @@ ORCH_HOOK_cr_frontend() {
 }
 
 # ── Tmux session naming ────────────────────────────────────────────────────
-# alt-enter opens a tmux session named after the task (shared across repos
-# by default — handy when one agent works a BE+FE pair under the same task
+# ENTER opens a tmux session named after the task (shared across repos by
+# default — handy when one agent works a BE+FE pair under the same task
 # name and you want one session for context continuity). Set to 1 if you'd
 # rather same-named tasks in different repos never share a session.
+# (alt-ENTER always just cd's, no session, regardless of this setting.)
 ORCH_SCOPE_SESSIONS_TO_REPO=0

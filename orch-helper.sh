@@ -6,21 +6,67 @@ set -u
 
 [[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
 
-# ORCH_CODE_ROOTS / ORCH_WORKTREES_ROOTS: where repos and their worktrees
-# live. Defaults match the original hardcoded layout (~/code, ~/worktrees)
-# for backward compat — override in ~/.orch.conf as arrays to scan any
-# folder(s) on disk instead of assuming everything lives under one
-# personal convention (e.g. ORCH_CODE_ROOTS=(~/code ~/personal ~/work)).
-ORCH_CODE_ROOTS=("${ORCH_CODE_ROOTS[@]:-$HOME/code}")
+# ORCH_WORKTREES_ROOTS: where per-task worktrees get created/found. Defaults
+# to the original hardcoded ~/worktrees for backward compat — override in
+# ~/.orch.conf as an array to use a different location (or several).
+#
+# Repos themselves are NOT configured — find_repo_root/all_repo_dirs below
+# scan live under $HOME instead (0.6s on a normal dev machine, fast enough
+# to run on every invocation), so there's no ORCH_CODE_ROOTS to keep in
+# sync with wherever you actually clone things.
 ORCH_WORKTREES_ROOTS=("${ORCH_WORKTREES_ROOTS[@]:-$HOME/worktrees}")
 
-# Finds a repo's checkout dir by name across all configured code roots.
-# Echoes the first match; empty if none of the roots have it.
-find_repo_root() {
-  local repo=$1 root
-  for root in "${ORCH_CODE_ROOTS[@]}"; do
-    [[ -d "$root/$repo/.git" ]] && { printf '%s' "$root/$repo"; return; }
+# Directory names never worth descending into while scanning for repos —
+# dependency trees and build output can contain thousands of nested dirs
+# (and occasionally their own vendored .git dirs), so pruning them isn't
+# just an optimization, it avoids surfacing repos you didn't actually clone
+# yourself.
+_ORCH_SCAN_PRUNE=(node_modules .cache vendor dist build target .venv venv __pycache__ .terraform)
+
+# Full-depth unbounded scans ranged 0.7s-17s depending on what else was
+# hitting disk (confirmed live) — bounding depth and caching the result
+# fixes both the worst-case latency AND the "looks frozen" UX problem this
+# caused in orch's ctrl-n repo picker. Keep in sync with the identical
+# cache/maxdepth logic in `orch` (this file can't source that one — see
+# the comment there for why).
+_ORCH_REPO_CACHE="$HOME/.cache/orch/repo-scan"
+_ORCH_REPO_CACHE_TTL=60
+
+# Lists every repo's checkout dir under $HOME, one per line — a repo is any
+# directory containing a .git (worktrees' .git is a file, not a dir, so
+# `git worktree add`-created worktrees are naturally excluded; only real
+# clones show up here).
+all_repo_dirs() {
+  mkdir -p "$(dirname "$_ORCH_REPO_CACHE")"
+  local age=999999
+  if [[ -f "$_ORCH_REPO_CACHE" ]]; then
+    age=$(( $(date +%s) - $(stat -c '%Y' "$_ORCH_REPO_CACHE" 2>/dev/null || echo 0) ))
+  fi
+  if (( age <= _ORCH_REPO_CACHE_TTL )); then
+    cat "$_ORCH_REPO_CACHE"
+    return
+  fi
+
+  local prune_expr=(-name "${_ORCH_SCAN_PRUNE[0]}") name
+  for name in "${_ORCH_SCAN_PRUNE[@]:1}"; do
+    prune_expr+=(-o -name "$name")
   done
+  # .git itself must NOT be in the prune list — pruning it would stop find
+  # from ever printing it (confirmed live: with .git in the -prune set, the
+  # scan silently found zero repos). Prune only the noisy dependency/build
+  # dirs; .git dirs get matched and printed on the second clause instead.
+  find "$HOME" -maxdepth "${ORCH_SCAN_MAXDEPTH:-3}" \( -type d \( "${prune_expr[@]}" \) -prune \) -o -type d -name .git -print 2>/dev/null | \
+    sed 's|/\.git$||' | tee "$_ORCH_REPO_CACHE"
+}
+
+# Finds a repo's checkout dir by basename (first match wins if more than
+# one repo on disk shares that name — same ambiguity a plain ORCH_CODE_ROOTS
+# array had, just implicit now instead of resolved by array order).
+find_repo_root() {
+  local repo=$1 dir
+  while IFS= read -r dir; do
+    [[ "$(basename "$dir")" == "$repo" ]] && { printf '%s' "$dir"; return; }
+  done < <(all_repo_dirs)
 }
 
 # Finds a task's worktree dir by repo+task across all configured worktree

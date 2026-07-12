@@ -31,19 +31,21 @@ if [[ "$PURGE_CONFIG" -eq 1 ]]; then
   rm -f "$HOME/.orch.conf"
   echo "Removed ~/.orch.conf"
 elif [[ -f "$HOME/.orch.conf" ]]; then
-  # Strip only the ORCH_CODE_ROOTS/ORCH_WORKTREES_ROOTS lines install.sh
-  # wrote — they point at THIS install's chosen folders and are meaningless
-  # once orch itself is gone, but ORCH_FAVORITES/ORCH_HOOK_*/
-  # ORCH_SCOPE_SESSIONS_TO_REPO are the user's own customization and
-  # shouldn't be touched by an uninstall.
+  # Strip only the ORCH_WORKTREES_ROOTS line install.sh wrote (plus a
+  # leftover ORCH_CODE_ROOTS from an older install, if present — that key
+  # is dead config now, repos are discovered by scanning $HOME live) — both
+  # point at THIS install's chosen folders and are meaningless once orch
+  # itself is gone. ORCH_FAVORITES/ORCH_HOOK_*/ORCH_SCOPE_SESSIONS_TO_REPO
+  # are the user's own customization and shouldn't be touched by an
+  # uninstall.
   sed -i.bak \
     -e '/^ORCH_CODE_ROOTS=/d' \
     -e '/^ORCH_WORKTREES_ROOTS=/d' \
     "$HOME/.orch.conf"
   rm -f "$HOME/.orch.conf.bak"
   echo "Left ~/.orch.conf in place (pass --purge-config to remove it too)"
-  echo "but removed ORCH_CODE_ROOTS/ORCH_WORKTREES_ROOTS (those were specific"
-  echo "to this install; your favorites/hooks/other settings are untouched)."
+  echo "but removed ORCH_WORKTREES_ROOTS (specific to this install; your"
+  echo "favorites/hooks/other settings are untouched)."
 else
   echo "No ~/.orch.conf found."
 fi

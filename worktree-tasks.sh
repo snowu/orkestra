@@ -1,5 +1,5 @@
 # Minimal worktree lifecycle helpers used by agent-orch.zsh's new-task/end-task
-# flows. Adjust the default base branch (currently "master") to match your repo.
+# flows.
 
 new-task() {
   local TASK_NAME=$1
@@ -22,8 +22,23 @@ new-task() {
   local WORKTREE_ROOT="${ORCH_WORKTREES_ROOTS[0]:-$HOME/worktrees}"
   local WORKTREE_BASE="$WORKTREE_ROOT/$REPO_NAME"
 
+  # A hardcoded "master" broke on any repo whose default branch is "main"
+  # (or anything else) — confirmed live: `git worktree add ... master`
+  # failed with "invalid reference: master" on a repo whose default is
+  # main. origin/HEAD's symbolic ref is git's own record of the remote's
+  # default branch; fall back to whatever branch is currently checked out
+  # if there's no remote (e.g. a fresh local-only repo).
+  local BASE_BRANCH
+  BASE_BRANCH=$(git -C "$REPO_ROOT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)
+  BASE_BRANCH="${BASE_BRANCH#origin/}"
+  [[ -z "$BASE_BRANCH" ]] && BASE_BRANCH=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null)
+  if [[ -z "$BASE_BRANCH" ]]; then
+    echo "Error: couldn't determine a base branch (no origin/HEAD, not on a branch)"
+    return 1
+  fi
+
   mkdir -p "$WORKTREE_BASE"
-  git worktree add "$WORKTREE_BASE/$TASK_NAME" -b "$TASK_NAME" master
+  git worktree add "$WORKTREE_BASE/$TASK_NAME" -b "$TASK_NAME" "$BASE_BRANCH"
   cd "$WORKTREE_BASE/$TASK_NAME"
 
   if [ -f "$REPO_ROOT/.env.local" ]; then
@@ -64,7 +79,16 @@ end-task() {
   local WORKTREE_PATH="$WORKTREE_ROOT/$REPO_NAME/$TASK_NAME"
 
   if [[ "$PWD" == "$WORKTREE_PATH"* ]]; then
-    cd "${ORCH_CODE_ROOTS[0]:-$HOME/code}/$REPO_NAME" 2>/dev/null || cd ~
+    # REPO_ROOT (from `git rev-parse --show-toplevel` above) is the
+    # WORKTREE's own root when run from inside one, not the main checkout —
+    # cd'ing there would just land back in the directory we're about to
+    # remove. The main checkout is always the first entry `git worktree
+    # list` prints, regardless of where ORCH_CODE_ROOTS/ORCH_WORKTREES_ROOTS
+    # or any other config says repos/worktrees live.
+    local main_checkout
+    main_checkout=$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null | \
+      awk '/^worktree /{print $2; exit}')
+    cd "${main_checkout:-$HOME}" 2>/dev/null || cd ~
   fi
 
   git worktree remove "$WORKTREE_PATH" --force 2>/dev/null
