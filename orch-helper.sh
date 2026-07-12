@@ -530,6 +530,17 @@ split_preview() {
   pane_preview "$repo" "$task" "$n"
 }
 
+# ctrl-s preview: `git status` for the selected worktree, in place of the
+# usual info+tmux split. Deliberately just `git status` (not --short or a
+# diff) — the ask was to check status without spawning a session, i.e. the
+# same output you'd see cd'ing in and running it by hand.
+git_status_preview() {
+  local repo=$1 task=$2
+  local wt; wt=$(find_worktree "$repo" "$task"); [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
+  [[ -d "$wt" ]] || { echo "(worktree not found: $wt)"; return; }
+  git -C "$wt" status 2>&1
+}
+
 case "$1" in
   rows) rows ;;
   end-task) end_task "$2" "$3"; rows ;;
@@ -537,6 +548,7 @@ case "$1" in
   kill-task) kill_task "$2" "$3"; rows ;;
   confirm-kill-task) confirm_kill_task "$2" "$3" ;;
   split-preview) split_preview "$2" "$3" ;;
+  git-status-preview) git_status_preview "$2" "$3" ;;
   touch-access) touch_access "$2" "$3" ;;
-  *) echo "usage: $0 rows|end-task|confirm-end-task|kill-task|confirm-kill-task|split-preview|touch-access <repo> <task>" >&2; exit 1 ;;
+  *) echo "usage: $0 rows|end-task|confirm-end-task|kill-task|confirm-kill-task|split-preview|git-status-preview|touch-access <repo> <task>" >&2; exit 1 ;;
 esac

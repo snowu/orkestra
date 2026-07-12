@@ -50,18 +50,40 @@ rm -f "$marker"
 # orch-helper.sh's cached_agent_state). No poller needed here anymore —
 # tmux-pane scraping was a race against Claude Code's own repaint and
 # unreliable in practice.
+#
+# The hook only writes the cache file though — it can't reach into an
+# already-open fzf and make it redraw. So we listen on a local port (fzf
+# --listen) and register that port under a well-known dir; the hook script
+# curls every registered port after each write to trigger a reload. Multiple
+# concurrent orch instances (e.g. two terminal tabs) each get their own port
+# file and all get poked. Deregister on exit so a stale port doesn't linger
+# and eat a failed curl on every future hook fire.
+FZF_PORTS_DIR="$HOME/.cache/orch/fzf-ports"
+mkdir -p "$FZF_PORTS_DIR"
+fzf_port=$(( 20000 + RANDOM % 20000 ))
+: > "$FZF_PORTS_DIR/$$"
+printf '%s' "$fzf_port" > "$FZF_PORTS_DIR/$$"
+trap 'rm -f "$FZF_PORTS_DIR/$$"' EXIT
 
-help_line="ENTER=attach tmux session (creates one if needed)   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   ?=toggle info panel"
+help_line="ENTER=attach tmux   alt-ENTER=cd only (no session)   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   ?=toggle info panel   ctrl-s=git status"
 column_header=$(printf "%-16s %-32s %-14s %-8s %-8s %-16s %-9s %s" "REPO" "TASK" "BRANCH" "STATE" "AGENT" "SESSION" "LAST USED" "CMD")
 header="$help_line"$'\n'"$column_header"
-sel=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline --header="$header" \
+out=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline --header="$header" \
+  --listen "$fzf_port" \
+  --expect="alt-enter" \
   --bind "ctrl-n:execute-silent(touch $marker)+abort" \
   --bind "ctrl-x:execute($HELPER confirm-end-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-k:execute($HELPER confirm-kill-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-r:reload($HELPER rows)" \
   --bind "?:toggle-preview" \
+  --bind "ctrl-s:change-preview($HELPER git-status-preview {1} {2}|$HELPER split-preview {1} {2})+change-preview-window(right,50%,border-left|down,70%,wrap,border-none)" \
   --preview-window "down,70%,wrap,border-none" \
   --preview "$HELPER split-preview {1} {2}")
+
+# --expect puts the key that triggered acceptance on line 1 (empty for the
+# default enter), the selected row on line 2 — see man fzf's --expect.
+key=$(printf '%s\n' "$out" | sed -n '1p')
+sel=$(printf '%s\n' "$out" | sed -n '2p')
 
 # Attach-or-create a tmux session by name. If we're not already inside a
 # tmux client, exec straight into it — replaces this process, takes over
@@ -175,7 +197,16 @@ wt=$(find_worktree "$repo" "$task")
 # the user actually did. This is the real signal.
 "$HELPER" touch-access "$repo" "$task"
 
-# tmux is required — ENTER always attach-or-creates the session for this
-# worktree by task name (no separate "idle" cd-only path). See named_session
-# and _orch_goto_session above.
+# alt-ENTER: cd only, no tmux session — for when you just want to look at
+# a folder (check status, poke around) without spawning/attaching an agent
+# session for it. Deliberately no fallback to the session path here: this
+# is the one case where NOT touching tmux is the whole point. orch.sh's
+# wrapper cd's into whatever this prints as the last stdout line.
+if [[ "$key" == "alt-enter" ]]; then
+  printf '%s\n' "$wt"
+  exit 0
+fi
+
+# Plain ENTER always attach-or-creates the session for this worktree by
+# task name. See named_session and _orch_goto_session above.
 _orch_goto_session "$(named_session "$repo" "$task")" "$wt"
