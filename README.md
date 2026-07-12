@@ -121,11 +121,12 @@ you want them, or just alias/type `orch` — it's a plain command.
 
 What gets written:
 
-- **tmux** (`~/.tmux.conf`) — `bind-key o run-shell -b "tmux display-popup -E 'ORCH_TMUX_CLIENT=#{client_tty} orch'"`
-  (prefix table — plain `o`, no `-n`/root-table flag, so it only fires after
-  your tmux prefix). `keybind-install.sh` reloads `~/.tmux.conf` into any
-  running tmux server automatically, so this applies immediately if tmux is
-  already running — no manual `tmux source-file` needed.
+- **tmux** (`~/.tmux.conf`) — `bind-key o run-shell -b "tmux display-popup -w 95% -h 95% -E 'ORCH_TMUX_CLIENT=#{client_tty} orch'"`
+  (95% of the terminal — plenty of room for the list and preview; prefix
+  table — plain `o`, no `-n`/root-table flag, so it only fires after your
+  tmux prefix). `keybind-install.sh` reloads `~/.tmux.conf` into any running
+  tmux server automatically, so this applies immediately if tmux is already
+  running — no manual `tmux source-file` needed.
 - **Ghostty** (`~/.config/ghostty/config`) — `keybind = ctrl+alt+o=text:orch\n`.
   **After installing, reload Ghostty's config** (`ctrl+shift+,`, i.e.
   `reload_config`) or restart it.

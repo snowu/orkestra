@@ -124,7 +124,7 @@ add_tmux() {
   # through `run-shell`, whose command string tmux does expand, to resolve
   # #{client_tty} to a real path BEFORE building the display-popup command.
   add_inject_keybind "" "$HOME/.tmux.conf" tmux \
-    "bind-key ${TMUX_KEY} run-shell -b \"tmux display-popup -E 'ORCH_TMUX_CLIENT=#{client_tty} orch'\""
+    "bind-key ${TMUX_KEY} run-shell -b \"tmux display-popup -w 95% -h 95% -E 'ORCH_TMUX_CLIENT=#{client_tty} orch'\""
   # Reload live, if a tmux server is already running — `source-file` (unlike
   # `source`, a shell builtin) is a tmux command; it applies the new binding
   # to every attached client immediately, no restart needed.
