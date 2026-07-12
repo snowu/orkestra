@@ -21,6 +21,24 @@ trunc() {
   fi
 }
 
+# Deterministic ANSI 256-color for a repo name — same repo always gets the
+# same color across runs/reloads (hash of the string, not random per-call),
+# so it's usable as a visual grouping cue in the list.
+REPO_COLOR_PALETTE=(39 208 178 141 71 203 74 209 135 214 84 168 45 220 111)
+repo_color() {
+  local name=$1
+  # cksum mixes bits far better than a hand-rolled per-char hash — with only
+  # 15 palette slots, a weak hash collided on the two most common repos
+  # (cr-managament and cr-frontend landed on the same color).
+  local hash=$(echo -n "$name" | cksum | cut -d' ' -f1)
+  local idx=$(( hash % ${#REPO_COLOR_PALETTE[@]} ))
+  printf '\033[38;5;%sm' "${REPO_COLOR_PALETTE[$idx]}"
+}
+
+RESET='\033[0m'
+GREEN='\033[38;5;114m'
+YELLOW='\033[38;5;179m'
+
 # Human-readable "time ago" for a unix timestamp, e.g. "5m ago", "3h ago".
 ago() {
   local now=$1 then=$2
@@ -76,12 +94,22 @@ rows() {
     local branch_col="$branch"
     [[ "$branch" == "$task" ]] && branch_col="="
 
+    local state_color="$YELLOW"
+    [[ "$state" == "live" ]] && state_color="$GREEN"
+
     # repo/task (fields 1,2) are used verbatim by fzf's {1}/{2} for
-    # end-task/jump/full-row lookups — never truncate those, only the
-    # cosmetic columns after them.
-    printf "%s\t%-16s %-32s %-14s %-8s %-16s %-9s %s\n" "$mtime" \
-      "$repo" "$task" "$(trunc "${branch_col:-none}" 14)" \
-      "$state" "$(trunc "$session" 16)" "$last_used" "$(trunc "$cmd" 12)"
+    # end-task/jump/full-row lookups — color codes are safe here since fzf
+    # (with --ansi) strips them before splitting into positional fields, but
+    # the *padding width* must still be computed on the plain text, or the
+    # invisible escape bytes would throw off column alignment.
+    local repo_padded task_padded state_padded
+    repo_padded=$(printf '%-16s' "$repo")
+    task_padded=$(printf '%-32s' "$task")
+    state_padded=$(printf '%-8s' "$state")
+
+    printf "%s\t$(repo_color "$repo")%s${RESET} %-32s %-14s ${state_color}%s${RESET} %-16s %-9s %s\n" "$mtime" \
+      "$repo_padded" "$task_padded" "$(trunc "${branch_col:-none}" 14)" \
+      "$state_padded" "$(trunc "$session" 16)" "$last_used" "$(trunc "$cmd" 12)"
   done | sort -t$'\t' -k1,1rn | cut -f2-
 }
 

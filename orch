@@ -29,7 +29,7 @@ rm -f "$marker"
 help_line="ENTER=attach tmux session (live) / cd into folder (idle)   alt-enter=open tmux session named after task   ctrl-n=new-task   ctrl-x=end-task   ctrl-r=refresh   ?=toggle info panel"
 column_header=$(printf "%-16s %-32s %-14s %-8s %-16s %-9s %s" "REPO" "TASK" "BRANCH" "STATE" "SESSION" "LAST USED" "CMD")
 header="$help_line"$'\n'"$column_header"
-sel=$("$HELPER" rows | fzf --layout=reverse --header-first --info=inline --header="$header" \
+sel=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline --header="$header" \
   --bind "ctrl-n:execute-silent(touch $marker)+abort" \
   --bind "ctrl-x:execute($HELPER confirm-end-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-r:reload($HELPER rows)" \
@@ -72,6 +72,11 @@ new_task() {
   if declare -f "$hook_fn" >/dev/null 2>&1; then
     (cd "$wt" 2>/dev/null && "$hook_fn") >&2
   fi
+
+  # Without this, a freshly created task shows up at the bottom of the list
+  # (sorted by last-used-via-orch) the very next time orch runs, even though
+  # you're sitting in it right now — landing here counts as using it.
+  "$HELPER" touch-access "$repo" "$task"
 
   [[ -d "$wt" ]] && printf '%s\n' "$wt"
 }
