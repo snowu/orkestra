@@ -70,3 +70,10 @@ ORCH_HOOK_my_frontend() {
 ```
 
 Repos without a matching `ORCH_HOOK_*` just skip the hook step.
+
+## Uninstall
+
+```sh
+./uninstall.sh                # removes orch files + rc source lines, keeps ~/.orch.conf
+./uninstall.sh --purge-config # also deletes ~/.orch.conf
+```
