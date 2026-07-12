@@ -175,7 +175,7 @@ if [[ "$TERMLIST" =~ (ghostty|kitty|alacritty) ]]; then
   echo "Chord: $CHORD"
 fi
 if [[ "$TERMLIST" == *ghostty* ]]; then
-  echo "Ghostty: press ctrl+shift+, INSIDE Ghostty (that's the reload_config keybind, not a shell command) or restart Ghostty to pick up the change. There's no way to reload it from the command line."
+  echo "Ghostty: press ctrl+shift+, INSIDE Ghostty (that's the reload_config keybind, not a shell command) or restart Ghostty to pick up the change."
 fi
 if [[ "$TERMLIST" == *tmux* ]] && ! command -v tmux >/dev/null 2>&1; then
   : # already warned above
