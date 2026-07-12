@@ -26,7 +26,7 @@ marker="/tmp/orch-new-task.marker"
 rm -f "$marker"
 : > /tmp/orch.log
 
-help_line="ENTER=attach tmux session (live) / cd into folder (idle)   alt-enter=open tmux session named after task   ctrl-n=new-task   ctrl-x=end-task   ctrl-r=refresh   ?=toggle info panel"
+help_line="ENTER=attach tmux session (creates one if needed)   ctrl-n=new-task   ctrl-x=end-task   ctrl-r=refresh   ?=toggle info panel"
 column_header=$(printf "%-16s %-32s %-14s %-8s %-16s %-9s %s" "REPO" "TASK" "BRANCH" "STATE" "SESSION" "LAST USED" "CMD")
 header="$help_line"$'\n'"$column_header"
 sel=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline --header="$header" \
@@ -35,8 +35,65 @@ sel=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline 
   --bind "ctrl-r:reload($HELPER rows)" \
   --bind "?:toggle-preview" \
   --preview-window "down,70%,wrap,border-none" \
-  --expect "alt-enter" \
   --preview "$HELPER split-preview {1} {2}")
+
+# Attach-or-create a tmux session by name. If we're not already inside a
+# tmux client, exec straight into it — replaces this process, takes over
+# the terminal cleanly, and `new -A` is safe to use here since there's no
+# separate client involved. If we ARE already inside tmux, exec'ing would
+# try to nest (tmux refuses this by default), so we create-if-needed and
+# switch-client instead — but `new -A ... -d` is NOT safe for that: `-A`
+# makes new-session behave like attach-session when the session already
+# exists, and once that happens `-d` no longer means "start detached" —
+# it's reinterpreted as attach-session's "-d" ("detach other clients from
+# this session"), so the CURRENT client (the popup, if we're in one) gets
+# attached directly instead of staying put for our own switch-client call
+# below. Confirmed live: this is exactly why jumping to an ALREADY-RUNNING
+# session opened inside the popup instead of closing it, while creating a
+# NEW session (no -A path taken) worked fine. Fix: never let -A hit an
+# existing session on this branch — check first, only create if missing.
+_orch_goto_session() {
+  local name=$1 dir=$2
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux has-session -t "=$name" 2>/dev/null || tmux new -d -s "$name" -c "$dir"
+    # switch-client with no -c targets "the client in use", which from
+    # inside a tmux popup resolves to the popup's own ephemeral context,
+    # not the real client you're looking at. ORCH_TMUX_CLIENT is set by the
+    # popup keybind (keybind-install.sh) to the real client's tty, captured
+    # before the popup opened; use it explicitly when present.
+    if [[ -n "${ORCH_TMUX_CLIENT:-}" ]]; then
+      tmux switch-client -c "$ORCH_TMUX_CLIENT" -t "$name"
+    else
+      tmux switch-client -t "$name"
+    fi
+    # If we're running inside a popup (e.g. the tmux-popup keybind),
+    # switch-client alone changes what the client shows *underneath*, but
+    # the popup itself stays floating on top until this process exits.
+    # Close it immediately instead of leaving the user staring at the new
+    # session trapped inside the popup frame.
+    if [[ -n "${TMUX_PANE:-}" ]] && tmux display-message -p -F '#{popup_pane_top}' 2>/dev/null | grep -q .; then
+      tmux display-popup -C 2>/dev/null || true
+    fi
+  else
+    exec tmux new -A -s "$name" -c "$dir"
+  fi
+}
+
+# named_session <repo> <task> — echoes the session name orch uses for a
+# worktree. Defaults to just the task name — by design, so one agent can
+# span multiple repos under the same task (e.g. a BE+FE pair worked on
+# together) sharing a single tmux session for context continuity. Tmux
+# session names are global, so this intentionally lets same-named tasks
+# across repos land in the same session; set ORCH_SCOPE_SESSIONS_TO_REPO=1
+# in ~/.orch.conf if you'd rather they never collide.
+named_session() {
+  local repo=$1 task=$2
+  if [[ "${ORCH_SCOPE_SESSIONS_TO_REPO:-0}" == "1" ]]; then
+    printf '%s\n' "${repo}__${task}"
+  else
+    printf '%s\n' "$task"
+  fi
+}
 
 new_task() {
   if ! declare -f new-task >/dev/null 2>&1; then
@@ -78,7 +135,8 @@ new_task() {
   # you're sitting in it right now — landing here counts as using it.
   "$HELPER" touch-access "$repo" "$task"
 
-  [[ -d "$wt" ]] && printf '%s\n' "$wt"
+  [[ -d "$wt" ]] || return 1
+  _orch_goto_session "$(named_session "$repo" "$task")" "$wt"
 }
 
 if [[ -f "$marker" ]]; then
@@ -87,74 +145,18 @@ if [[ -f "$marker" ]]; then
   exit 0
 fi
 
-# With --expect, fzf's output is: pressed-key on line 1, selected line after.
-key=$(echo "$sel" | sed -n '1p')
-sel=$(echo "$sel" | sed -n '2p')
-
 [[ -z "$sel" ]] && exit 0
 
 repo=$(echo "$sel" | awk '{print $1}')
 task=$(echo "$sel" | awk '{print $2}')
-state=$(echo "$sel" | awk '{print $4}')
 wt="$HOME/worktrees/$repo/$task"
-
-# The SESSION column in the list is truncated for display — never use it to
-# actually attach (a truncated name won't match the real session, so tmux
-# would silently create a new one instead of reattaching). Re-resolve the
-# real, untruncated session name straight from tmux: match by cwd, or by a
-# session named after this task (sessions are shared by task name across
-# repos by default — see named_session below).
-session=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}" 2>/dev/null | \
-  awk -F'\t' -v p="$wt" '$2==p{print $1; exit}')
-session="${session%%:*}"
-if [[ -z "$session" ]] && tmux has-session -t "=$task" 2>/dev/null; then
-  session="$task"
-fi
-
-# `tmux new -A -s <name>` attaches if a session by that name exists, creates
-# it otherwise. If we're not already inside a tmux client, exec straight
-# into it — replaces this process, takes over the terminal cleanly. If we
-# ARE already inside tmux, exec'ing would try to nest (tmux refuses this by
-# default), so instead create the session detached and switch *this* client
-# to it — safe here because it's this one client the user explicitly asked
-# to move, not some other window/session being yanked involuntarily.
-_orch_goto_session() {
-  local name=$1 dir=$2
-  if [[ -n "${TMUX:-}" ]]; then
-    tmux new -A -s "$name" -c "$dir" -d
-    tmux switch-client -t "$name"
-  else
-    exec tmux new -A -s "$name" -c "$dir"
-  fi
-}
 
 # Record "actually landed here via orch" for the LAST USED column — worktree
 # mtime only changes on file edits, not on cd/attach, so it drifts from what
 # the user actually did. This is the real signal.
 "$HELPER" touch-access "$repo" "$task"
 
-# Session name defaults to just the task name — by design, so one agent can
-# span multiple repos under the same task (e.g. a BE+FE pair worked on
-# together) sharing a single tmux session for context continuity. Tmux
-# session names are global, so this intentionally lets same-named tasks
-# across repos land in the same session; set ORCH_SCOPE_SESSIONS_TO_REPO=1
-# in ~/.orch.conf if you'd rather they never collide.
-if [[ "${ORCH_SCOPE_SESSIONS_TO_REPO:-0}" == "1" ]]; then
-  named_session="${repo}__${task}"
-else
-  named_session="$task"
-fi
-
-if [[ "$key" == "alt-enter" ]]; then
-  # Always attach-or-create by task name — if another repo's worktree under
-  # the same task already started this session (deliberate cross-repo
-  # sharing), join it; `-c` only takes effect when the session doesn't exist
-  # yet, so this worktree's own state doesn't need checking here.
-  _orch_goto_session "$named_session" "$wt"
-elif [[ "$state" == "live" ]]; then
-  _orch_goto_session "$session" "$wt"
-else
-  [[ -d "$wt" ]] || exit 1
-  git -C "$wt" status >&2
-  printf '%s\n' "$wt"
-fi
+# tmux is required — ENTER always attach-or-creates the session for this
+# worktree by task name (no separate "idle" cd-only path). See named_session
+# and _orch_goto_session above.
+_orch_goto_session "$(named_session "$repo" "$task")" "$wt"

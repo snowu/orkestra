@@ -7,19 +7,25 @@ worktrees + tmux. Built on `fzf` + `tmux`. Ships as a standalone executable
 ## What it does
 
 - Lists every worktree under `~/worktrees/<repo>/<task>`, showing repo,
-  task/branch, and whether a tmux pane is currently running there.
-- **ENTER** — jump: switches to the live tmux pane, or `cd`s into the idle
-  worktree folder and runs `git status`.
+  task/branch, and whether a tmux session is currently running there (STATE
+  column — display only, informational).
+- **ENTER** — attach-or-create: always lands you in a tmux session for that
+  worktree (`tmux new -A -s <task> -c <worktree>` — attaches if the session
+  already exists, creates it otherwise). tmux is required; there's no
+  fallback path that just `cd`s without a session.
 - **ctrl-n** — new task: pick a repo (fuzzy search, your favorites listed
-  first), type a new task name, creates the worktree/branch and runs any
-  repo-specific setup hook you've configured.
-- **ctrl-x** — end task: asks to confirm, then removes the worktree and
-  deletes the branch both locally and on `origin`.
+  first), type a new task name, creates the worktree/branch, runs any
+  repo-specific setup hook you've configured, and lands you straight in its
+  tmux session.
+- **ctrl-x** — end task: asks to confirm, then removes the worktree, kills
+  its tmux session (unless another repo's worktree still shares that task
+  name — see "Session naming" below), and deletes the branch both locally
+  and on `origin`.
 - **ctrl-r** — refresh the list.
 
 ## Requirements
 
-- `tmux`, `fzf`
+- `tmux`, `fzf` — both required, no fallback without them
 - `bash` or `zsh`
 - git (worktrees)
 
@@ -71,6 +77,15 @@ ORCH_HOOK_my_frontend() {
 
 Repos without a matching `ORCH_HOOK_*` just skip the hook step.
 
+### Session naming
+
+Tmux sessions are named after the task, not the repo — by design, so one
+agent can span multiple repos under the same task (a BE+FE pair sharing one
+session for context continuity). Set `ORCH_SCOPE_SESSIONS_TO_REPO=1` in
+`~/.orch.conf` if you'd rather sessions never collide across repos. Ending a
+task only kills the shared task-named session if no other repo's worktree
+under that same task name still exists.
+
 ## Terminal keybind (optional)
 
 The installer can bind a keybind that opens the `orch` picker.
@@ -106,10 +121,11 @@ you want them, or just alias/type `orch` — it's a plain command.
 
 What gets written:
 
-- **tmux** (`~/.tmux.conf`) — `bind-key o display-popup -E orch` (prefix
-  table — plain `o`, no `-n`/root-table flag, so it only fires after your
-  tmux prefix). **After installing, run `tmux source-file ~/.tmux.conf`**
-  (or restart tmux) — new bindings don't apply until then.
+- **tmux** (`~/.tmux.conf`) — `bind-key o run-shell -b "tmux display-popup -E 'ORCH_TMUX_CLIENT=#{client_tty} orch'"`
+  (prefix table — plain `o`, no `-n`/root-table flag, so it only fires after
+  your tmux prefix). `keybind-install.sh` reloads `~/.tmux.conf` into any
+  running tmux server automatically, so this applies immediately if tmux is
+  already running — no manual `tmux source-file` needed.
 - **Ghostty** (`~/.config/ghostty/config`) — `keybind = ctrl+alt+o=text:orch\n`.
   **After installing, reload Ghostty's config** (`ctrl+shift+,`, i.e.
   `reload_config`) or restart it.

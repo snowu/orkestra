@@ -84,8 +84,8 @@ rows() {
     # Live if either: a pane's cwd is exactly this worktree, OR a tmux
     # session is named after this task — sessions are shared by task name by
     # default (one agent spanning multiple repos), so a BE worktree should
-    # show live too once the FE worktree's alt-enter started "task-x", even
-    # though no pane's cwd points at the BE folder.
+    # show live too once ENTER on the FE worktree started session "task-x",
+    # even though no pane's cwd points at the BE folder.
     pane_info=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}" 2>/dev/null | \
       awk -F'\t' -v p="$wt" '$2==p{print; exit}')
 
@@ -126,10 +126,36 @@ end_task() {
   local repo=$1 task=$2
   local wt="$HOME/worktrees/$repo/$task"
 
+  # Kill any session whose pane cwd matches this worktree (covers sessions
+  # started under a different name than the task, e.g. cross-repo sharing),
+  # AND the task-named session itself (orch's default naming — see
+  # named_session() in orch) — a session can exist under that name with no
+  # pane ever having this exact cwd if it was created but the process cd'd
+  # away. Doing both means end-task can't leave a stale session behind
+  # regardless of how it got named.
   local target
   target=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}" 2>/dev/null | \
     awk -F'\t' -v p="$wt" '$2==p{print $1; exit}')
   [[ -n "$target" ]] && tmux kill-session -t "${target%%:*}" 2>/dev/null
+
+  local repo_session="${repo}__${task}"
+  tmux has-session -t "=$repo_session" 2>/dev/null && tmux kill-session -t "=$repo_session" 2>/dev/null
+
+  # The plain task-named session may be shared across repos (see
+  # named_session() in orch — default naming, before ORCH_SCOPE_SESSIONS_TO_REPO
+  # opts a repo out). Only kill it if no OTHER repo's worktree under this
+  # same task name still exists — otherwise ending this one worktree would
+  # yank the session out from under a still-active sibling.
+  if tmux has-session -t "=$task" 2>/dev/null; then
+    local d has_sibling=0
+    for d in "$HOME"/worktrees/*/"$task"; do
+      [[ -d "$d" ]] || continue
+      [[ "$d" == "$wt" ]] && continue
+      has_sibling=1
+      break
+    done
+    [[ "$has_sibling" -eq 0 ]] && tmux kill-session -t "=$task" 2>/dev/null
+  fi
 
   (
     cd "$HOME/code/$repo" 2>/dev/null || exit 1

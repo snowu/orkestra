@@ -111,8 +111,20 @@ add_tmux() {
     echo "WARNING: tmux not found on \$PATH — skipping tmux" >&2
     ERRORS=1; return 0
   fi
+  # orch (running inside the popup) needs to know the real client's tty to
+  # target `switch-client -c` correctly — without it, switch-client defaults
+  # to "the client in use", which inside a popup resolves to the popup's own
+  # ephemeral context, not the client you're actually looking at (confirmed
+  # live: switch-client alone does nothing visible from inside a popup).
+  #
+  # display-popup's shell-command argument is NOT format-expanded (only
+  # run-shell's is, per tmux's FORMATS docs) — binding directly to
+  # `display-popup -E "...#{client_tty}..."` passes the literal, unexpanded
+  # string `#{client_tty}` through (confirmed live via debug log). Route
+  # through `run-shell`, whose command string tmux does expand, to resolve
+  # #{client_tty} to a real path BEFORE building the display-popup command.
   add_inject_keybind "" "$HOME/.tmux.conf" tmux \
-    "bind-key ${TMUX_KEY} display-popup -E orch"
+    "bind-key ${TMUX_KEY} run-shell -b \"tmux display-popup -E 'ORCH_TMUX_CLIENT=#{client_tty} orch'\""
   # Reload live, if a tmux server is already running — `source-file` (unlike
   # `source`, a shell builtin) is a tmux command; it applies the new binding
   # to every attached client immediately, no restart needed.
