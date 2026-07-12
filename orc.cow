@@ -1,0 +1,11 @@
+##
+## Orc cow for orkestra (compact).
+##
+$the_cow = <<EOC;
+    $thoughts  ,       ,
+     $thoughts /(.-""-.)\\
+      \\( j $eyes l )/
+       ) '-\\/-' (
+       \\,A/\\/\\A,/
+        '~ORK~'
+EOC

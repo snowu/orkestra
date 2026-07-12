@@ -293,7 +293,10 @@ fortune_sidebar() {
   local row_width=103
   local gap=44
   local fortune_block
-  fortune_block=$(fortune -s | fold -s -w 35 | cowsay -n 2>/dev/null)
+  local orc_cow="${ORK_ROOT:-$(dirname "${BASH_SOURCE[0]}")}/orc.cow"
+  local cow_flag=()
+  [[ -f "$orc_cow" ]] && cow_flag=(-f "$orc_cow")
+  fortune_block=$(fortune -s | fold -s -w 35 | cowsay -n "${cow_flag[@]}" 2>/dev/null)
   local fortune_lines=()
   IFS=$'\n' read -rd '' -a fortune_lines <<<"$fortune_block"$'\0'
 
