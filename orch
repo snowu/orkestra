@@ -34,6 +34,24 @@ run_repo_hook() {
   (cd "$wt" 2>/dev/null && bash -c "$cmd") >&2
 }
 
+# write_claude_profile <repo-root> <worktree-dir>: writes "personal" or
+# "work" into <worktree-dir>/.claude-profile based on whether <repo-root>
+# falls under one of CLAUDE_PERSONAL_DIRS (~/.orch.conf, prefix match, same
+# list ~/.zshrc's claude() wrapper uses). Worktrees live outside those dirs
+# even for personal repos, so claude() can't prefix-match them directly —
+# this marker is what lets it pick the right profile once cd'd into one.
+write_claude_profile() {
+  local repo_root="$1" wt="$2" d profile="work"
+  for d in "${CLAUDE_PERSONAL_DIRS[@]:-}"; do
+    [[ -z "$d" ]] && continue
+    if [[ "$repo_root" == "$d" || "$repo_root" == "$d"/* ]]; then
+      profile="personal"
+      break
+    fi
+  done
+  printf '%s' "$profile" > "$wt/.claude-profile" 2>/dev/null
+}
+
 # ORCH_WORKTREES_ROOTS: see orch-helper.sh for the full explanation —
 # defaults to the original ~/worktrees layout. Repos are discovered by
 # scanning $HOME live — no ORCH_CODE_ROOTS to configure.
@@ -235,6 +253,7 @@ new_task() {
   wt=$(find_worktree "$repo" "$task")
   [[ -n "$wt" ]] || wt="${ORCH_WORKTREES_ROOTS[0]}/$repo/$task"
   run_repo_hook "$repo" "$wt"
+  write_claude_profile "$repo_root" "$wt"
 
   # Without this, a freshly created task shows up at the bottom of the list
   # (sorted by last-used-via-orch) the very next time orch runs, even though

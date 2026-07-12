@@ -278,7 +278,34 @@ rows() {
     printf "%s\t$(repo_color "$repo")%s${RESET} %-32s %-14s ${state_color}%s${RESET} ${agent_color}%s${RESET} %-16s %-9s %s\n" "$mtime" \
       "$repo_padded" "$task_padded" "$(trunc "${branch_col:-none}" 14)" \
       "$state_padded" "$agent_padded" "$(trunc "$session" 16)" "$last_used" "$(trunc "$cmd" 12)"
-  done < <(all_worktree_dirs) | sort -t$'\t' -k1,1rn | cut -f2-
+  done < <(all_worktree_dirs) | sort -t$'\t' -k1,1rn | cut -f2- | fortune_sidebar
+}
+
+# Cosmetic filler for the dead space to the right of the worktree rows —
+# appends one cowsay/fortune line per row, so the cow appears to sit beside
+# the table rather than the row text wrapping into it. No-ops silently if
+# either binary is missing.
+fortune_sidebar() {
+  if ! command -v fortune &>/dev/null || ! command -v cowsay &>/dev/null; then
+    cat
+    return
+  fi
+  local row_width=103
+  local gap=44
+  local fortune_block
+  fortune_block=$(fortune -s | fold -s -w 21 | cowsay -n 2>/dev/null)
+  local fortune_lines=()
+  IFS=$'\n' read -rd '' -a fortune_lines <<<"$fortune_block"$'\0'
+
+  local i=0 line
+  while IFS= read -r line; do
+    local plain
+    plain=$(printf '%s' "$line" | sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g')
+    local pad=$(( row_width + gap - ${#plain} ))
+    (( pad < 1 )) && pad=1
+    printf '%s%*s%s\n' "$line" "$pad" "" "${fortune_lines[$i]:-}"
+    ((i++))
+  done
 }
 
 # Kill whatever tmux session(s) belong to a worktree, without touching the
