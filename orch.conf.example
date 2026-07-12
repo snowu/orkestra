@@ -1,0 +1,14 @@
+# orch config — copy to ~/.orch.conf and edit for your own repos.
+# ORCH_FAVORITES: shown first in the ctrl-n repo picker (order preserved).
+ORCH_FAVORITES=(cr-managament cr-frontend)
+
+# ORCH_HOOK_<repo>: optional function run (cwd = new worktree) right after
+# `new-task` creates it. Name must match the repo folder name under ~/code,
+# with non-alnum chars turned into underscores.
+ORCH_HOOK_cr_managament() {
+  cp -rpvu "$HOME/code/cr-managament/infra" .
+}
+
+ORCH_HOOK_cr_frontend() {
+  bun install
+}

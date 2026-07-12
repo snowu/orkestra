@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Standalone orchestrator binary: control/jump between worktree agents running
+# in tmux. Works from bash or zsh via the thin wrapper function in
+# orch.sh — that wrapper is what actually cd's the caller's shell; this
+# binary only ever prints (on stdout, last line) the directory to cd into,
+# if any. All other output goes to stderr so it doesn't get swallowed by the
+# wrapper's `$(...)` capture.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HELPER="$SCRIPT_DIR/orch-helper.sh"
+
+[[ -f "$HOME/.orch.conf" ]] && source "$HOME/.orch.conf"
+
+if ! command -v fzf &>/dev/null; then
+  echo "fzf not installed. Run: brew install fzf / apt install fzf" >&2
+  exit 1
+fi
+
+marker="/tmp/orch-new-task.marker"
+rm -f "$marker"
+: > /tmp/orch.log
+
+header="ENTER=jump(live)/launch(idle)  ctrl-n=new-task  ctrl-x=end-task  ctrl-r=refresh"
+sel=$("$HELPER" rows | fzf --header="$header" \
+  --bind "ctrl-n:execute-silent(touch $marker)+abort" \
+  --bind "ctrl-x:execute($HELPER confirm-end-task {1} {2})+reload($HELPER rows)" \
+  --bind "ctrl-r:reload($HELPER rows)" \
+  --preview "tail -n 5 /tmp/orch.log 2>/dev/null" --preview-window "down,3,wrap")
+
+new_task() {
+  # Favorites first (from ~/.orch.conf), rest sorted after.
+  local favorites=("${ORCH_FAVORITES[@]:-}")
+  local repo d rest=()
+
+  for d in "$HOME"/code/*/; do
+    d=$(basename "$d")
+    [[ -d "$HOME/code/$d/.git" ]] || continue
+    [[ " ${favorites[*]} " == *" $d "* ]] && continue
+    rest+=("$d")
+  done
+
+  repo=$( { printf '%s\n' "${favorites[@]}"; printf '%s\n' "${rest[@]}" | sort; } | \
+    fzf --prompt="repo> " --header="pick a repo (type to filter, tab to select)" +s)
+  [[ -z "$repo" ]] && return 1
+
+  local task
+  task=$(git -C "$HOME/code/$repo" branch --format='%(refname:short)' 2>/dev/null | \
+    fzf --prompt="new task name> " --header="type new task/branch name (list is existing branches for reference)" \
+        --print-query --bind "enter:print-query" | head -1)
+  [[ -z "$task" ]] && return 1
+
+  (cd "$HOME/code/$repo" && new-task "$task") >&2
+
+  local wt="$HOME/worktrees/$repo/$task"
+  local hook_fn="ORCH_HOOK_${repo//[^a-zA-Z0-9]/_}"
+  if declare -f "$hook_fn" >/dev/null 2>&1; then
+    (cd "$wt" 2>/dev/null && "$hook_fn") >&2
+  fi
+
+  [[ -d "$wt" ]] && printf '%s\n' "$wt"
+}
+
+if [[ -f "$marker" ]]; then
+  rm -f "$marker"
+  new_task
+  exit 0
+fi
+
+[[ -z "$sel" ]] && exit 0
+
+repo=$(echo "$sel" | awk '{print $1}')
+task=$(echo "$sel" | awk '{print $2}')
+state=$(echo "$sel" | awk '{print $4}')
+wt="$HOME/worktrees/$repo/$task"
+
+if [[ "$state" == "live" ]]; then
+  target=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}" 2>/dev/null | \
+    awk -F'\t' -v p="$wt" '$2==p{print $1; exit}')
+  tmux switch-client -t "$target" 2>/dev/null || tmux select-window -t "$target"
+else
+  [[ -d "$wt" ]] || exit 1
+  git -C "$wt" status >&2
+  printf '%s\n' "$wt"
+fi
