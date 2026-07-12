@@ -120,51 +120,93 @@ confirm_end_task() {
   fi
 }
 
-# Untruncated detail for the currently selected row, shown in the preview
-# pane so long repo/task/branch/session names are never fully hidden — they
-# just get cut with "..." in the list itself to keep columns aligned.
-full_row() {
+# Resolve the live tmux pane (if any) for a repo/task, same rule as rows():
+# match by cwd, or by a session named after this task (sessions are shared
+# by task name across repos by default). Prints tab-separated pane_info or
+# nothing if there's no live pane.
+_orch_resolve_pane() {
   local repo=$1 task=$2
   local wt="$HOME/worktrees/$repo/$task"
-  local branch=$(git -C "$wt" branch --show-current 2>/dev/null)
-
-  echo "repo:    $repo"
-  echo "task:    $task"
-  echo "branch:  ${branch:-none}"
-  echo "path:    $wt"
-
-  # Same live rule as rows(): match by cwd, or by a session named after this
-  # task (sessions are shared by task name by default across repos).
   local pane_info
   pane_info=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}	#{pane_pid}" 2>/dev/null | \
     awk -F'\t' -v p="$wt" '$2==p{print; exit}')
-
   if [[ -z "$pane_info" ]] && tmux has-session -t "=$task" 2>/dev/null; then
     pane_info=$(tmux list-panes -t "=$task" -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}	#{pane_current_command}	#{pane_pid}" 2>/dev/null | head -1)
   fi
+  printf '%s' "$pane_info"
+}
 
-  if [[ -n "$pane_info" ]]; then
-    local sess win_cmd pid pane_cwd
-    sess=$(echo "$pane_info" | cut -f1)
-    pane_cwd=$(echo "$pane_info" | cut -f2)
-    win_cmd=$(echo "$pane_info" | cut -f3)
-    pid=$(echo "$pane_info" | cut -f4)
-    local nwin nclients
-    nwin=$(tmux list-windows -t "${sess%%:*}" 2>/dev/null | wc -l)
-    nclients=$(tmux list-clients -t "${sess%%:*}" 2>/dev/null | wc -l)
-    echo
-    echo "tmux session: ${sess%%:*}"
-    echo "  pane:      $sess (pid $pid, running: $win_cmd)"
-    [[ "$pane_cwd" != "$wt" ]] && echo "  pane cwd:  $pane_cwd (shared session, different repo's worktree)"
-    echo "  windows:   $nwin"
-    echo "  attached:  $([[ $nclients -gt 0 ]] && echo "yes ($nclients client(s))" || echo "no")"
-  else
-    echo
-    echo "tmux session: none"
-  fi
+# Compact one-line info summary (branch, state, session, last-used) —
+# repo/task are already visible as the selected row itself, no need to
+# repeat them here. Shown in the left half of the preview split.
+info_panel() {
+  local repo=$1 task=$2
+  local wt="$HOME/worktrees/$repo/$task"
+  local branch=$(git -C "$wt" branch --show-current 2>/dev/null)
+  [[ "$branch" == "$task" ]] && branch="="
 
+  echo "branch: ${branch:-none}"
+  echo "path:   $wt"
   echo
   tail -n 5 /tmp/orch.log 2>/dev/null
+}
+
+# One-line tmux session summary, shown as the TMUX column's header (session
+# name, window count, attached state, running command) — tmux details live
+# here, not in info_panel, so they sit next to the pane content they
+# describe instead of off to the side.
+tmux_summary() {
+  local repo=$1 task=$2
+  local wt="$HOME/worktrees/$repo/$task"
+  local pane_info
+  pane_info=$(_orch_resolve_pane "$repo" "$task")
+
+  if [[ -z "$pane_info" ]]; then
+    echo "none"
+    return
+  fi
+
+  local sess win_cmd pid pane_cwd nwin nclients
+  sess=$(echo "$pane_info" | cut -f1)
+  pane_cwd=$(echo "$pane_info" | cut -f2)
+  win_cmd=$(echo "$pane_info" | cut -f3)
+  pid=$(echo "$pane_info" | cut -f4)
+  nwin=$(tmux list-windows -t "${sess%%:*}" 2>/dev/null | wc -l)
+  nclients=$(tmux list-clients -t "${sess%%:*}" 2>/dev/null | wc -l)
+
+  local note=""
+  [[ "$pane_cwd" != "$wt" ]] && note=" (shared, cwd: $pane_cwd)"
+  printf '%s | %s windows | %s | running: %s%s' \
+    "${sess%%:*}" "$nwin" "$([[ $nclients -gt 0 ]] && echo attached || echo detached)" "$win_cmd" "$note"
+}
+
+# Right half of the preview split: the live tmux pane's actual content, if
+# any session exists for this worktree/task. Plain text (no ANSI colors) —
+# color codes don't survive being clipped to a column width for the
+# side-by-side paste layout, so this trades color for reliability.
+# $3 = how many of the pane's bottommost lines to show (must be resolved by
+# the caller to whatever actually fits, otherwise a later `head` on top of a
+# fixed "last 40" tail just shows an arbitrary earlier slice, not the true
+# bottom of the pane).
+pane_preview() {
+  local repo=$1 task=$2 want=${3:-40}
+  local pane_info
+  pane_info=$(_orch_resolve_pane "$repo" "$task")
+  if [[ -z "$pane_info" ]]; then
+    echo "(no live tmux session)"
+    return
+  fi
+  local sess=$(echo "$pane_info" | cut -f1)
+
+  # Occasionally empty on the first try (tmux socket contention when many
+  # panes/clients are active) — one retry is enough to make this reliable.
+  local out
+  out=$(tmux capture-pane -pet "$sess" 2>/dev/null)
+  if [[ -z "$out" ]]; then
+    sleep 0.05
+    out=$(tmux capture-pane -pet "$sess" 2>/dev/null)
+  fi
+  printf '%s\n' "$out" | tail -n "$want"
 }
 
 touch_access() {
@@ -173,11 +215,45 @@ touch_access() {
   touch "$(access_file "$repo" "$task")"
 }
 
+# fzf 0.29 has only one preview slot — render info (left) and the live pane
+# (right) side by side manually. `pr -m -t` merges two files into columns,
+# padding whichever side has fewer lines — a hand-rolled `paste` would
+# misalign rows the moment line counts differ, which is what made this
+# "inconsistent" before.
+split_preview() {
+  local repo=$1 task=$2
+  local cols=${FZF_PREVIEW_COLUMNS:-160}
+  local lines=${FZF_PREVIEW_LINES:-20}
+  local half=$(( (cols - 3) / 2 ))
+  (( half < 20 )) && half=20
+
+  local info_text
+  info_text=$(info_panel "$repo" "$task" | cut -c1-"$half")
+  local info_line_count
+  info_line_count=$(printf '%s\n' "$info_text" | wc -l)
+
+  # Top block: INFO on the left, tmux session summary heading the right side
+  # — only the header row is actually two columns; info_panel's own content
+  # just fills the left column for as many lines as it has.
+  local tmux_line
+  tmux_line=$(tmux_summary "$repo" "$task" | cut -c1-"$((cols - half - 1))")
+  printf '%-*s| %s\n' "$half" " INFO" "$tmux_line"
+  printf '%s+%s\n' "$(printf '%*s' "$half" '' | tr ' ' '-')" "$(printf '%*s' "$((cols - half - 1))" '' | tr ' ' '-')"
+  printf '%s\n' "$info_text" | awk -v w="$half" '{printf "%-"w"."w"s|\n", $0}'
+  echo
+
+  # Full-width divider, then the live pane content spans the entire width.
+  printf '%s\n' "$(printf '%*s' "$cols" '' | tr ' ' '-')"
+
+  local n=$(( lines > info_line_count + 4 ? lines - info_line_count - 4 : 1 ))
+  pane_preview "$repo" "$task" "$n"
+}
+
 case "$1" in
   rows) rows ;;
   end-task) end_task "$2" "$3"; rows ;;
   confirm-end-task) confirm_end_task "$2" "$3" ;;
-  full-row) full_row "$2" "$3" ;;
+  split-preview) split_preview "$2" "$3" ;;
   touch-access) touch_access "$2" "$3" ;;
-  *) echo "usage: $0 rows|end-task|confirm-end-task|full-row|touch-access <repo> <task>" >&2; exit 1 ;;
+  *) echo "usage: $0 rows|end-task|confirm-end-task|split-preview|touch-access <repo> <task>" >&2; exit 1 ;;
 esac

@@ -34,9 +34,9 @@ sel=$("$HELPER" rows | fzf --layout=reverse --header-first --info=inline --heade
   --bind "ctrl-x:execute($HELPER confirm-end-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-r:reload($HELPER rows)" \
   --bind "?:toggle-preview" \
-  --preview-window "down,10,wrap" \
+  --preview-window "down,75%,wrap" \
   --expect "alt-enter" \
-  --preview "$HELPER full-row {1} {2}")
+  --preview "$HELPER split-preview {1} {2}")
 
 new_task() {
   if ! declare -f new-task >/dev/null 2>&1; then
