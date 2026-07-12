@@ -12,3 +12,9 @@ ORCH_HOOK_cr_managament() {
 ORCH_HOOK_cr_frontend() {
   bun install
 }
+
+# alt-enter opens a tmux session named after the task (shared across repos
+# by default — handy when one agent works a BE+FE pair under the same task
+# name and you want one session for context continuity). Set to 1 if you'd
+# rather same-named tasks in different repos never share a session.
+ORCH_SCOPE_SESSIONS_TO_REPO=0

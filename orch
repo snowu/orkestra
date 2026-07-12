@@ -91,8 +91,15 @@ sel=$(echo "$sel" | sed -n '2p')
 repo=$(echo "$sel" | awk '{print $1}')
 task=$(echo "$sel" | awk '{print $2}')
 state=$(echo "$sel" | awk '{print $4}')
-session=$(echo "$sel" | awk '{print $5}')
 wt="$HOME/worktrees/$repo/$task"
+
+# The SESSION column in the list is truncated for display — never use it to
+# actually attach (a truncated name won't match the real session, so tmux
+# would silently create a new one instead of reattaching). Re-resolve the
+# real, untruncated session name straight from tmux by matching cwd.
+session=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}" 2>/dev/null | \
+  awk -F'\t' -v p="$wt" '$2==p{print $1; exit}')
+session="${session%%:*}"
 
 # `tmux new -A -s <name>` attaches if a session by that name exists, creates
 # it otherwise. If we're not already inside a tmux client, exec straight
@@ -116,16 +123,24 @@ _orch_goto_session() {
 # the user actually did. This is the real signal.
 "$HELPER" touch-access "$repo" "$task"
 
+# Session name defaults to just the task name — by design, so one agent can
+# span multiple repos under the same task (e.g. a BE+FE pair worked on
+# together) sharing a single tmux session for context continuity. Tmux
+# session names are global, so this intentionally lets same-named tasks
+# across repos land in the same session; set ORCH_SCOPE_SESSIONS_TO_REPO=1
+# in ~/.orch.conf if you'd rather they never collide.
+if [[ "${ORCH_SCOPE_SESSIONS_TO_REPO:-0}" == "1" ]]; then
+  named_session="${repo}__${task}"
+else
+  named_session="$task"
+fi
+
 if [[ "$key" == "alt-enter" ]]; then
-  # Named session for this task: if one's already live for this worktree
-  # (any name), go there instead of spinning up a second, redundant session
-  # against the same folder. Only fall back to creating a fresh "$task"-named
-  # session when nothing is running here yet.
-  if [[ "$state" == "live" ]]; then
-    _orch_goto_session "$session" "$wt"
-  else
-    _orch_goto_session "$task" "$wt"
-  fi
+  # Always attach-or-create by task name — if another repo's worktree under
+  # the same task already started this session (deliberate cross-repo
+  # sharing), join it; `-c` only takes effect when the session doesn't exist
+  # yet, so this worktree's own state doesn't need checking here.
+  _orch_goto_session "$named_session" "$wt"
 elif [[ "$state" == "live" ]]; then
   _orch_goto_session "$session" "$wt"
 else
