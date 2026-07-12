@@ -29,7 +29,7 @@ HOME="$TESTHOME" bash "$DIR/keybind-install.sh" tmux,ghostty,kitty,alacritty >/d
 assert "installer exits 0 with all requested and present" test $? -eq 0
 
 assert "tmux keybind line present" \
-  grep -q "^bind-key o run-shell -b \"tmux display-popup -w 95% -h 95% -E 'ORCH_TMUX_CLIENT=#{client_tty} orch'\"\$" "$TESTHOME/.tmux.conf"
+  grep -q '^bind-key o new-window -n orch orch$' "$TESTHOME/.tmux.conf"
 assert "tmux keybind is prefix-table, not root (no -n flag)" \
   bash -c "! grep -q '^bind-key -n' '$TESTHOME/.tmux.conf'"
 assert "ghostty keybind line present" \
@@ -67,9 +67,9 @@ fresh_home
 HOME="$TESTHOME" bash "$DIR/keybind-install.sh" tmux ctrl+alt+o o >/dev/null
 HOME="$TESTHOME" bash "$DIR/keybind-install.sh" tmux ctrl+alt+o g >/dev/null
 assert "one fence after tmux key change" test "$(count_fences "$TESTHOME/.tmux.conf")" = 1
-assert "old tmux key gone" bash -c "! grep -q '^bind-key o run-shell' '$TESTHOME/.tmux.conf'"
+assert "old tmux key gone" bash -c "! grep -q '^bind-key o new-window' '$TESTHOME/.tmux.conf'"
 assert "new tmux key present" \
-  grep -q "^bind-key g run-shell -b \"tmux display-popup -w 95% -h 95% -E 'ORCH_TMUX_CLIENT=#{client_tty} orch'\"\$" "$TESTHOME/.tmux.conf"
+  grep -q '^bind-key g new-window -n orch orch$' "$TESTHOME/.tmux.conf"
 
 fresh_home
 mkdir -p "$TESTHOME/.config/ghostty"
@@ -120,7 +120,7 @@ assert "uninstall keeps tmux user config" \
 assert "uninstall removes ghostty keybind line" \
   bash -c "! grep -q 'text:orch' '$TESTHOME/.config/ghostty/config'"
 assert "uninstall removes tmux keybind line" \
-  bash -c "! grep -q 'display-popup' '$TESTHOME/.tmux.conf'"
+  bash -c "! grep -q 'new-window -n orch' '$TESTHOME/.tmux.conf'"
 
 echo
 if [[ "$FAILS" -eq 0 ]]; then echo "ALL PASS"; else echo "$FAILS FAILURES"; exit 1; fi

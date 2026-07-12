@@ -5,10 +5,98 @@
 set -u
 
 ACCESS_DIR="$HOME/.cache/orch/access"
+AGENT_STATE_DIR="$HOME/.cache/orch/agent-state"
+AGENT_STATE_STALE_SECS=10
 
 # Path of the access-marker file for a repo/task pair.
 access_file() {
   printf '%s/%s__%s' "$ACCESS_DIR" "$1" "$2"
+}
+
+# Path of the agent-state cache file for a tmux session name. Kept by
+# session name (not repo/task) since that's what the poller actually
+# inspects, and the same session can be shared across repos.
+agent_state_file() {
+  printf '%s/%s' "$AGENT_STATE_DIR" "$1"
+}
+
+# Classify a captured pane's tail as running/waiting/"" (unknown) — "" is
+# deliberately not a guess: mid-typing, permission dialogs, etc. don't match
+# either pattern and we'd rather show nothing than something wrong.
+#   running: Claude Code's status line ends in "tokens)" while working, e.g.
+#            "✶ Kneading… (1m 14s · ↓ 1.9k tokens)" — the verb rotates, the
+#            "tokens)" suffix doesn't, so it's the stable anchor.
+#   waiting: a line that's just the bare "❯" prompt with nothing typed after
+#            it and no running-line present — idle, waiting on you.
+classify_pane_text() {
+  local text=$1
+  # [[:space:]] is locale-dependent and does NOT match U+00A0 (non-breaking
+  # space) under the minimal "C.UTF-8" locale this script runs under (no
+  # env inherited from an interactive shell) — confirmed live: Claude Code's
+  # prompt line is "❯" followed by an actual U+00A0, not a regular space, so
+  # the class silently failed to match. Match explicit byte alternatives
+  # instead of relying on locale-aware whitespace classes.
+  if printf '%s' "$text" | grep -qE 'tokens\)[ \t]*$'; then
+    printf 'running'
+  elif printf '%s' "$text" | grep -qP '^❯[\s\x{00A0}]*$'; then
+    printf 'waiting'
+  fi
+}
+
+# Refreshes the agent-state cache for every currently live tmux session, once.
+# Meant to be called in a loop by a short-lived poller (spawned by `orch` for
+# the duration of one picker session, killed when it exits) — NOT a
+# standalone daemon, so there's no pidfile/lifecycle management here.
+refresh_agent_states() {
+  mkdir -p "$AGENT_STATE_DIR"
+  local sess
+  # Every tmux call here is wrapped in `timeout` — a contended/wedged tmux
+  # socket must never be able to hang this loop indefinitely, since that's
+  # what makes the poller un-killable-in-a-hurry (confirmed live: a hung
+  # capture-pane blocked the whole refresh cycle, and the outer `kill` on
+  # just the poller's own PID couldn't interrupt a syscall already blocked
+  # inside a tmux child process).
+  while IFS= read -r sess; do
+    [[ -n "$sess" ]] || continue
+    local text state
+    text=$(timeout 2 tmux capture-pane -pt "$sess" 2>/dev/null | tail -n 8)
+    state=$(classify_pane_text "$text")
+    printf '%s' "$state" > "$(agent_state_file "$sess")"
+  done < <(timeout 2 tmux list-sessions -F '#{session_name}' 2>/dev/null)
+
+  # Drop cache files for sessions that no longer exist, so a killed
+  # session's last-known state doesn't linger and get read as current.
+  local f name
+  for f in "$AGENT_STATE_DIR"/*; do
+    [[ -f "$f" ]] || continue
+    name=$(basename "$f")
+    timeout 2 tmux has-session -t "=$name" 2>/dev/null || rm -f "$f"
+  done
+}
+
+# Poller entry point: refresh on a fixed interval, forever — `orch` runs this
+# as a background job tied to its own process lifetime (killed automatically
+# when orch/fzf exits), not a persistent daemon.
+agent_state_poll() {
+  local interval=${1:-3}
+  while true; do
+    refresh_agent_states
+    sleep "$interval"
+  done
+}
+
+# Reads the cached state for a session — treated as unknown (empty) if the
+# cache is missing or older than AGENT_STATE_STALE_SECS, e.g. the poller
+# hasn't ticked yet (first render) or isn't running at all (orch not
+# currently open, cache calls made some other way).
+cached_agent_state() {
+  local sess=$1
+  local f
+  f=$(agent_state_file "$sess")
+  [[ -f "$f" ]] || return
+  local age=$(( $(date +%s) - $(stat -c '%Y' "$f" 2>/dev/null || echo 0) ))
+  (( age > AGENT_STATE_STALE_SECS )) && return
+  cat "$f"
 }
 
 # Truncates $1 to $2 chars, replacing the tail with "..." if it overflows.
@@ -106,33 +194,53 @@ rows() {
     local state_color="$YELLOW"
     [[ "$state" == "live" ]] && state_color="$GREEN"
 
+    # Read-only cache lookup (near-free) — the actual tmux capture-pane work
+    # happens in the background poller `orch` spawns for the picker's
+    # lifetime, not here, so this doesn't slow down rows() at all. Only
+    # meaningful when a session exists; idle worktrees have nothing to poll.
+    local agent="" agent_color="$DIM"
+    if [[ "$session" != "-" ]]; then
+      agent=$(cached_agent_state "$session")
+      case "$agent" in
+        running) agent_color="$GREEN" ;;
+        waiting) agent_color="$CYAN" ;;
+      esac
+    fi
+
     # repo/task (fields 1,2) are used verbatim by fzf's {1}/{2} for
     # end-task/jump/full-row lookups — color codes are safe here since fzf
     # (with --ansi) strips them before splitting into positional fields, but
     # the *padding width* must still be computed on the plain text, or the
     # invisible escape bytes would throw off column alignment.
-    local repo_padded task_padded state_padded
+    local repo_padded task_padded state_padded agent_padded
     repo_padded=$(printf '%-16s' "$repo")
     task_padded=$(printf '%-32s' "$task")
     state_padded=$(printf '%-8s' "$state")
+    agent_padded=$(printf '%-8s' "${agent:--}")
 
-    printf "%s\t$(repo_color "$repo")%s${RESET} %-32s %-14s ${state_color}%s${RESET} %-16s %-9s %s\n" "$mtime" \
+    printf "%s\t$(repo_color "$repo")%s${RESET} %-32s %-14s ${state_color}%s${RESET} ${agent_color}%s${RESET} %-16s %-9s %s\n" "$mtime" \
       "$repo_padded" "$task_padded" "$(trunc "${branch_col:-none}" 14)" \
-      "$state_padded" "$(trunc "$session" 16)" "$last_used" "$(trunc "$cmd" 12)"
+      "$state_padded" "$agent_padded" "$(trunc "$session" 16)" "$last_used" "$(trunc "$cmd" 12)"
   done | sort -t$'\t' -k1,1rn | cut -f2-
 }
 
-end_task() {
+# Kill whatever tmux session(s) belong to a worktree, without touching the
+# worktree/branch itself. Shared by end_task (as part of full cleanup) and
+# kill_task (session-only, ctrl-k in the picker).
+#
+# Kills any session whose pane cwd matches this worktree (covers sessions
+# started under a different name than the task, e.g. cross-repo sharing),
+# AND the repo-scoped session name (used when ORCH_SCOPE_SESSIONS_TO_REPO=1
+# — see named_session() in orch) — a session can exist under that name with
+# no pane ever having this exact cwd if it was created but the process cd'd
+# away. The plain task-named session (default naming) may be shared across
+# repos, so it's only killed if no OTHER repo's worktree under this same
+# task name still exists — otherwise this would yank the session out from
+# under a still-active sibling.
+kill_session_for() {
   local repo=$1 task=$2
   local wt="$HOME/worktrees/$repo/$task"
 
-  # Kill any session whose pane cwd matches this worktree (covers sessions
-  # started under a different name than the task, e.g. cross-repo sharing),
-  # AND the task-named session itself (orch's default naming — see
-  # named_session() in orch) — a session can exist under that name with no
-  # pane ever having this exact cwd if it was created but the process cd'd
-  # away. Doing both means end-task can't leave a stale session behind
-  # regardless of how it got named.
   local target
   target=$(tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index}	#{pane_current_path}" 2>/dev/null | \
     awk -F'\t' -v p="$wt" '$2==p{print $1; exit}')
@@ -141,11 +249,6 @@ end_task() {
   local repo_session="${repo}__${task}"
   tmux has-session -t "=$repo_session" 2>/dev/null && tmux kill-session -t "=$repo_session" 2>/dev/null
 
-  # The plain task-named session may be shared across repos (see
-  # named_session() in orch — default naming, before ORCH_SCOPE_SESSIONS_TO_REPO
-  # opts a repo out). Only kill it if no OTHER repo's worktree under this
-  # same task name still exists — otherwise ending this one worktree would
-  # yank the session out from under a still-active sibling.
   if tmux has-session -t "=$task" 2>/dev/null; then
     local d has_sibling=0
     for d in "$HOME"/worktrees/*/"$task"; do
@@ -156,6 +259,23 @@ end_task() {
     done
     [[ "$has_sibling" -eq 0 ]] && tmux kill-session -t "=$task" 2>/dev/null
   fi
+}
+
+# ctrl-k in the picker: kill the session(s) for a worktree, leave the
+# worktree/branch untouched — for when you want to free up the tmux session
+# without ending the task. No confirmation prompt: cheap/reversible, ENTER
+# just recreates the session.
+kill_task() {
+  local repo=$1 task=$2
+  kill_session_for "$repo" "$task"
+  echo "$(date '+%H:%M:%S') killed session for $repo/$task (worktree+branch untouched)" >> /tmp/orch.log
+}
+
+end_task() {
+  local repo=$1 task=$2
+  local wt="$HOME/worktrees/$repo/$task"
+
+  kill_session_for "$repo" "$task"
 
   (
     cd "$HOME/code/$repo" 2>/dev/null || exit 1
@@ -180,6 +300,19 @@ confirm_end_task() {
     end_task "$repo" "$task"
   else
     echo "$(date '+%H:%M:%S') skipped $repo/$task (not confirmed)" >> /tmp/orch.log
+  fi
+}
+
+# Same terminal-access pattern as confirm_end_task, for ctrl-k.
+confirm_kill_task() {
+  local repo=$1 task=$2
+  printf "Kill tmux session for %s/%s? (y/n) " "$repo" "$task" > /dev/tty
+  local ans
+  read -r ans < /dev/tty
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    kill_task "$repo" "$task"
+  else
+    echo "$(date '+%H:%M:%S') skipped kill-session for $repo/$task (not confirmed)" >> /tmp/orch.log
   fi
 }
 
@@ -388,7 +521,10 @@ case "$1" in
   rows) rows ;;
   end-task) end_task "$2" "$3"; rows ;;
   confirm-end-task) confirm_end_task "$2" "$3" ;;
+  kill-task) kill_task "$2" "$3"; rows ;;
+  confirm-kill-task) confirm_kill_task "$2" "$3" ;;
   split-preview) split_preview "$2" "$3" ;;
   touch-access) touch_access "$2" "$3" ;;
-  *) echo "usage: $0 rows|end-task|confirm-end-task|split-preview|touch-access <repo> <task>" >&2; exit 1 ;;
+  agent-state-poll) agent_state_poll "$2" ;;
+  *) echo "usage: $0 rows|end-task|confirm-end-task|kill-task|confirm-kill-task|split-preview|touch-access|agent-state-poll <repo> <task>" >&2; exit 1 ;;
 esac

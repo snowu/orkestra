@@ -21,6 +21,11 @@ worktrees + tmux. Built on `fzf` + `tmux`. Ships as a standalone executable
   its tmux session (unless another repo's worktree still shares that task
   name — see "Session naming" below), and deletes the branch both locally
   and on `origin`.
+- **ctrl-k** — kill session: asks to confirm (`y`/`n`, tmux-style), then
+  kills the tmux session for the selected worktree without touching the
+  worktree or branch (and without switching you away from wherever you
+  currently are). ENTER just recreates the session afterward. Same "don't
+  yank a session a sibling repo still shares" guard as ctrl-x.
 - **ctrl-r** — refresh the list.
 
 ## Requirements
@@ -90,16 +95,20 @@ under that same task name still exists.
 
 The installer can bind a keybind that opens the `orch` picker.
 
-**tmux popup (recommended)** — if you use tmux, this is the safe option:
+**tmux window (recommended)** — if you use tmux, this is the safe option:
 **prefix + o** (tmux's own prefix system, e.g. `ctrl-b` then `o`) opens
-`orch` in a floating popup over whatever pane is focused, without touching
-that pane's input. It's a normal tmux prefix-table binding — it only fires
-after you've pressed the prefix, and never leaks into the pane's own
-program (vim, Claude Code, anything). Deliberately *not* a standalone
-chord shared with the terminal-emulator layer below — keeping tmux in its
-own prefix namespace means it can never collide with (or duplicate) a
-terminal-emulator keybind. `install.sh` asks about this first, defaulting
-to yes; the key after the prefix is configurable (default `o`).
+`orch` in a new tmux window that fills the whole client, without touching
+whatever pane/program had focus. It's a normal tmux prefix-table binding —
+it only fires after you've pressed the prefix, and never leaks into the
+pane's own program (vim, Claude Code, anything). Deliberately *not* a
+standalone chord shared with the terminal-emulator layer below — keeping
+tmux in its own prefix namespace means it can never collide with (or
+duplicate) a terminal-emulator keybind. `install.sh` asks about this
+first, defaulting to yes; the key after the prefix is configurable
+(default `o`). The window closes itself automatically when `orch` exits —
+no manual cleanup, and it's not a floating popup, so there's no border
+eating into the screen (tmux 3.2a's `display-popup` always draws one; a
+plain window doesn't).
 
 **Terminal-emulator keybinds** — an optional second layer, off by default,
 using a standalone chord (default **ctrl+alt+o**). Only terminals with
@@ -108,7 +117,7 @@ Alacritty) — each types `orch` + Enter into the shell you're already
 looking at. The existing `orch()` wrapper runs normally and its
 cd-on-exit works as usual. Only useful when a shell prompt is focused —
 if something else has focus (vim, an editor, etc.) the keystroke goes
-there instead. Prefer the tmux popup if you have tmux available.
+there instead. Prefer the tmux window if you have tmux available.
 
 gnome-terminal and macOS Terminal.app are **not** supported: neither has a
 built-in keybind-to-command mechanism — they rely entirely on an external,
@@ -121,12 +130,14 @@ you want them, or just alias/type `orch` — it's a plain command.
 
 What gets written:
 
-- **tmux** (`~/.tmux.conf`) — `bind-key o run-shell -b "tmux display-popup -w 95% -h 95% -E 'ORCH_TMUX_CLIENT=#{client_tty} orch'"`
-  (95% of the terminal — plenty of room for the list and preview; prefix
-  table — plain `o`, no `-n`/root-table flag, so it only fires after your
-  tmux prefix). `keybind-install.sh` reloads `~/.tmux.conf` into any running
-  tmux server automatically, so this applies immediately if tmux is already
-  running — no manual `tmux source-file` needed.
+- **tmux** (`~/.tmux.conf`) — `bind-key o new-window -n orch orch`
+  (prefix table — plain `o`, no `-n`/root-table flag, so it only fires
+  after your tmux prefix; `-n orch` here is `new-window`'s own flag for
+  the window's *name*, unrelated to the prefix-table `-n`). Fills the
+  whole client, no border, closes itself when `orch` exits.
+  `keybind-install.sh` reloads `~/.tmux.conf` into any running tmux server
+  automatically, so this applies immediately if tmux is already running —
+  no manual `tmux source-file` needed.
 - **Ghostty** (`~/.config/ghostty/config`) — `keybind = ctrl+alt+o=text:orch\n`.
   **After installing, reload Ghostty's config** (`ctrl+shift+,`, i.e.
   `reload_config`) or restart it.
@@ -134,7 +145,7 @@ What gets written:
 - **Alacritty** (`~/.config/alacritty/alacritty.toml`) — `[[keyboard.bindings]]`
   with `mods = "Control|Alt"`, `key = "O"`, `chars = "orch\r"`
 
-`./install.sh` asks about the tmux popup first (default yes, prompts for
+`./install.sh` asks about the tmux window first (default yes, prompts for
 the key after the prefix, default `o`), then whether to also set up a
 terminal-emulator keybind (default no) via a numbered menu
 (comma-separated multi-pick, e.g. `1,3`), prompting separately for that

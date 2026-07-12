@@ -111,20 +111,17 @@ add_tmux() {
     echo "WARNING: tmux not found on \$PATH — skipping tmux" >&2
     ERRORS=1; return 0
   fi
-  # orch (running inside the popup) needs to know the real client's tty to
-  # target `switch-client -c` correctly — without it, switch-client defaults
-  # to "the client in use", which inside a popup resolves to the popup's own
-  # ephemeral context, not the client you're actually looking at (confirmed
-  # live: switch-client alone does nothing visible from inside a popup).
-  #
-  # display-popup's shell-command argument is NOT format-expanded (only
-  # run-shell's is, per tmux's FORMATS docs) — binding directly to
-  # `display-popup -E "...#{client_tty}..."` passes the literal, unexpanded
-  # string `#{client_tty}` through (confirmed live via debug log). Route
-  # through `run-shell`, whose command string tmux does expand, to resolve
-  # #{client_tty} to a real path BEFORE building the display-popup command.
+  # A new tmux WINDOW fills the client with zero border — unlike
+  # display-popup, which in tmux 3.2a always draws a 1-cell frame around
+  # itself no matter the -w/-h size (confirmed live, and there's no
+  # border-removal flag until tmux 3.3+). "When the shell command
+  # completes, the window closes" (tmux(1)) — no manual cleanup needed;
+  # orch exiting (after ENTER/ctrl-x) closes this window automatically.
+  # A window is a real part of the session, not a popup's ephemeral
+  # overlay, so switch-client from inside it resolves to the real client
+  # on its own — no ORCH_TMUX_CLIENT targeting workaround needed here.
   add_inject_keybind "" "$HOME/.tmux.conf" tmux \
-    "bind-key ${TMUX_KEY} run-shell -b \"tmux display-popup -w 95% -h 95% -E 'ORCH_TMUX_CLIENT=#{client_tty} orch'\""
+    "bind-key ${TMUX_KEY} new-window -n orch orch"
   # Reload live, if a tmux server is already running — `source-file` (unlike
   # `source`, a shell builtin) is a tmux command; it applies the new binding
   # to every attached client immediately, no restart needed.

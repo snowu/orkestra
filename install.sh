@@ -67,7 +67,7 @@ ask_yn() {
 }
 
 if [[ "$KEYBIND" != "no" && -t 0 ]]; then
-  ask_yn "Use tmux popup for the orch keybind? (recommended — works safely inside vim, Claude Code, or anything else running in the pane) [Y/n] " y
+  ask_yn "Use a tmux window for the orch keybind? (recommended — works safely inside vim, Claude Code, or anything else running in the pane) [Y/n] " y
   if [[ "$REPLY_YN" == y ]]; then
     TMUX_KEY=o
     read -r -p "tmux key (after prefix)? [o]: " reply || reply=""

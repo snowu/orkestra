@@ -26,12 +26,37 @@ marker="/tmp/orch-new-task.marker"
 rm -f "$marker"
 : > /tmp/orch.log
 
-help_line="ENTER=attach tmux session (creates one if needed)   ctrl-n=new-task   ctrl-x=end-task   ctrl-r=refresh   ?=toggle info panel"
-column_header=$(printf "%-16s %-32s %-14s %-8s %-16s %-9s %s" "REPO" "TASK" "BRANCH" "STATE" "SESSION" "LAST USED" "CMD")
+# Background poller: refreshes the AGENT (running/waiting) column's cache
+# every few seconds for as long as the picker is open. Tied to THIS
+# process — no setsid/disown — so it's killed automatically the moment orch
+# exits (fzf closes), whether normally or via ctrl-c. Not a persistent
+# daemon: nothing keeps polling once you're not looking at the list.
+#
+# `-m` (job control) so the poller gets its OWN process group — a plain
+# `kill $poller_pid` only signals that one shell, not the tmux child it may
+# be blocked inside at that exact instant, so ctrl-c/exit could hang for a
+# while waiting on a wedged tmux call (confirmed live: this made the whole
+# picker un-closable). Signal the group instead, and escalate to -9 if it's
+# still around after a beat — the poller's own internal `timeout` calls
+# (see orch-helper.sh) mean this should rarely be needed, but the escalation
+# is the actual guarantee that ctrl-c/exit is never allowed to hang.
+set -m
+"$HELPER" agent-state-poll 3 &
+poller_pid=$!
+set +m
+_orch_kill_poller() {
+  kill -- "-$poller_pid" 2>/dev/null
+  ( sleep 0.5; kill -9 -- "-$poller_pid" 2>/dev/null ) &
+}
+trap _orch_kill_poller EXIT
+
+help_line="ENTER=attach tmux session (creates one if needed)   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   ?=toggle info panel"
+column_header=$(printf "%-16s %-32s %-14s %-8s %-8s %-16s %-9s %s" "REPO" "TASK" "BRANCH" "STATE" "AGENT" "SESSION" "LAST USED" "CMD")
 header="$help_line"$'\n'"$column_header"
 sel=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline --header="$header" \
   --bind "ctrl-n:execute-silent(touch $marker)+abort" \
   --bind "ctrl-x:execute($HELPER confirm-end-task {1} {2})+reload($HELPER rows)" \
+  --bind "ctrl-k:execute($HELPER confirm-kill-task {1} {2})+reload($HELPER rows)" \
   --bind "ctrl-r:reload($HELPER rows)" \
   --bind "?:toggle-preview" \
   --preview-window "down,70%,wrap,border-none" \
@@ -46,34 +71,18 @@ sel=$("$HELPER" rows | fzf --ansi --layout=reverse --header-first --info=inline 
 # makes new-session behave like attach-session when the session already
 # exists, and once that happens `-d` no longer means "start detached" —
 # it's reinterpreted as attach-session's "-d" ("detach other clients from
-# this session"), so the CURRENT client (the popup, if we're in one) gets
-# attached directly instead of staying put for our own switch-client call
-# below. Confirmed live: this is exactly why jumping to an ALREADY-RUNNING
-# session opened inside the popup instead of closing it, while creating a
-# NEW session (no -A path taken) worked fine. Fix: never let -A hit an
-# existing session on this branch — check first, only create if missing.
+# this session"). That mattered when orch ran inside a tmux popup (its
+# own ephemeral client context); the tmux keybind now opens orch in a
+# real new-window instead (see keybind-install.sh — window, not popup,
+# for a border-free full-screen picker), so switch-client's default "the
+# client in use" resolution is just the real client and needs no special
+# targeting. Still guard against -A hitting an existing session: check
+# first, only create if missing, same as before.
 _orch_goto_session() {
   local name=$1 dir=$2
   if [[ -n "${TMUX:-}" ]]; then
     tmux has-session -t "=$name" 2>/dev/null || tmux new -d -s "$name" -c "$dir"
-    # switch-client with no -c targets "the client in use", which from
-    # inside a tmux popup resolves to the popup's own ephemeral context,
-    # not the real client you're looking at. ORCH_TMUX_CLIENT is set by the
-    # popup keybind (keybind-install.sh) to the real client's tty, captured
-    # before the popup opened; use it explicitly when present.
-    if [[ -n "${ORCH_TMUX_CLIENT:-}" ]]; then
-      tmux switch-client -c "$ORCH_TMUX_CLIENT" -t "$name"
-    else
-      tmux switch-client -t "$name"
-    fi
-    # If we're running inside a popup (e.g. the tmux-popup keybind),
-    # switch-client alone changes what the client shows *underneath*, but
-    # the popup itself stays floating on top until this process exits.
-    # Close it immediately instead of leaving the user staring at the new
-    # session trapped inside the popup frame.
-    if [[ -n "${TMUX_PANE:-}" ]] && tmux display-message -p -F '#{popup_pane_top}' 2>/dev/null | grep -q .; then
-      tmux display-popup -C 2>/dev/null || true
-    fi
+    tmux switch-client -t "$name"
   else
     exec tmux new -A -s "$name" -c "$dir"
   fi
