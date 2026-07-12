@@ -66,7 +66,6 @@ ask_yn() {
   done
 }
 
-GHOSTTY_PICKED=0
 if [[ "$KEYBIND" != "no" && -t 0 ]]; then
   ask_yn "Use tmux popup for the orch keybind? (recommended — works safely inside vim, Claude Code, or anything else running in the pane) [Y/n] " y
   if [[ "$REPLY_YN" == y ]]; then
@@ -75,32 +74,56 @@ if [[ "$KEYBIND" != "no" && -t 0 ]]; then
     [[ -n "$reply" ]] && TMUX_KEY="$reply"
     echo "Using tmux key: prefix + $TMUX_KEY"
     "$DIR/keybind-install.sh" tmux ctrl+alt+o "$TMUX_KEY"
-    echo "Run 'tmux source-file ~/.tmux.conf' (or restart tmux) to pick this up."
   fi
 
   ask_yn "Install a terminal-emulator keybind too? [y/N] " n
   if [[ "$REPLY_YN" == y ]]; then
-    echo "Which terminal(s)? (comma-separated numbers)"
-    echo "  1) Ghostty"
-    echo "  2) kitty"
-    echo "  3) Alacritty"
-    read -r -p "> " picks || picks=""
+    picks=""
+    if command -v fzf >/dev/null 2>&1; then
+      while [[ -z "$picks" ]]; do
+        picks="$(printf 'Ghostty\nkitty\nAlacritty\n' | fzf --multi \
+          --bind 'space:toggle+down' \
+          --header 'space: toggle selection, enter: confirm (pick at least one)' \
+          || true)"
+      done
+    else
+      echo "fzf not found — falling back to comma-separated numbers."
+      echo "Which terminal(s)? (comma-separated numbers)"
+      echo "  1) Ghostty"
+      echo "  2) kitty"
+      echo "  3) Alacritty"
+      picknums=""
+      while [[ -z "$picknums" ]]; do
+        read -r -p "> " picknums || picknums=""
+      done
+      IFS=',' read -r -a PICK_NUMS <<<"$picknums"
+      for n in "${PICK_NUMS[@]}"; do
+        n="$(echo "$n" | tr -d '[:space:]')"
+        case "$n" in
+          1) t=Ghostty ;;
+          2) t=kitty ;;
+          3) t=Alacritty ;;
+          *) t="" ;;
+        esac
+        [[ -n "$t" ]] && picks="${picks:+$picks
+}$t"
+      done
+    fi
+
     TERMLIST=""
-    IFS=',' read -r -a PICK_NUMS <<<"$picks"
-    for n in "${PICK_NUMS[@]}"; do
-      n="$(echo "$n" | tr -d '[:space:]')"
-      case "$n" in
-        1) t=ghostty ;;
-        2) t=kitty ;;
-        3) t=alacritty ;;
-        *) t="" ;;
+    while IFS= read -r pick; do
+      case "$pick" in
+        Ghostty)   t=ghostty ;;
+        kitty)     t=kitty ;;
+        Alacritty) t=alacritty ;;
+        *)         t="" ;;
       esac
       [[ -n "$t" ]] && TERMLIST="${TERMLIST:+$TERMLIST,}$t"
-    done
+    done <<< "$picks"
+
     if [[ -z "$TERMLIST" ]]; then
       echo "No valid terminal selected — skipping terminal-emulator keybind install."
     else
-      [[ "$TERMLIST" == *ghostty* ]] && GHOSTTY_PICKED=1
       CHORD=ctrl+alt+o
       read -r -p "Keybind chord? [ctrl+alt+o]: " reply || reply=""
       [[ -n "$reply" ]] && CHORD="$reply"
@@ -110,9 +133,6 @@ if [[ "$KEYBIND" != "no" && -t 0 ]]; then
   fi
 elif [[ "$KEYBIND" != "no" ]]; then
   echo "NOTE: no terminal to prompt for (non-interactive) — skipping keybind install."
-fi
-if [[ "$GHOSTTY_PICKED" -eq 1 ]]; then
-  echo "Ghostty: reload config (ctrl+shift+, / reload_config) or restart Ghostty to pick up the change."
 fi
 
 echo
