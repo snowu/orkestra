@@ -1,10 +1,13 @@
 package worktree
 
 import (
+	"bufio"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"orkestra/internal/config"
@@ -80,34 +83,92 @@ func feBEDirs(cfg config.Config, repo, task, wt string) (feDir, beDir string, er
 	return feDir, beDir, nil
 }
 
-// SpawnFEBE starts (if not already running) detached tmux sessions
-// <task>_fe and <task>_be running the configured fe/be commands, rooted at
-// their respective sibling worktrees. Used for background dev servers that
-// don't need to be watched (hot reload does the rest).
-func SpawnFEBE(cfg config.Config, repo, task, wt string) error {
-	feDir, beDir, err := feBEDirs(cfg, repo, task, wt)
-	if err != nil {
-		return err
-	}
-	name := SessionName(cfg, repo, task)
-	if err := tmux.SpawnDetached(name+"_fe", feDir, cfg.FECmd); err != nil {
-		return err
-	}
-	return tmux.SpawnDetached(name+"_be", beDir, cfg.BECmd)
+// TaskPort derives a stable port per task name (8000-8999) so concurrent
+// tasks' backends don't collide — same task always gets the same port
+// across runs, no coordination needed between fe/be processes.
+func TaskPort(task string) int {
+	h := fnv.New32a()
+	h.Write([]byte(task))
+	return 8000 + int(h.Sum32()%1000)
 }
 
-// EnsureFEBEWindows makes sure the base session for repo/task has fe/be
-// windows running the configured commands, creating them if missing.
+// patchFEEnvVar rewrites (or appends) VAR=http://localhost:<port> in
+// feDir/.env.local — how the fe dev server learns which port the
+// task-specific backend landed on, since fe/be run as separate processes
+// with no shared env.
+func patchFEEnvVar(feDir, varName string, port int) error {
+	path := filepath.Join(feDir, ".env.local")
+	line := fmt.Sprintf("%s=http://localhost:%d", varName, port)
+
+	f, err := os.Open(path)
+	var lines []string
+	found := false
+	if err == nil {
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			l := sc.Text()
+			if strings.HasPrefix(l, varName+"=") {
+				lines = append(lines, line)
+				found = true
+			} else {
+				lines = append(lines, l)
+			}
+		}
+		f.Close()
+		if err := sc.Err(); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if !found {
+		lines = append(lines, line)
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+}
+
+// beCmd substitutes a {port} placeholder in cfg.BECmd, if present.
+func beCmd(cfg config.Config, port int) string {
+	return strings.ReplaceAll(cfg.BECmd, "{port}", strconv.Itoa(port))
+}
+
+// prepFEBE resolves fe/be dirs, derives the task's port, and patches the fe
+// env var (if configured) — the setup shared by SpawnFEBE/EnsureFEBEWindows
+// before actually starting either process.
+func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, cmd string, err error) {
+	feDir, beDir, err = feBEDirs(cfg, repo, task, wt)
+	if err != nil {
+		return "", "", "", err
+	}
+	port := TaskPort(task)
+	if cfg.FEEnvVar != "" {
+		if err := patchFEEnvVar(feDir, cfg.FEEnvVar, port); err != nil {
+			return "", "", "", err
+		}
+	}
+	return feDir, beDir, beCmd(cfg, port), nil
+}
+
+// EnsureFEBEWindows makes sure the base session for repo/task exists and has
+// fe/be windows running the configured commands, creating whatever's
+// missing. Used both for ctrl-g (spawn in background, no attach after) and
+// ctrl-a (attach once this returns) — fe/be always live as windows in the
+// SAME session as the base one, never separate sessions, so switching
+// windows (ctrl-b 1/2/3) or attaching shows all three together and killing
+// the base session takes fe/be down with it.
 func EnsureFEBEWindows(cfg config.Config, repo, task, wt string) error {
-	feDir, beDir, err := feBEDirs(cfg, repo, task, wt)
+	feDir, beDir, be, err := prepFEBE(cfg, repo, task, wt)
 	if err != nil {
 		return err
 	}
 	name := SessionName(cfg, repo, task)
+	if err := tmux.EnsureSession(name, wt); err != nil {
+		return err
+	}
 	if err := tmux.EnsureWindow(name, "fe", feDir, cfg.FECmd); err != nil {
 		return err
 	}
-	return tmux.EnsureWindow(name, "be", beDir, cfg.BECmd)
+	return tmux.EnsureWindow(name, "be", beDir, be)
 }
 
 // NewTask creates <firstRoot>/<repo>/<task> as a worktree on a new branch

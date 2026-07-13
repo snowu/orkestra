@@ -16,7 +16,7 @@ type Row struct {
 	Repo, Task, Branch  string
 	Session, Cmd, Agent string
 	Live                bool
-	FELive, BELive      bool      // <session>_fe / <session>_be running (ctrl-g)
+	FELive, BELive      bool      // "fe"/"be" windows present in the base session (ctrl-g/ctrl-a)
 	LastUsed            time.Time // zero = never used via ork
 	Path                string
 }
@@ -24,11 +24,12 @@ type Row struct {
 // Deps injects the impure lookups so BuildRows is testable without a tmux
 // server or real git repos.
 type Deps struct {
-	Panes      []tmux.Pane
-	HasSession func(name string) bool
-	AgentState func(session string) string
-	Branch     func(wt string) string
-	AccessTime func(repo, task string) time.Time
+	Panes          []tmux.Pane
+	HasSession     func(name string) bool
+	SessionWindows func(session string) []string
+	AgentState     func(session string) string
+	Branch         func(wt string) string
+	AccessTime     func(repo, task string) time.Time
 }
 
 // AccessDir returns ~/.cache/ork/access.
@@ -117,10 +118,16 @@ func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 		if s := taskSess[task]; s != nil {
 			r.Session, r.Cmd, r.Agent, r.Live = s.name, s.cmd, s.agent, true
 		}
-		if d.HasSession != nil {
+		if d.SessionWindows != nil {
 			name := SessionName(cfg, repo, task)
-			r.FELive = d.HasSession(name + "_fe")
-			r.BELive = d.HasSession(name + "_be")
+			for _, w := range d.SessionWindows(name) {
+				switch w {
+				case "fe":
+					r.FELive = true
+				case "be":
+					r.BELive = true
+				}
+			}
 		}
 		rows = append(rows, r)
 	}
@@ -134,10 +141,11 @@ func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 // LiveDeps builds Deps against the real system.
 func LiveDeps(agentStateDir string, staleAfter time.Duration, readState func(dir, session string, staleAfter time.Duration) string) Deps {
 	return Deps{
-		Panes:      tmux.ListPanes(),
-		HasSession: tmux.HasSession,
-		AgentState: func(s string) string { return readState(agentStateDir, s, staleAfter) },
-		Branch:     GitBranch,
+		Panes:          tmux.ListPanes(),
+		HasSession:     tmux.HasSession,
+		SessionWindows: tmux.SessionWindowNames,
+		AgentState:     func(s string) string { return readState(agentStateDir, s, staleAfter) },
+		Branch:         GitBranch,
 		AccessTime: func(repo, task string) time.Time {
 			st, err := os.Stat(AccessFile(repo, task))
 			if err != nil {

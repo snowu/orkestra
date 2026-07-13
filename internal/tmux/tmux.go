@@ -114,33 +114,18 @@ func EnsureSession(name, dir string) error {
 	return exec.Command("tmux", "new", "-d", "-s", name, "-c", dir).Run()
 }
 
-// SpawnDetached creates a detached session named name rooted at dir, then
-// sends cmd to its shell — if it doesn't already exist. Existing sessions
-// are left untouched — callers that want to guarantee a fresh cwd/command
-// should kill first.
-//
-// cmd is sent via send-keys to the pane's own interactive shell rather than
-// passed as the tmux new-session command: rund/bund are typically shell
-// aliases/functions from .bashrc/.zshrc, which a non-interactive `sh -c cmd`
-// won't have sourced — the pane would exit instantly with "command not
-// found" and the session would vanish before anyone saw it.
-func SpawnDetached(name, dir, cmd string) error {
-	if HasSession(name) {
-		return nil
-	}
-	if err := exec.Command("tmux", "new", "-d", "-s", name, "-c", dir).Run(); err != nil {
-		return err
-	}
-	return exec.Command("tmux", "send-keys", "-t", name, cmd, "Enter").Run()
-}
-
 // EnsureWindow makes sure session has a window named window running cmd
-// rooted at dir; a no-op if that window already exists. Like SpawnDetached,
-// cmd runs via send-keys so shell aliases/functions are available.
+// rooted at dir; a no-op if that window already exists.
+//
+// cmd is sent via send-keys to the window's own interactive shell rather
+// than passed as the tmux new-window command: rund/bund-style commands are
+// typically shell aliases/functions from .bashrc/.zshrc, which a
+// non-interactive `sh -c cmd` won't have sourced — the pane would exit
+// instantly with "command not found" and the window would vanish before
+// anyone saw it.
 func EnsureWindow(session, window, dir, cmd string) error {
-	out, _ := exec.Command("tmux", "list-windows", "-t", "="+session, "-F", "#{window_name}").Output()
-	for _, w := range strings.Split(string(out), "\n") {
-		if strings.TrimSpace(w) == window {
+	for _, w := range SessionWindowNames(session) {
+		if w == window {
 			return nil
 		}
 	}
@@ -149,6 +134,22 @@ func EnsureWindow(session, window, dir, cmd string) error {
 		return err
 	}
 	return exec.Command("tmux", "send-keys", "-t", target, cmd, "Enter").Run()
+}
+
+// SessionWindowNames lists window names for session; empty if the session
+// doesn't exist.
+func SessionWindowNames(session string) []string {
+	out, err := exec.Command("tmux", "list-windows", "-t", "="+session, "-F", "#{window_name}").Output()
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, w := range strings.Split(string(out), "\n") {
+		if w = strings.TrimSpace(w); w != "" {
+			names = append(names, w)
+		}
+	}
+	return names
 }
 
 // CapturePane returns the pane's visible content. Occasionally empty on

@@ -25,7 +25,13 @@ type Config struct {
 	// names — e.g. ORK_FE_REPO=cr-frontend, ORK_BE_REPO=cr-managament. From
 	// any row, the paired worktree is <root>/<FERepo|BERepo>/<sameTask>.
 	FERepo, BERepo string
-	FECmd, BECmd   string
+	// FECmd/BECmd run in each sibling worktree. BECmd may contain a {port}
+	// placeholder — ork substitutes a port derived from the task name so
+	// concurrent tasks' backends don't collide. FEEnvVar, if set, is the
+	// .env.local key ork rewrites in the fe worktree to point at that same
+	// port before running FECmd (e.g. NEXT_PUBLIC_CREDIT_RISK_SERVICE_ENDPOINT).
+	FECmd, BECmd string
+	FEEnvVar     string
 }
 
 func defaults() Config {
@@ -35,7 +41,7 @@ func defaults() Config {
 		ScanMaxDepth:  3,
 		HooksConfig:   filepath.Join(home, ".config/ork/hooks.json"),
 		FECmd:         "rund",
-		BECmd:         "bund",
+		BECmd:         "bund", // override with a {port}-templated command to avoid port collisions across tasks
 	}
 }
 
@@ -94,6 +100,8 @@ func Load(path string) (Config, error) {
 			if v := unquote(val); v != "" {
 				cfg.BECmd = v
 			}
+		case "ORK_FE_ENV_VAR":
+			cfg.FEEnvVar = unquote(val)
 		}
 	}
 	return cfg, sc.Err()

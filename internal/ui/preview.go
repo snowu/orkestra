@@ -44,6 +44,19 @@ func resolvePane(cfg config.Config, r worktree.Row) *tmux.Pane {
 	return nil
 }
 
+// windowsLine lists the base session's windows — fe/be live as windows in
+// this one session (ctrl-g/ctrl-a), not separate sessions, so this is the
+// full picture: switch with ctrl-b + window number, no other session to
+// hunt for.
+func windowsLine(cfg config.Config, r worktree.Row) string {
+	name := worktree.SessionName(cfg, r.Repo, r.Task)
+	names := tmux.SessionWindowNames(name)
+	if len(names) == 0 {
+		return styleCyan.Render(" windows:") + " none\n"
+	}
+	return styleCyan.Render(" windows:") + " " + strings.Join(names, ", ") + "\n"
+}
+
 // infoPreview: branch/path summary + tmux session details + the live
 // pane's bottommost lines.
 func infoPreview(cfg config.Config, r worktree.Row, lines int) string {
@@ -59,19 +72,26 @@ func infoPreview(cfg config.Config, r worktree.Row, lines int) string {
 	b.WriteString(styleCyan.Render(" branch:") + " " + styleBold.Render(branch) + "\n")
 	b.WriteString(styleCyan.Render(" path:") + "   " + styleDim.Render(shortPath) + "\n")
 
+	if cfg.FERepo != "" && cfg.BERepo != "" {
+		port := worktree.TaskPort(r.Task)
+		feOn, beOn := styleDim.Render("-"), styleDim.Render("-")
+		if r.FELive {
+			feOn = styleGreen.Render("up")
+		}
+		if r.BELive {
+			beOn = styleGreen.Render("up")
+		}
+		b.WriteString(styleCyan.Render(" fe/be port:") + fmt.Sprintf(" %d  ", port) +
+			"fe: " + feOn + "  be: " + beOn + "\n")
+	}
+
+	b.WriteString(windowsLine(cfg, r))
+
 	pane := resolvePane(cfg, r)
 	if pane == nil {
-		b.WriteString(styleCyan.Render(" session:") + " none\n")
 		b.WriteString("\n(no live tmux session)\n")
 		return b.String()
 	}
-	wins, clients := tmux.SessionSummary(pane.Session)
-	att := "detached"
-	attStyle := styleDim
-	if clients > 0 {
-		att, attStyle = "attached", styleGreen
-	}
-	b.WriteString(styleCyan.Render(" session:") + fmt.Sprintf(" %s | windows: %d | ", pane.Session, wins) + attStyle.Render(att) + "\n")
 	note := ""
 	if pane.CWD != r.Path {
 		note = "  (shared, cwd: " + strings.Replace(pane.CWD, homeDir(), "~", 1) + ")"
