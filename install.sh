@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs orkestra:
-#   - ork, ork-helper.sh -> ~/.local/bin (real executable, on $PATH like mise/nvim)
+#   - ork (Go binary, built here) -> ~/.local/bin (on $PATH like mise/nvim)
 #   - worktree-tasks.sh, ork.sh -> ~/scripts (sourced from your shell rc)
 #   - ~/.ork.conf from the example, with your code/worktree roots filled in
 # Works with bash or zsh.
@@ -65,18 +65,26 @@ ask_yn() {
 
 section "orkestra install"
 
-# ── 1. Install the executables ─────────────────────────────────────────
-subsection "Installing scripts"
-mkdir -p "$BIN_DEST" "$SCRIPTS_DEST"
+# ── 1. Build + install the executable ──────────────────────────────────
+subsection "Building ork (Go)"
+if ! command -v go &>/dev/null; then
+  note "error: go not found — install Go (e.g. 'mise use -g go@latest'), or use the frozen bash version: legacy/build.sh" >&2
+  exit 1
+fi
+# Built to bin/ first so a failed build can't leave a half-written binary
+# on $PATH.
+(cd "$DIR" && go build -o bin/ork ./cmd/ork)
 
-cp "$DIR/ork" "$BIN_DEST/ork"
-cp "$DIR/ork-helper.sh" "$BIN_DEST/ork-helper.sh"
+mkdir -p "$BIN_DEST" "$SCRIPTS_DEST"
+cp "$DIR/bin/ork" "$BIN_DEST/ork"
 cp "$DIR/orc.cow" "$BIN_DEST/orc.cow"
-chmod +x "$BIN_DEST/ork" "$BIN_DEST/ork-helper.sh"
+chmod +x "$BIN_DEST/ork"
+# Stale from bash-era installs — the Go binary has no helper script.
+rm -f "$BIN_DEST/ork-helper.sh"
 
 cp "$DIR/worktree-tasks.sh" "$SCRIPTS_DEST/worktree-tasks.sh"
 cp "$DIR/ork.sh" "$SCRIPTS_DEST/ork.sh"
-ok "ork -> $BIN_DEST, worktree-tasks.sh/ork.sh -> $SCRIPTS_DEST"
+ok "ork (Go) -> $BIN_DEST, worktree-tasks.sh/ork.sh -> $SCRIPTS_DEST"
 
 case ":$PATH:" in
   *":$BIN_DEST:"*) ;;

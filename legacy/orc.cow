@@ -1,0 +1,12 @@
+##
+## Orc cow for orkestra (warhammer ork, horned helm).
+##
+$the_cow = <<EOC;
+  $thoughts   (\\ .----. /)
+   $thoughts   \\(______)/
+       | `o  o' |
+      _/   ~~   \\_
+    ,' ,A,____,A, ',
+   | A||/\\/\\/\\/\\||A |
+    \\_______________/
+EOC

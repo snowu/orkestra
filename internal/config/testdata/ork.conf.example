@@ -1,0 +1,47 @@
+# ork config — copy to ~/.ork.conf and edit for your own setup.
+# install.sh will offer to generate the ROOTS section below for you
+# interactively; everything else you're expected to hand-edit.
+
+# ── Where your worktrees live ─────────────────────────────────────────────
+# Repos themselves aren't configured — ork scans $HOME live for any
+# directory containing a .git (fast: ~0.6s on a normal dev machine),
+# so there's nothing to keep in sync with wherever you actually clone
+# things.
+
+# ORK_WORKTREES_ROOTS: folders where per-task worktrees get created, one
+# subfolder per repo (e.g. <root>/<repo>/<task>). The FIRST entry is where
+# new worktrees are created; ork searches all entries when looking up an
+# existing one, so you can point this at multiple locations (e.g. an SSD
+# scratch path plus a slower long-term one) without losing track of tasks
+# already living in either.
+ORK_WORKTREES_ROOTS=("$HOME/worktrees")
+
+# ── Repo picker ───────────────────────────────────────────────────────────
+# ORK_FAVORITES: shown first in the ctrl-n repo picker (order preserved).
+# Empty by default — fill in your own repo folder names.
+ORK_FAVORITES=()
+
+# ── Per-repo setup hooks ───────────────────────────────────────────────────
+# Per-repo setup hooks (run after `new-task` creates a worktree, cwd = the
+# new worktree) live in a separate JSON file, not here — see
+# ~/.config/ork/hooks.json (or wherever ORK_HOOKS_CONFIG below points).
+# Kept out of this shell-sourced conf on purpose: plain JSON can't execute
+# anything just by being sourced, so a hooks file you copy from elsewhere
+# only ever runs the one command string it declares for a given repo.
+#
+# Example ~/.config/ork/hooks.json:
+#   {
+#     "my-backend": "cp -rpvu \"$HOME/code/my-backend/infra\" .",
+#     "my-frontend": "bun install"
+#   }
+#
+# Uncomment to point at a different path:
+# ORK_HOOKS_CONFIG="$HOME/.config/ork/hooks.json"
+
+# ── Tmux session naming ────────────────────────────────────────────────────
+# ENTER opens a tmux session named after the task (shared across repos by
+# default — handy when one agent works a BE+FE pair under the same task
+# name and you want one session for context continuity). Set to 1 if you'd
+# rather same-named tasks in different repos never share a session.
+# (alt-ENTER always just cd's, no session, regardless of this setting.)
+ORK_SCOPE_SESSIONS_TO_REPO=0
