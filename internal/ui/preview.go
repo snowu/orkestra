@@ -1,0 +1,121 @@
+package ui
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"orkestra/internal/config"
+	"orkestra/internal/tmux"
+	"orkestra/internal/worktree"
+)
+
+func homeDir() string {
+	h, _ := os.UserHomeDir()
+	return h
+}
+
+func repoCachePath() string {
+	return filepath.Join(homeDir(), ".cache/ork/repo-scan")
+}
+
+// resolvePane: same rule as row building — match by cwd first, else by a
+// session named after the task (sessions are shared by task name across
+// repos by default).
+func resolvePane(cfg config.Config, r worktree.Row) *tmux.Pane {
+	panes := tmux.ListPanes()
+	for i, p := range panes {
+		if p.CWD == r.Path {
+			return &panes[i]
+		}
+	}
+	if tmux.HasSession(r.Task) {
+		for i, p := range panes {
+			if p.Session == r.Task {
+				return &panes[i]
+			}
+		}
+	}
+	return nil
+}
+
+// infoPreview: branch/path summary + tmux session details + the live
+// pane's bottommost lines.
+func infoPreview(cfg config.Config, r worktree.Row, lines int) string {
+	var b strings.Builder
+
+	// Always the real branch name — never the "=" shorthand; this panel is
+	// meant to be exact where the row list is compact.
+	branch := worktree.GitBranch(r.Path)
+	if branch == "" {
+		branch = "none"
+	}
+	shortPath := strings.Replace(r.Path, homeDir(), "~", 1)
+	b.WriteString(styleCyan.Render(" branch:") + " " + styleBold.Render(branch) + "\n")
+	b.WriteString(styleCyan.Render(" path:") + "   " + styleDim.Render(shortPath) + "\n")
+
+	pane := resolvePane(cfg, r)
+	if pane == nil {
+		b.WriteString(styleCyan.Render(" session:") + " none\n")
+		b.WriteString("\n(no live tmux session)\n")
+		return b.String()
+	}
+	wins, clients := tmux.SessionSummary(pane.Session)
+	att := "detached"
+	attStyle := styleDim
+	if clients > 0 {
+		att, attStyle = "attached", styleGreen
+	}
+	b.WriteString(styleCyan.Render(" session:") + fmt.Sprintf(" %s | windows: %d | ", pane.Session, wins) + attStyle.Render(att) + "\n")
+	note := ""
+	if pane.CWD != r.Path {
+		note = "  (shared, cwd: " + strings.Replace(pane.CWD, homeDir(), "~", 1) + ")"
+	}
+	b.WriteString(styleCyan.Render(" running:") + " " + styleGreen.Render(pane.Cmd) + fmt.Sprintf(" (pid %d)%s", pane.PID, note) + "\n")
+
+	b.WriteString(styleDim.Render(strings.Repeat("-", 40)) + "\n")
+	content := tmux.CapturePane(pane.Target)
+	tail := lastLines(content, lines-5)
+	b.WriteString(tail)
+	return b.String()
+}
+
+func gitStatusPreview(r worktree.Row) string {
+	// Deliberately plain `git status` — same output you'd see cd'ing in
+	// and running it by hand.
+	if _, err := os.Stat(r.Path); err != nil {
+		return "(worktree not found: " + r.Path + ")"
+	}
+	out, _ := exec.Command("git", "-C", r.Path, "status").CombinedOutput()
+	return string(out)
+}
+
+func lastLines(s string, n int) string {
+	if n < 1 {
+		n = 1
+	}
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func existingBranches(repoRoot string) []string {
+	if repoRoot == "" {
+		return nil
+	}
+	out, err := exec.Command("git", "-C", repoRoot, "branch", "--format=%(refname:short)").Output()
+	if err != nil {
+		return nil
+	}
+	var branches []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			branches = append(branches, l)
+		}
+	}
+	return branches
+}

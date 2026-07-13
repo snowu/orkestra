@@ -1,0 +1,156 @@
+// Package config parses ~/.ork.conf. The file is bash syntax (it's still
+// sourced by the shell shims), but ork only ever needs the handful of
+// KEY=value / KEY=(a b c) assignments below — this is a line parser for
+// exactly those forms, not a bash evaluator. Unknown keys are ignored so
+// users can keep arbitrary shell in the file for their own wrappers.
+package config
+
+import (
+	"bufio"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+type Config struct {
+	WorktreeRoots       []string
+	Favorites           []string
+	ScanMaxDepth        int
+	ScopeSessionsToRepo bool
+	HooksConfig         string
+	ClaudePersonalDirs  []string
+}
+
+func defaults() Config {
+	home, _ := os.UserHomeDir()
+	return Config{
+		WorktreeRoots: []string{filepath.Join(home, "worktrees")},
+		ScanMaxDepth:  3,
+		HooksConfig:   filepath.Join(home, ".config/ork/hooks.json"),
+	}
+}
+
+// Load reads path if it exists; a missing file just yields defaults.
+func Load(path string) (Config, error) {
+	cfg := defaults()
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return cfg, err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		switch key {
+		case "ORK_WORKTREES_ROOTS":
+			if v := parseArray(val); len(v) > 0 {
+				cfg.WorktreeRoots = v
+			}
+		case "ORK_FAVORITES":
+			cfg.Favorites = parseArray(val)
+		case "CLAUDE_PERSONAL_DIRS":
+			cfg.ClaudePersonalDirs = parseArray(val)
+		case "ORK_SCAN_MAXDEPTH":
+			if n, err := strconv.Atoi(unquote(val)); err == nil && n > 0 {
+				cfg.ScanMaxDepth = n
+			}
+		case "ORK_SCOPE_SESSIONS_TO_REPO":
+			cfg.ScopeSessionsToRepo = unquote(val) == "1"
+		case "ORK_HOOKS_CONFIG":
+			if v := expand(unquote(val)); v != "" {
+				cfg.HooksConfig = v
+			}
+		}
+	}
+	return cfg, sc.Err()
+}
+
+// parseArray handles bash `(elem "elem" 'elem')` values.
+func parseArray(val string) []string {
+	val = strings.TrimSpace(val)
+	if !strings.HasPrefix(val, "(") || !strings.HasSuffix(val, ")") {
+		// scalar assigned where an array is expected — treat as 1 element
+		if v := expand(unquote(val)); v != "" {
+			return []string{v}
+		}
+		return nil
+	}
+	inner := strings.TrimSpace(val[1 : len(val)-1])
+	if inner == "" {
+		return nil
+	}
+	var out []string
+	for _, tok := range splitTokens(inner) {
+		if v := expand(unquote(tok)); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// splitTokens splits on whitespace, respecting single/double quotes.
+func splitTokens(s string) []string {
+	var toks []string
+	var cur strings.Builder
+	var quote byte
+	flush := func() {
+		if cur.Len() > 0 {
+			toks = append(toks, cur.String())
+			cur.Reset()
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			cur.WriteByte(c)
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+			cur.WriteByte(c)
+		case c == ' ' || c == '\t':
+			flush()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	flush()
+	return toks
+}
+
+func unquote(s string) string {
+	if len(s) >= 2 {
+		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
+// expand resolves $HOME/${HOME} and a leading ~ — the only expansions
+// real-world ork.conf files use.
+func expand(s string) string {
+	home, _ := os.UserHomeDir()
+	s = strings.ReplaceAll(s, "${HOME}", home)
+	s = strings.ReplaceAll(s, "$HOME", home)
+	if s == "~" || strings.HasPrefix(s, "~/") {
+		s = home + s[1:]
+	}
+	return s
+}
