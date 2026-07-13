@@ -127,13 +127,18 @@ func (m *Model) View() string {
 			cmd = "-"
 		}
 
+		sessShown := pad(trunc(sess, 16), 16)
+		if c, ok := m.taskColors[r.Task]; ok {
+			sessShown = renderer.NewStyle().Foreground(c).Render(sessShown)
+		}
+
 		cmdShown := trunc(cmd, 12)
 		line := renderer.NewStyle().Foreground(m.repoColors[r.Repo]).Render(pad(r.Repo, 16)) + " " +
 			pad(r.Task, 32) + " " +
 			pad(trunc(branch, 14), 14) + " " +
 			stateStyle.Render(pad(state, 8)) + " " +
 			agentStyle.Render(pad(agent, 8)) + " " +
-			pad(trunc(sess, 16), 16) + " " +
+			sessShown + " " +
 			pad(ago(r.LastUsed), 9) + " " +
 			cmdShown
 		if i == m.cursor {

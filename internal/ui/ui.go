@@ -53,6 +53,20 @@ var renderer = lipgloss.NewRenderer(os.Stderr)
 // Stable across runs as long as the set of repos on screen is stable.
 var repoPalette = []int{39, 208, 84, 201, 220, 51, 196, 141, 154, 213, 43, 178, 99, 209, 48}
 
+// Separate palette for task/session coloring so a task's color never
+// coincides with the repo palette (rows already carry a repo color; the
+// session color needs to read as a distinct signal, not a repeat).
+var taskPalette = []int{135, 172, 65, 204, 227, 30, 168, 108, 216, 63}
+
+func assignColors(names []string, palette []int) map[string]lipgloss.Color {
+	sort.Strings(names)
+	colors := make(map[string]lipgloss.Color, len(names))
+	for i, n := range names {
+		colors[n] = lipgloss.Color(fmt.Sprintf("%d", palette[i%len(palette)]))
+	}
+	return colors
+}
+
 func assignRepoColors(rows []worktree.Row) map[string]lipgloss.Color {
 	distinct := map[string]bool{}
 	var names []string
@@ -62,12 +76,27 @@ func assignRepoColors(rows []worktree.Row) map[string]lipgloss.Color {
 			names = append(names, r.Repo)
 		}
 	}
-	sort.Strings(names)
-	colors := make(map[string]lipgloss.Color, len(names))
-	for i, n := range names {
-		colors[n] = lipgloss.Color(fmt.Sprintf("%d", repoPalette[i%len(repoPalette)]))
+	return assignColors(names, repoPalette)
+}
+
+// assignTaskColors colors only tasks whose session is shared by 2+ rows —
+// solo tasks stay uncolored so the shared ones stand out.
+func assignTaskColors(rows []worktree.Row) map[string]lipgloss.Color {
+	sessionRows := map[string]int{}
+	for _, r := range rows {
+		if r.Session != "" {
+			sessionRows[r.Session]++
+		}
 	}
-	return colors
+	distinct := map[string]bool{}
+	var names []string
+	for _, r := range rows {
+		if sessionRows[r.Session] > 1 && !distinct[r.Task] {
+			distinct[r.Task] = true
+			names = append(names, r.Task)
+		}
+	}
+	return assignColors(names, taskPalette)
 }
 
 var (
@@ -126,6 +155,7 @@ type Model struct {
 	err           string
 	cow           []string // fortune/cowsay sidebar lines, refreshed per reload
 	repoColors    map[string]lipgloss.Color
+	taskColors    map[string]lipgloss.Color
 }
 
 type rowsMsg []worktree.Row
@@ -227,6 +257,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyFilter()
 		m.cow = cowSidebar()
 		m.repoColors = assignRepoColors(m.rows)
+		m.taskColors = assignTaskColors(m.rows)
 		return m, m.previewCmd()
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())
