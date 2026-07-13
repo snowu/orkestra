@@ -114,7 +114,7 @@ func (m *Model) View() string {
 		}
 
 		cmdShown := trunc(cmd, 12)
-		line := renderer.NewStyle().Foreground(repoColor(r.Repo)).Render(pad(r.Repo, 16)) + " " +
+		line := renderer.NewStyle().Foreground(m.repoColors[r.Repo]).Render(pad(r.Repo, 16)) + " " +
 			pad(r.Task, 32) + " " +
 			pad(trunc(branch, 14), 14) + " " +
 			stateStyle.Render(pad(state, 8)) + " " +

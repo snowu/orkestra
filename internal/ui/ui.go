@@ -8,8 +8,8 @@ package ui
 import (
 	"context"
 	"fmt"
-	"hash/crc32"
 	"os"
+	"sort"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,13 +44,30 @@ type Result struct {
 // draws on stderr.
 var renderer = lipgloss.NewRenderer(os.Stderr)
 
-// Same palette + CRC32 hash as the bash version (cksum is CRC32) so every
-// repo keeps the exact color it had before the rewrite.
-var repoPalette = []int{39, 208, 178, 141, 71, 203, 74, 209, 135, 214, 84, 168, 45, 220, 111}
+// Colors are assigned by distinct-repo order (sorted), not hashed — the
+// bash version hashed the name into the palette, which could land two
+// repos on the same or near-identical color. Ordered assignment walks the
+// palette instead, so no repeats until there are more repos than slots,
+// and the palette itself is sequenced so neighbors are maximally distinct
+// (hue jumps: blue, orange, green, magenta, yellow, cyan, red, purple...).
+// Stable across runs as long as the set of repos on screen is stable.
+var repoPalette = []int{39, 208, 84, 201, 220, 51, 196, 141, 154, 213, 43, 178, 99, 209, 48}
 
-func repoColor(name string) lipgloss.Color {
-	idx := crc32.ChecksumIEEE([]byte(name)) % uint32(len(repoPalette))
-	return lipgloss.Color(fmt.Sprintf("%d", repoPalette[idx]))
+func assignRepoColors(rows []worktree.Row) map[string]lipgloss.Color {
+	distinct := map[string]bool{}
+	var names []string
+	for _, r := range rows {
+		if !distinct[r.Repo] {
+			distinct[r.Repo] = true
+			names = append(names, r.Repo)
+		}
+	}
+	sort.Strings(names)
+	colors := make(map[string]lipgloss.Color, len(names))
+	for i, n := range names {
+		colors[n] = lipgloss.Color(fmt.Sprintf("%d", repoPalette[i%len(repoPalette)]))
+	}
+	return colors
 }
 
 var (
@@ -107,6 +124,7 @@ type Model struct {
 	loadRows      func() []worktree.Row
 	err           string
 	cow           []string // fortune/cowsay sidebar lines, refreshed per reload
+	repoColors    map[string]lipgloss.Color
 }
 
 type rowsMsg []worktree.Row
@@ -207,6 +225,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rows = msg
 		m.applyFilter()
 		m.cow = cowSidebar()
+		m.repoColors = assignRepoColors(m.rows)
 		return m, m.previewCmd()
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())
