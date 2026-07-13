@@ -71,6 +71,7 @@ mkdir -p "$BIN_DEST" "$SCRIPTS_DEST"
 
 cp "$DIR/ork" "$BIN_DEST/ork"
 cp "$DIR/ork-helper.sh" "$BIN_DEST/ork-helper.sh"
+cp "$DIR/orc.cow" "$BIN_DEST/orc.cow"
 chmod +x "$BIN_DEST/ork" "$BIN_DEST/ork-helper.sh"
 
 cp "$DIR/worktree-tasks.sh" "$SCRIPTS_DEST/worktree-tasks.sh"
