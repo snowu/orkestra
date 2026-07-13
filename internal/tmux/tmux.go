@@ -94,19 +94,29 @@ func NewOrAttach(name, dir string) error {
 	return syscall.Exec(tmuxPath, []string{"tmux", "new", "-A", "-s", name, "-c", dir}, os.Environ())
 }
 
-// cdSession sends a cd command to an existing session's active pane so
+// cdSession sends a cd command to a shell pane of an existing session so
 // reused ("shared") sessions land in the target worktree dir instead of
 // wherever the pane's cwd happened to be from creation.
 //
-// Only when that pane is actually sitting at a shell prompt: send-keys
-// types blindly, so with vim/claude/anything else in the foreground the
-// "cd" would be pasted straight into that program (and Enter submitted) —
-// there it's better to do nothing and let the user land where the pane is.
+// It scans the session's panes for one actually sitting at a shell prompt
+// and targets that pane id directly — NOT the session's active pane:
+// send-keys types blindly, so with vim/claude in the foreground the "cd"
+// would be pasted straight into that program (and Enter submitted). It
+// also can't assume the active pane is even relevant — when ork itself is
+// launched from a tmux keybind (`bind o new-window ork`), the active pane
+// IS the ork window, which closes right after. No shell pane → do nothing.
 func cdSession(name, dir string) {
-	out, _ := exec.Command("tmux", "display-message", "-p", "-t", name, "#{pane_current_command}").Output()
-	switch strings.TrimSpace(string(out)) {
-	case "zsh", "bash", "fish", "sh", "dash", "ksh":
-		exec.Command("tmux", "send-keys", "-t", name, "cd "+shellQuote(dir), "Enter").Run()
+	out, _ := exec.Command("tmux", "list-panes", "-s", "-t", "="+name, "-F", "#{pane_id}\t#{pane_current_command}").Output()
+	for _, line := range strings.Split(string(out), "\n") {
+		id, cmd, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if !ok {
+			continue
+		}
+		switch cmd {
+		case "zsh", "bash", "fish", "sh", "dash", "ksh":
+			exec.Command("tmux", "send-keys", "-t", id, "cd "+shellQuote(dir), "Enter").Run()
+			return
+		}
 	}
 }
 
