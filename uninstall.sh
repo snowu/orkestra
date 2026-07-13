@@ -13,7 +13,7 @@ for arg in "$@"; do
   [[ "$arg" == "--purge-config" ]] && PURGE_CONFIG=1
 done
 
-rm -f "$BIN_DEST/ork" "$BIN_DEST/ork-helper.sh"
+rm -f "$BIN_DEST/ork" "$BIN_DEST/ork-helper.sh" "$BIN_DEST/orc.cow"
 rm -f "$SCRIPTS_DEST/worktree-tasks.sh" "$SCRIPTS_DEST/ork.sh"
 echo "Removed ork, ork-helper.sh, worktree-tasks.sh, ork.sh"
 
