@@ -1,0 +1,12 @@
+two UI changes:
+  1. repo colors are not varied enough and repeat too soon
+  2. let's also add a visual identifier for when two rows share a tmux session. we have that info already
+
+
+- Agents:
+  - pass 1/2/3 down to agent when in ork preview
+
+
+Friction:
+  - worktrees makes it more tedious to test and move between folders. Ork helps but we can help more for my workflows specifically. We can add a command to spawn two more tmux sessions called name_fe and name_be and that just keeps running services
+  - if opening shared folder from tmux we don't change folder in tmux session

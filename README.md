@@ -43,11 +43,12 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
   recreates the session afterward. Same "don't yank a session a sibling
   repo still shares" guard as ctrl-x.
 - **ctrl-r** — refresh the list manually.
-- **?** — toggle the info panel (branch/path/tmux summary + live pane
-  preview, refreshed every second, below the list). Shown by default.
-- **ctrl-s** — toggle a `git status` preview for the selected worktree, in
-  place of the usual info panel — lets you check whether a worktree has
-  uncommitted changes without attaching a session for it.
+- **tab** — cycle the bottom panel: info (branch/path/tmux summary + live
+  pane preview, refreshed every second — shown by default) → `git status`
+  for the selected worktree → hidden.
+- **ctrl-s** — toggle a 50/50 split panel: `git status` on the left, the
+  live info panel on the right — check for uncommitted changes without
+  losing sight of what the agent is doing.
 
 ## Requirements
 

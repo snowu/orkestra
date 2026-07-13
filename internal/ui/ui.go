@@ -95,6 +95,7 @@ const (
 	previewOff previewKind = iota
 	previewInfo
 	previewGitStatus
+	previewSplit // git status | live info, 50/50
 )
 
 type Model struct {
@@ -259,7 +260,7 @@ func (m *Model) previewCmd() tea.Cmd {
 		m.previewText = ""
 		return nil
 	}
-	kind, cfg, lines := m.preview, m.cfg, m.previewLines()
+	kind, cfg, lines, width := m.preview, m.cfg, m.previewLines(), m.width
 	return func() tea.Msg {
 		var text string
 		switch kind {
@@ -267,6 +268,8 @@ func (m *Model) previewCmd() tea.Cmd {
 			text = infoPreview(cfg, sel, lines)
 		case previewGitStatus:
 			text = gitStatusPreview(sel)
+		case previewSplit:
+			text = splitPreview(cfg, sel, lines, width)
 		}
 		return previewMsg{forPath: sel.Path, text: text}
 	}

@@ -74,21 +74,27 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.startPickRepo()
 		return m, nil
 
-	case "?":
-		if m.preview == previewInfo {
+	case "tab":
+		// Cycle: info -> git status -> off -> info. (From the ctrl-s split
+		// view, tab folds back into the cycle at git status.)
+		switch m.preview {
+		case previewInfo:
+			m.preview = previewGitStatus
+		case previewGitStatus, previewSplit:
 			m.preview = previewOff
 			m.previewText = ""
 			return m, nil
+		default:
+			m.preview = previewInfo
 		}
-		m.preview = previewInfo
 		return m, m.previewCmd()
 	case "ctrl+s":
-		if m.preview == previewGitStatus {
+		if m.preview == previewSplit {
 			m.preview = previewOff
 			m.previewText = ""
 			return m, nil
 		}
-		m.preview = previewGitStatus
+		m.preview = previewSplit
 		return m, m.previewCmd()
 
 	case "backspace":

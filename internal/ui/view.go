@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const helpLine = "ENTER=attach tmux   alt-ENTER=cd only   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   ?=info panel   ctrl-s=git status"
+const helpLine = "ENTER=attach tmux   alt-ENTER=cd only   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   tab=cycle info/status   ctrl-s=split"
 
 func trunc(s string, w int) string {
 	if len(s) > w {

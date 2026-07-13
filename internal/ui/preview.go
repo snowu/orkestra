@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+
 	"orkestra/internal/config"
 	"orkestra/internal/tmux"
 	"orkestra/internal/worktree"
@@ -84,12 +87,50 @@ func infoPreview(cfg config.Config, r worktree.Row, lines int) string {
 
 func gitStatusPreview(r worktree.Row) string {
 	// Deliberately plain `git status` — same output you'd see cd'ing in
-	// and running it by hand.
+	// and running it by hand. color.status=always because git strips color
+	// when stdout isn't a tty (it's a pipe here); the TUI passes ANSI
+	// through fine.
 	if _, err := os.Stat(r.Path); err != nil {
 		return "(worktree not found: " + r.Path + ")"
 	}
-	out, _ := exec.Command("git", "-C", r.Path, "status").CombinedOutput()
+	out, _ := exec.Command("git", "-C", r.Path, "-c", "color.status=always", "status").CombinedOutput()
 	return string(out)
+}
+
+// splitPreview: ctrl-s view — git status (left) and the live info panel
+// (right), 50/50. Column padding/truncation must be ANSI-aware: both sides
+// carry color codes, and byte-length math would shear the divider.
+func splitPreview(cfg config.Config, r worktree.Row, lines, width int) string {
+	colW := width/2 - 2
+	if colW < 20 {
+		colW = 20
+	}
+	left := strings.Split(strings.TrimRight(gitStatusPreview(r), "\n"), "\n")
+	right := strings.Split(strings.TrimRight(infoPreview(cfg, r, lines), "\n"), "\n")
+
+	n := len(left)
+	if len(right) > n {
+		n = len(right)
+	}
+	if n > lines {
+		n = lines
+	}
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		var l, rr string
+		if i < len(left) {
+			l = left[i]
+		}
+		if i < len(right) {
+			rr = right[i]
+		}
+		l = ansi.Truncate(l, colW, "…")
+		if w := lipgloss.Width(l); w < colW {
+			l += strings.Repeat(" ", colW-w)
+		}
+		b.WriteString(l + styleDim.Render(" │ ") + ansi.Truncate(rr, colW, "…") + "\n")
+	}
+	return b.String()
 }
 
 func lastLines(s string, n int) string {
