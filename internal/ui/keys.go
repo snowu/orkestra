@@ -207,6 +207,10 @@ func (m *Model) confirmAccept() (tea.Model, tea.Cmd) {
 	}
 	ops := worktree.LiveTmuxOps()
 	m.err = ""
+	// If ork's own window lives in a session about to die, move it out
+	// first (with the client following) — otherwise the kill takes ork
+	// down with it and the user is dumped out of the TUI.
+	m.evacuateIfDoomed(sel)
 	switch mode {
 	case modeConfirmKill:
 		worktree.KillSessionFor(m.cfg, ops, sel.Repo, sel.Task)
@@ -232,6 +236,27 @@ func (m *Model) confirmAccept() (tea.Model, tea.Cmd) {
 		return m, m.previewCmd()
 	}
 	return m, m.reloadCmd()
+}
+
+// evacuateIfDoomed checks whether the tmux session hosting ork's own
+// window is one of the sessions the pending kill/end will destroy (task
+// name, repo__task, or the session whose pane cwd is the worktree) and, if
+// so, moves ork's window into the fallback "ork-home" session so ork — and
+// the user's client — survive the kill.
+func (m *Model) evacuateIfDoomed(sel worktree.Row) {
+	cur, win := tmux.CurrentWindow()
+	if cur == "" {
+		return
+	}
+	doomed := cur == sel.Task || cur == sel.Repo+"__"+sel.Task
+	if !doomed {
+		if p := resolvePane(m.cfg, sel); p != nil && p.Session == cur {
+			doomed = true
+		}
+	}
+	if doomed {
+		tmux.EvacuateWindow(win, "ork-home")
+	}
 }
 
 // --- ctrl-n: repo picker, then task-name input ---

@@ -67,6 +67,39 @@ func NewDetached(name, cmd string) error {
 	return exec.Command("tmux", "new-session", "-d", "-s", name, cmd).Run()
 }
 
+// CurrentWindow returns the session name and window id of the pane this
+// process runs in (empty strings outside tmux).
+func CurrentWindow() (session, windowID string) {
+	pane := os.Getenv("TMUX_PANE")
+	if pane == "" {
+		return "", ""
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", pane, "#{session_name}\n#{window_id}").Output()
+	if err != nil {
+		return "", ""
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
+
+// EvacuateWindow moves windowID into session dst (created detached if
+// missing) and switches this client to follow it — used before killing the
+// session the window lives in, so the process inside (ork) survives.
+func EvacuateWindow(windowID, dst string) error {
+	if !HasSession(dst) {
+		if err := exec.Command("tmux", "new-session", "-d", "-s", dst).Run(); err != nil {
+			return err
+		}
+	}
+	if err := exec.Command("tmux", "move-window", "-s", windowID, "-t", dst+":").Run(); err != nil {
+		return err
+	}
+	return exec.Command("tmux", "switch-client", "-t", dst).Run()
+}
+
 // InsideTmux reports whether we're already running inside a tmux client.
 func InsideTmux() bool { return os.Getenv("TMUX") != "" }
 
