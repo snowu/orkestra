@@ -97,8 +97,17 @@ func NewOrAttach(name, dir string) error {
 // cdSession sends a cd command to an existing session's active pane so
 // reused ("shared") sessions land in the target worktree dir instead of
 // wherever the pane's cwd happened to be from creation.
+//
+// Only when that pane is actually sitting at a shell prompt: send-keys
+// types blindly, so with vim/claude/anything else in the foreground the
+// "cd" would be pasted straight into that program (and Enter submitted) —
+// there it's better to do nothing and let the user land where the pane is.
 func cdSession(name, dir string) {
-	exec.Command("tmux", "send-keys", "-t", name, "cd "+shellQuote(dir), "Enter").Run()
+	out, _ := exec.Command("tmux", "display-message", "-p", "-t", name, "#{pane_current_command}").Output()
+	switch strings.TrimSpace(string(out)) {
+	case "zsh", "bash", "fish", "sh", "dash", "ksh":
+		exec.Command("tmux", "send-keys", "-t", name, "cd "+shellQuote(dir), "Enter").Run()
+	}
 }
 
 func shellQuote(s string) string {
