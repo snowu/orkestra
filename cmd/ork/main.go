@@ -33,6 +33,14 @@ func main() {
 			task = args[1]
 		}
 		runEndTask(task)
+	case "_end-task":
+		// Internal: cleanup with explicit repo/task, run inside the temp
+		// "ork-end-*" tmux session the TUI spawns so its output can be
+		// tailed in the live pane.
+		if len(args) < 3 {
+			fatal("usage: ork _end-task <repo> <task>")
+		}
+		runEndTaskDirect(args[1], args[2])
 	default:
 		fatal("usage: ork [new-task <name> | end-task [name] | --version]")
 	}

@@ -60,6 +60,13 @@ func KillSession(name string) {
 	exec.Command("tmux", "kill-session", "-t", "="+name).Run()
 }
 
+// NewDetached starts a detached session running cmd; the session dies on
+// its own when cmd exits. Used for transient work whose output the TUI
+// tails via CapturePane (e.g. end-task cleanup).
+func NewDetached(name, cmd string) error {
+	return exec.Command("tmux", "new-session", "-d", "-s", name, cmd).Run()
+}
+
 // InsideTmux reports whether we're already running inside a tmux client.
 func InsideTmux() bool { return os.Getenv("TMUX") != "" }
 

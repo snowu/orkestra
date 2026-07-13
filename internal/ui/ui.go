@@ -19,6 +19,7 @@ import (
 
 	"orkestra/internal/agentstate"
 	"orkestra/internal/config"
+	"orkestra/internal/tmux"
 	"orkestra/internal/worktree"
 )
 
@@ -141,6 +142,7 @@ type Model struct {
 	confirmYes  bool
 	preview     previewKind
 	previewText string
+	endSession  string // temp "ork-end-*" tmux session being tailed in the live pane
 
 	// ctrl-n flow
 	repos      []string // repo basenames, favorites first
@@ -165,10 +167,15 @@ type rowsMsg []worktree.Row
 type stateChangedMsg struct{}
 type tickMsg time.Time
 type spawnDoneMsg struct{ err error }
+type endDoneMsg struct{} // the temp end-task session has exited
 type previewMsg struct {
 	forPath string // selection the text was computed for
 	text    string
 }
+
+// endPreviewKey marks a previewMsg carrying the end-task session tail —
+// not tied to any row, so it must bypass the stale-selection check.
+const endPreviewKey = "\x00end"
 
 func New(cfg config.Config) *Model {
 	// Preview visible by default, like the bash picker's always-on
@@ -278,7 +285,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = ""
 		return m, m.reloadCmd()
+	case endDoneMsg:
+		m.endSession = ""
+		return m, m.reloadCmd()
 	case previewMsg:
+		if msg.forPath == endPreviewKey {
+			if m.endSession != "" {
+				m.previewText = msg.text
+			}
+			return m, nil
+		}
 		// Drop stale results — the cursor may have moved while this one
 		// was being computed.
 		if sel, ok := m.selected(); ok && sel.Path == msg.forPath {
@@ -287,7 +303,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tickMsg:
 		// Keep ticking even while the preview is toggled off — the tick is
-		// also what makes re-enabling it come back live immediately.
+		// also what makes re-enabling it come back live immediately. The
+		// end-task tail overrides everything: it must refresh every tick,
+		// and the row list reloads alongside so the deleted worktree
+		// vanishes as soon as the removal lands — not only after the tail
+		// session's final sleep expires.
+		if m.endSession != "" {
+			return m, tea.Batch(m.previewCmd(), m.reloadCmd(), tick())
+		}
 		var cmd tea.Cmd
 		if m.preview != previewOff && m.mode == modeList {
 			cmd = m.previewCmd()
@@ -303,6 +326,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // tmux/git execs it runs take tens of ms, which felt like input lag when
 // they ran synchronously inside Update on every cursor move.
 func (m *Model) previewCmd() tea.Cmd {
+	// While an end-task cleanup session is alive, the live pane tails it
+	// instead of the selected row; when it dies, endDoneMsg swings the pane
+	// back and reloads the (now shorter) row list.
+	if m.endSession != "" {
+		name, lines := m.endSession, m.previewLines()
+		return func() tea.Msg {
+			if !tmux.HasSession(name) {
+				return endDoneMsg{}
+			}
+			// Plain name, no "=" exact-match prefix: capture-pane (unlike
+			// has-session) rejects it on tmux 3.2a.
+			return previewMsg{forPath: endPreviewKey, text: lastLines(tmux.CapturePane(name), lines)}
+		}
+	}
 	sel, ok := m.selected()
 	if !ok || m.preview == previewOff {
 		m.previewText = ""

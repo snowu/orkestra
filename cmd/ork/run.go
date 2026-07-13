@@ -121,6 +121,17 @@ func runEndTask(task string) {
 	}
 }
 
+// runEndTaskDirect: temp-session cleanup — repo/task given explicitly (no
+// cwd derivation: the session's cwd must not sit inside the dir being
+// deleted). Output goes to the session's tty so the TUI can tail it.
+func runEndTaskDirect(repo, task string) {
+	requireTools()
+	cfg := loadConfig()
+	repos := worktree.AllRepoDirs(homeDirMust(), cfg.ScanMaxDepth, repoCache(), 60*time.Second)
+	summary := worktree.EndTask(cfg, worktree.LiveTmuxOps(), repos, repo, task)
+	fmt.Fprintln(os.Stderr, summary)
+}
+
 func trimNL(s string) string {
 	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r') {
 		s = s[:len(s)-1]

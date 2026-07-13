@@ -29,6 +29,9 @@ func openBrowser(url string) {
 	}
 }
 
+// tmux session names may not contain '.' or ':'.
+var endSessionSafe = strings.NewReplacer(".", "_", ":", "_")
+
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeConfirmEnd, modeConfirmKill:
@@ -208,8 +211,25 @@ func (m *Model) confirmAccept() (tea.Model, tea.Cmd) {
 	case modeConfirmKill:
 		worktree.KillSessionFor(m.cfg, ops, sel.Repo, sel.Task)
 	case modeConfirmEnd:
-		repos := worktree.AllRepoDirs(homeDir(), m.cfg.ScanMaxDepth, repoCachePath(), 60*time.Second)
-		m.err = worktree.EndTask(m.cfg, ops, repos, sel.Repo, sel.Task)
+		// Cleanup runs in a throwaway detached tmux session; the live pane
+		// tails it (previewCmd) so the git output is visible in place. The
+		// session self-destructs when its command exits; a short sleep keeps
+		// the last lines readable before the pane snaps back to the row
+		// preview. Works outside tmux too — detached sessions need no client.
+		repo, task := sel.Repo, sel.Task
+		name := "ork-end-" + endSessionSafe.Replace(repo+"-"+task)
+		cmd := fmt.Sprintf("ork _end-task %q %q 2>&1; echo; echo '[done]'; sleep 3", repo, task)
+		if err := tmux.NewDetached(name, cmd); err != nil {
+			// tmux refused — inline fallback, summary in the status line.
+			repos := worktree.AllRepoDirs(homeDir(), m.cfg.ScanMaxDepth, repoCachePath(), 60*time.Second)
+			m.err = worktree.EndTask(m.cfg, ops, repos, repo, task)
+			return m, m.reloadCmd()
+		}
+		m.endSession = name
+		if m.preview == previewOff {
+			m.preview = previewInfo // force the lower pane open for the tail
+		}
+		return m, m.previewCmd()
 	}
 	return m, m.reloadCmd()
 }
