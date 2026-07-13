@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"orkestra/internal/worktree"
 )
 
 const helpLine = "ENTER=attach tmux   alt-ENTER=cd only   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   tab=cycle info/status   ctrl-s=split   ctrl-g=spawn fe/be   ctrl-a=open all"
@@ -55,7 +57,7 @@ func (m *Model) View() string {
 	b.WriteString(styleDim.Render(helpLine) + "\n")
 	// Two leading spaces match the rows' cursor-marker prefix so the
 	// header sits exactly over its columns.
-	b.WriteString("  " + styleBold.Render(fmt.Sprintf("%-16s %-32s %-14s %-8s %-8s %-5s %-16s %-9s %s",
+	b.WriteString("  " + styleBold.Render(fmt.Sprintf("%-16s %-32s %-14s %-8s %-8s %-10s %-16s %-9s %s",
 		"REPO", "TASK", "BRANCH", "STATE", "AGENT", "FE/BE", "SESSION", "LAST USED", "CMD")) + "\n")
 	// Always drawn (even empty) so typing a filter doesn't shift the rows.
 	b.WriteString("> " + m.filter + "\n")
@@ -70,7 +72,7 @@ func (m *Model) View() string {
 
 	// Visible width of a full row (plain text, before styling): the padded
 	// columns joined by single spaces, plus the 2-char cursor prefix.
-	const rowPlainWidth = 2 + 16 + 1 + 32 + 1 + 14 + 1 + 8 + 1 + 8 + 1 + 5 + 1 + 16 + 1 + 9 + 1 + 12
+	const rowPlainWidth = 2 + 16 + 1 + 32 + 1 + 14 + 1 + 8 + 1 + 8 + 1 + 10 + 1 + 16 + 1 + 9 + 1 + 12
 
 	// Cow sidebar sits a comfortable gap right of the table, but never
 	// past the terminal edge — a wide fortune bubble gets pulled left
@@ -135,8 +137,17 @@ func (m *Model) View() string {
 		if r.BELive {
 			beCh, beStyle = "b", styleGreen
 		}
-		febe := feStyle.Render(feCh) + "/" + beStyle.Render(beCh)
-		febeShown := febe + strings.Repeat(" ", 5-3) // "f/b" is 3 visible cols, pad to 5
+		// FE port shown only when something is actually running — the
+		// number is meaningless (and noisy) for idle rows. FE over BE:
+		// that's the one you open in the browser.
+		portStr := ""
+		if r.FELive || r.BELive {
+			fePort, _ := worktree.TaskPorts(r.Task)
+			portStr = fmt.Sprintf(" %d", fePort)
+		}
+		febe := feStyle.Render(feCh) + "/" + beStyle.Render(beCh) + styleCyan.Render(portStr)
+		visible := 3 + len(portStr) // "f/b" + optional " NNNN"
+		febeShown := febe + strings.Repeat(" ", max(0, 10-visible))
 
 		taskShown := pad(r.Task, 32)
 		sessShown := pad(trunc(sess, 16), 16)

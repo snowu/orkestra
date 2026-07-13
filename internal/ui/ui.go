@@ -305,7 +305,7 @@ func (m *Model) previewCmd() tea.Cmd {
 		var text string
 		switch kind {
 		case previewInfo:
-			text = infoPreview(cfg, sel, lines)
+			text = infoPreview(cfg, sel, lines, width)
 		case previewGitStatus:
 			text = gitStatusPreview(sel)
 		case previewSplit:

@@ -58,8 +58,8 @@ func windowsLine(cfg config.Config, r worktree.Row) string {
 }
 
 // infoPreview: branch/path summary + tmux session details + the live
-// pane's bottommost lines.
-func infoPreview(cfg config.Config, r worktree.Row, lines int) string {
+// pane's bottommost lines (all windows side by side when fe/be spawned).
+func infoPreview(cfg config.Config, r worktree.Row, lines, width int) string {
 	var b strings.Builder
 
 	// Always the real branch name — never the "=" shorthand; this panel is
@@ -73,7 +73,7 @@ func infoPreview(cfg config.Config, r worktree.Row, lines int) string {
 	b.WriteString(styleCyan.Render(" path:") + "   " + styleDim.Render(shortPath) + "\n")
 
 	if cfg.FERepo != "" && cfg.BERepo != "" {
-		port := worktree.TaskPort(r.Task)
+		fePort, bePort := worktree.TaskPorts(r.Task)
 		feOn, beOn := styleDim.Render("-"), styleDim.Render("-")
 		if r.FELive {
 			feOn = styleGreen.Render("up")
@@ -81,8 +81,8 @@ func infoPreview(cfg config.Config, r worktree.Row, lines int) string {
 		if r.BELive {
 			beOn = styleGreen.Render("up")
 		}
-		b.WriteString(styleCyan.Render(" fe/be port:") + fmt.Sprintf(" %d  ", port) +
-			"fe: " + feOn + "  be: " + beOn + "\n")
+		b.WriteString(styleCyan.Render(" fe/be:") + fmt.Sprintf("  fe :%d ", fePort) + feOn +
+			fmt.Sprintf("   be :%d ", bePort) + beOn + "\n")
 	}
 
 	b.WriteString(windowsLine(cfg, r))
@@ -99,9 +99,68 @@ func infoPreview(cfg config.Config, r worktree.Row, lines int) string {
 	b.WriteString(styleCyan.Render(" running:") + " " + styleGreen.Render(pane.Cmd) + fmt.Sprintf(" (pid %d)%s", pane.PID, note) + "\n")
 
 	b.WriteString(styleDim.Render(strings.Repeat("-", 40)) + "\n")
-	content := tmux.CapturePane(pane.Target)
-	tail := lastLines(content, lines-5)
-	b.WriteString(tail)
+	b.WriteString(windowsPreview(pane.Session, pane.Target, lines-5, width))
+	return b.String()
+}
+
+// windowsPreview captures the live tail of every window in session, side by
+// side — one column per window (main | fe | be), so spawned dev servers are
+// visible without leaving ork. width<=0 means "don't columnize": single
+// window falls back to the plain full-width tail.
+func windowsPreview(session, activeTarget string, lines, width int) string {
+	names := tmux.SessionWindowNames(session)
+	if len(names) <= 1 {
+		return lastLines(tmux.CapturePane(activeTarget), lines)
+	}
+
+	var cols [][]string
+	for _, w := range names {
+		content := lastLines(tmux.CapturePane(session+":"+w), lines-1)
+		col := []string{styleBold.Render(w)}
+		col = append(col, strings.Split(content, "\n")...)
+		cols = append(cols, col)
+	}
+	return joinColumns(cols, lines, width)
+}
+
+// joinColumns renders columns side by side, ANSI-aware (same reasoning as
+// splitPreview: escape codes are invisible but non-zero-length, so padding
+// math must use rendered width).
+func joinColumns(cols [][]string, lines, width int) string {
+	if width <= 0 {
+		width = 200
+	}
+	colW := width/len(cols) - 2
+	if colW < 20 {
+		colW = 20
+	}
+	n := 0
+	for _, c := range cols {
+		if len(c) > n {
+			n = len(c)
+		}
+	}
+	if n > lines {
+		n = lines
+	}
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		for j, c := range cols {
+			var cell string
+			if i < len(c) {
+				cell = c[i]
+			}
+			cell = ansi.Truncate(cell, colW, "…")
+			if j < len(cols)-1 {
+				if w := lipgloss.Width(cell); w < colW {
+					cell += strings.Repeat(" ", colW-w)
+				}
+				cell += styleDim.Render(" │ ")
+			}
+			b.WriteString(cell)
+		}
+		b.WriteString("\n")
+	}
 	return b.String()
 }
 
@@ -126,7 +185,7 @@ func splitPreview(cfg config.Config, r worktree.Row, lines, width int) string {
 		colW = 20
 	}
 	left := strings.Split(strings.TrimRight(gitStatusPreview(r), "\n"), "\n")
-	right := strings.Split(strings.TrimRight(infoPreview(cfg, r, lines), "\n"), "\n")
+	right := strings.Split(strings.TrimRight(infoPreview(cfg, r, lines, colW), "\n"), "\n")
 
 	n := len(left)
 	if len(right) > n {

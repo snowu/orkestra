@@ -83,13 +83,15 @@ func feBEDirs(cfg config.Config, repo, task, wt string) (feDir, beDir string, er
 	return feDir, beDir, nil
 }
 
-// TaskPort derives a stable port per task name (8000-8999) so concurrent
-// tasks' backends don't collide — same task always gets the same port
-// across runs, no coordination needed between fe/be processes.
-func TaskPort(task string) int {
+// TaskPorts derives stable ports per task name — FE in 3000-3999, BE in
+// 8000-8999 — so concurrent tasks' dev servers don't collide, and the FE
+// port is predictable instead of whatever `next dev` auto-increments to.
+// Same task always gets the same pair across runs, no coordination needed.
+func TaskPorts(task string) (fe, be int) {
 	h := fnv.New32a()
 	h.Write([]byte(task))
-	return 8000 + int(h.Sum32()%1000)
+	n := int(h.Sum32() % 1000)
+	return 3000 + n, 8000 + n
 }
 
 // patchFEEnvVar rewrites (or appends) VAR=http://localhost:<port> in
@@ -127,26 +129,27 @@ func patchFEEnvVar(feDir, varName string, port int) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
-// beCmd substitutes a {port} placeholder in cfg.BECmd, if present.
-func beCmd(cfg config.Config, port int) string {
-	return strings.ReplaceAll(cfg.BECmd, "{port}", strconv.Itoa(port))
+// subPort substitutes a {port} placeholder in cmd, if present.
+func subPort(cmd string, port int) string {
+	return strings.ReplaceAll(cmd, "{port}", strconv.Itoa(port))
 }
 
-// prepFEBE resolves fe/be dirs, derives the task's port, and patches the fe
-// env var (if configured) — the setup shared by SpawnFEBE/EnsureFEBEWindows
-// before actually starting either process.
-func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, cmd string, err error) {
+// prepFEBE resolves fe/be dirs, derives the task's ports ({port} in FECmd
+// gets the fe port, in BECmd the be port), and patches the fe env var (if
+// configured) to point at the be port — the setup shared before actually
+// starting either process.
+func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, feCmd, beCmd string, err error) {
 	feDir, beDir, err = feBEDirs(cfg, repo, task, wt)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
-	port := TaskPort(task)
+	fePort, bePort := TaskPorts(task)
 	if cfg.FEEnvVar != "" {
-		if err := patchFEEnvVar(feDir, cfg.FEEnvVar, port); err != nil {
-			return "", "", "", err
+		if err := patchFEEnvVar(feDir, cfg.FEEnvVar, bePort); err != nil {
+			return "", "", "", "", err
 		}
 	}
-	return feDir, beDir, beCmd(cfg, port), nil
+	return feDir, beDir, subPort(cfg.FECmd, fePort), subPort(cfg.BECmd, bePort), nil
 }
 
 // EnsureFEBEWindows makes sure the base session for repo/task exists and has
@@ -157,7 +160,7 @@ func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, cmd strin
 // windows (ctrl-b 1/2/3) or attaching shows all three together and killing
 // the base session takes fe/be down with it.
 func EnsureFEBEWindows(cfg config.Config, repo, task, wt string) error {
-	feDir, beDir, be, err := prepFEBE(cfg, repo, task, wt)
+	feDir, beDir, fe, be, err := prepFEBE(cfg, repo, task, wt)
 	if err != nil {
 		return err
 	}
@@ -165,7 +168,7 @@ func EnsureFEBEWindows(cfg config.Config, repo, task, wt string) error {
 	if err := tmux.EnsureSession(name, wt); err != nil {
 		return err
 	}
-	if err := tmux.EnsureWindow(name, "fe", feDir, cfg.FECmd); err != nil {
+	if err := tmux.EnsureWindow(name, "fe", feDir, fe); err != nil {
 		return err
 	}
 	return tmux.EnsureWindow(name, "be", beDir, be)
