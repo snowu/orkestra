@@ -95,7 +95,92 @@ for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   fi
 done
 
-# ── 2. Configure where your worktrees live ──────────────────────────────
+# ── 2. Install the Claude Code hook ──────────────────────────────────────
+# The AGENT column (running/waiting/input) and live picker refresh are both
+# driven by this hook — it's how Claude Code tells ork "I just started
+# working" / "I just stopped and I'm waiting on you", pushed the instant it
+# happens rather than polled. Skipping this step (which install.sh used to
+# do, silently) is exactly what broke both features after the orch->ork
+# rename: the hook file and its settings.json wiring were never touched by
+# install.sh, so a stale copy under the OLD name kept firing into a cache
+# directory nothing reads from anymore. Installing it here, every run,
+# means a rename/reinstall can't strand it again.
+subsection "Installing Claude Code hook"
+
+CLAUDE_HOOKS_DIR="$HOME/.claude/hooks"
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+
+if command -v claude >/dev/null 2>&1 || [[ -d "$HOME/.claude" ]]; then
+  mkdir -p "$CLAUDE_HOOKS_DIR"
+  cp "$DIR/hooks/ork-agent-state.sh" "$CLAUDE_HOOKS_DIR/ork-agent-state.sh"
+  chmod +x "$CLAUDE_HOOKS_DIR/ork-agent-state.sh"
+  ok "ork-agent-state.sh -> $CLAUDE_HOOKS_DIR"
+
+  # A previous install under the pre-rename name would have left a stale
+  # copy here, still pointing at the old cache paths — remove it so it
+  # can't sit around double-firing or confusing a future `grep`.
+  [[ -f "$CLAUDE_HOOKS_DIR/orch-agent-state.sh" ]] && \
+    rm -f "$CLAUDE_HOOKS_DIR/orch-agent-state.sh" && \
+    note "Removed stale $CLAUDE_HOOKS_DIR/orch-agent-state.sh from a pre-rename install."
+
+  if command -v python3 >/dev/null 2>&1; then
+    [[ -f "$CLAUDE_SETTINGS" ]] || echo '{}' > "$CLAUDE_SETTINGS"
+    python3 - "$CLAUDE_SETTINGS" "$CLAUDE_HOOKS_DIR/ork-agent-state.sh" <<'PYEOF'
+import json, sys
+
+settings_path, hook_path = sys.argv[1], sys.argv[2]
+# Matches by event name AND state argument (the last word of the command),
+# not just "is this an ork-agent-state.sh call" — Notification/PermissionRequest
+# both call it with "input" while UserPromptSubmit/PreToolUse/PostToolUse call
+# it with "running", so collapsing on event name alone would let one overwrite
+# the other's entry instead of both coexisting.
+DESIRED = {
+    "UserPromptSubmit": "running",
+    "PreToolUse": "running",
+    "PostToolUse": "running",
+    "Stop": "waiting",
+    "Notification": "input",
+    "PermissionRequest": "input",
+}
+
+with open(settings_path) as f:
+    settings = json.load(f)
+
+hooks = settings.setdefault("hooks", {})
+
+def is_ork_entry(entry, state):
+    for h in entry.get("hooks", []):
+        cmd = h.get("command", "")
+        if "ork-agent-state.sh" in cmd or "orch-agent-state.sh" in cmd:
+            if cmd.strip().endswith(state):
+                return True
+    return False
+
+for event, state in DESIRED.items():
+    entries = hooks.setdefault(event, [])
+    # Drop any existing ork/orch-agent-state.sh entry for this exact
+    # event+state pair before re-adding — makes this idempotent across
+    # reinstalls/renames instead of accumulating duplicates, and picks up
+    # a path change (e.g. hook moved) automatically.
+    entries[:] = [e for e in entries if not is_ork_entry(e, state)]
+    entries.append({"hooks": [{"type": "command", "command": f"{hook_path} {state}"}]})
+
+with open(settings_path, "w") as f:
+    json.dump(settings, f, indent=2)
+    f.write("\n")
+PYEOF
+    ok "Wired hook into $CLAUDE_SETTINGS (UserPromptSubmit/PreToolUse/PostToolUse->running, Stop->waiting, Notification/PermissionRequest->input)"
+  else
+    note "python3 not found — couldn't wire $CLAUDE_SETTINGS automatically."
+    note "Add these hook entries yourself (see README): UserPromptSubmit/PreToolUse/PostToolUse -> \"$CLAUDE_HOOKS_DIR/ork-agent-state.sh running\", Stop -> \"...waiting\", Notification/PermissionRequest -> \"...input\"."
+  fi
+else
+  note "No ~/.claude directory or 'claude' command found — skipping Claude Code"
+  note "hook install. The AGENT column and live picker refresh need Claude Code's"
+  note "hooks system; re-run install.sh after installing Claude Code to enable them."
+fi
+
+# ── 3. Configure where your worktrees live ──────────────────────────────
 subsection "Configuring ~/.ork.conf"
 
 CONF="$HOME/.ork.conf"
@@ -268,7 +353,7 @@ dim "Review $CONF for ORK_FAVORITES."
 dim "Per-repo setup hooks go in ~/.config/ork/hooks.json — see"
 dim "ork.conf.example for the format."
 
-# ── 3. Keybinds ─────────────────────────────────────────────────────────
+# ── 4. Keybinds ─────────────────────────────────────────────────────────
 subsection "Keybinds"
 
 if [[ "$KEYBIND" != "no" && -t 0 ]]; then
@@ -368,4 +453,4 @@ section "Done"
 dim "Requires: tmux, fzf."
 dim "If you already have your own new-task/end-task functions, remove the"
 dim "worktree-tasks.sh source line from your shell rc to keep using yours."
-printf '%sRestart your shell (or re-source your rc file), then run: %s%sorch%s\n' "$DIM" "$RESET" "$BOLD$GREEN" "$RESET"
+printf '%sRestart your shell (or re-source your rc file), then run: %s%sork%s\n' "$DIM" "$RESET" "$BOLD$GREEN" "$RESET"

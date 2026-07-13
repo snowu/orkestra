@@ -17,6 +17,51 @@ rm -f "$BIN_DEST/ork" "$BIN_DEST/ork-helper.sh" "$BIN_DEST/orc.cow"
 rm -f "$SCRIPTS_DEST/worktree-tasks.sh" "$SCRIPTS_DEST/ork.sh"
 echo "Removed ork, ork-helper.sh, worktree-tasks.sh, ork.sh"
 
+# Reverses install.sh's hook step: remove the hook file itself, and strip
+# only the entries in settings.json whose command references it — matched
+# the same way install.sh added them (by event+state pair), so any OTHER
+# hooks a user has configured on the same events (their own
+# UserPromptSubmit hook, say) are left completely untouched.
+CLAUDE_HOOKS_DIR="$HOME/.claude/hooks"
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+rm -f "$CLAUDE_HOOKS_DIR/ork-agent-state.sh" "$CLAUDE_HOOKS_DIR/orch-agent-state.sh"
+echo "Removed ork-agent-state.sh from $CLAUDE_HOOKS_DIR"
+
+if [[ -f "$CLAUDE_SETTINGS" ]] && command -v python3 >/dev/null 2>&1; then
+  python3 - "$CLAUDE_SETTINGS" <<'PYEOF'
+import json, sys
+
+settings_path = sys.argv[1]
+
+with open(settings_path) as f:
+    settings = json.load(f)
+
+hooks = settings.get("hooks")
+if hooks:
+    changed = False
+    for event in list(hooks.keys()):
+        entries = hooks[event]
+        kept = [
+            e for e in entries
+            if not any(
+                "ork-agent-state.sh" in h.get("command", "") or "orch-agent-state.sh" in h.get("command", "")
+                for h in e.get("hooks", [])
+            )
+        ]
+        if len(kept) != len(entries):
+            changed = True
+        if kept:
+            hooks[event] = kept
+        else:
+            del hooks[event]
+    if changed:
+        with open(settings_path, "w") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+PYEOF
+  echo "Removed ork's hook entries from $CLAUDE_SETTINGS (other hooks left untouched)"
+fi
+
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   [[ -f "$rc" ]] || continue
   sed -i.bak \
@@ -90,6 +135,15 @@ if [[ -n "${tmux_key:-}" ]] && command -v tmux >/dev/null 2>&1 && tmux list-sess
 fi
 
 rm -f /tmp/ork.log /tmp/ork-new-task.marker
+
+# Cache dirs (agent-state, fzf-ports, repo-scan, access) — all disposable,
+# safe to nuke unconditionally regardless of --purge-config (this is
+# scratch state ork rebuilds on its own, not user customization like
+# ~/.ork.conf is).
+if [[ -d "$HOME/.cache/ork" ]]; then
+  rm -rf "$HOME/.cache/ork"
+  echo "Removed ~/.cache/ork (agent-state, fzf-ports, repo-scan cache)"
+fi
 
 echo
 echo "Done. Restart your shell (or re-source your rc file) to pick up the change."
