@@ -100,6 +100,7 @@ type Model struct {
 	reloadCh      <-chan struct{}
 	loadRows      func() []worktree.Row
 	err           string
+	cow           []string // fortune/cowsay sidebar lines, refreshed per reload
 }
 
 type rowsMsg []worktree.Row
@@ -107,7 +108,9 @@ type stateChangedMsg struct{}
 type tickMsg time.Time
 
 func New(cfg config.Config) *Model {
-	m := &Model{cfg: cfg, preview: previewOff}
+	// Preview visible by default, like the bash picker's always-on
+	// --preview-window; ? toggles it away.
+	m := &Model{cfg: cfg, preview: previewInfo}
 	m.loadRows = func() []worktree.Row {
 		deps := worktree.LiveDeps(agentstate.Dir(), agentstate.StaleAfter, agentstate.Read)
 		return worktree.BuildRows(cfg.WorktreeRoots, deps)
@@ -132,7 +135,7 @@ func Run(cfg config.Config) (Result, error) {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.reloadCmd(), m.watchCmd())
+	return tea.Batch(m.reloadCmd(), m.watchCmd(), tick())
 }
 
 func (m *Model) reloadCmd() tea.Cmd {
@@ -193,15 +196,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case rowsMsg:
 		m.rows = msg
 		m.applyFilter()
+		m.cow = cowSidebar()
+		m.refreshPreview()
 		return m, nil
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())
 	case tickMsg:
+		// Keep ticking even while the preview is toggled off — the tick is
+		// also what makes re-enabling it come back live immediately.
 		if m.preview != previewOff && m.mode == modeList {
 			m.refreshPreview()
-			return m, tick()
 		}
-		return m, nil
+		return m, tick()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}

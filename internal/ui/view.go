@@ -55,7 +55,9 @@ func (m *Model) View() string {
 
 	var b strings.Builder
 	b.WriteString(styleDim.Render(helpLine) + "\n")
-	b.WriteString(styleBold.Render(fmt.Sprintf("%-16s %-32s %-14s %-8s %-8s %-16s %-9s %s",
+	// Two leading spaces match the rows' cursor-marker prefix so the
+	// header sits exactly over its columns.
+	b.WriteString("  " + styleBold.Render(fmt.Sprintf("%-16s %-32s %-14s %-8s %-8s %-16s %-9s %s",
 		"REPO", "TASK", "BRANCH", "STATE", "AGENT", "SESSION", "LAST USED", "CMD")) + "\n")
 	if m.filter != "" {
 		b.WriteString("> " + m.filter + "\n")
@@ -68,6 +70,12 @@ func (m *Model) View() string {
 	if listH < 3 {
 		listH = 3
 	}
+
+	// Visible width of a full row (plain text, before styling): the padded
+	// columns joined by single spaces, plus the 2-char cursor prefix. The
+	// cow sidebar starts a fixed gap right of that.
+	const rowPlainWidth = 2 + 16 + 1 + 32 + 1 + 14 + 1 + 8 + 1 + 8 + 1 + 16 + 1 + 9 + 1 + 12
+	cowCol := rowPlainWidth + 6
 
 	start := 0
 	if m.cursor >= listH {
@@ -107,6 +115,7 @@ func (m *Model) View() string {
 			cmd = "-"
 		}
 
+		cmdShown := trunc(cmd, 12)
 		line := lipgloss.NewStyle().Foreground(repoColor(r.Repo)).Render(pad(r.Repo, 16)) + " " +
 			pad(r.Task, 32) + " " +
 			pad(trunc(branch, 14), 14) + " " +
@@ -114,11 +123,21 @@ func (m *Model) View() string {
 			agentStyle.Render(pad(agent, 8)) + " " +
 			pad(trunc(sess, 16), 16) + " " +
 			pad(ago(r.LastUsed), 9) + " " +
-			trunc(cmd, 12)
+			cmdShown
 		if i == m.cursor {
 			line = styleSel.Render("> ") + line
 		} else {
 			line = "  " + line
+		}
+		// Paste the cowsay block beside the table — padding computed on
+		// plain-text width (escape codes are invisible but non-zero-length).
+		if ci := i - start; ci < len(m.cow) && m.width > cowCol+10 {
+			plainLen := rowPlainWidth - 12 + len(cmdShown)
+			padN := cowCol - plainLen
+			if padN < 1 {
+				padN = 1
+			}
+			line += strings.Repeat(" ", padN) + styleDim.Render(m.cow[ci])
 		}
 		b.WriteString(line + "\n")
 	}
