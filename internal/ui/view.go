@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"orkestra/internal/worktree"
 )
 
@@ -152,32 +154,44 @@ func (m *Model) View() string {
 			fePort, _ := worktree.TaskPorts(r.Task)
 			portStr = fmt.Sprintf(" %d", fePort)
 		}
-		febe := feStyle.Render(feCh) + "/" + beStyle.Render(beCh) + styleCyan.Render(portStr)
-		visible := 3 + len(portStr) // "f/b" + optional " NNNN"
-		febeShown := febe + strings.Repeat(" ", max(0, 10-visible))
 
-		taskShown := pad(r.Task, 32)
-		sessShown := pad(trunc(sess, 16), 16)
-		if c, ok := m.taskColors[r.Task]; ok {
-			taskShown = renderer.NewStyle().Foreground(c).Render(taskShown)
-			sessShown = renderer.NewStyle().Foreground(c).Render(sessShown)
+		// rs renders a segment, adding the selection background on the
+		// cursor row. Per-segment because each column's color codes end in
+		// a reset that would kill a single line-wide background — the whole
+		// row highlights only if every segment carries the bg itself.
+		selected := i == m.cursor
+		rs := func(st lipgloss.Style, s string) string {
+			if selected {
+				st = st.Background(colorSelBg)
+			}
+			return st.Render(s)
 		}
+		plain := renderer.NewStyle()
+
+		taskStyle, sessStyle := plain, plain
+		if c, ok := m.taskColors[r.Task]; ok {
+			taskStyle = renderer.NewStyle().Foreground(c)
+			sessStyle = taskStyle
+		}
+
+		febeShown := rs(feStyle, feCh) + rs(plain, "/") + rs(beStyle, beCh) + rs(styleCyan, portStr) +
+			rs(plain, strings.Repeat(" ", max(0, 10-(3+len(portStr)))))
 
 		cmdShown := trunc(cmd, 12)
-		line := renderer.NewStyle().Foreground(m.repoColors[r.Repo]).Render(pad(r.Repo, 16)) + " " +
-			taskShown + " " +
-			pad(trunc(branch, 14), 14) + " " +
-			stateStyle.Render(pad(state, 8)) + " " +
-			agentStyle.Render(pad(agent, 8)) + " " +
-			febeShown + " " +
-			sessShown + " " +
-			pad(ago(r.LastUsed), 9) + " " +
-			cmdShown
-		if i == m.cursor {
-			line = styleSel.Render("> ") + line
-		} else {
-			line = "  " + line
+		prefix := "  "
+		if selected {
+			prefix = "> "
 		}
+		line := rs(styleSel, prefix) +
+			rs(renderer.NewStyle().Foreground(m.repoColors[r.Repo]), pad(r.Repo, 16)) + rs(plain, " ") +
+			rs(taskStyle, pad(r.Task, 32)) + rs(plain, " ") +
+			rs(plain, pad(trunc(branch, 14), 14)) + rs(plain, " ") +
+			rs(stateStyle, pad(state, 8)) + rs(plain, " ") +
+			rs(agentStyle, pad(agent, 8)) + rs(plain, " ") +
+			febeShown + rs(plain, " ") +
+			rs(sessStyle, pad(trunc(sess, 16), 16)) + rs(plain, " ") +
+			rs(plain, pad(ago(r.LastUsed), 9)) + rs(plain, " ") +
+			rs(plain, cmdShown)
 		// Paste the cowsay block beside the table — padding computed on
 		// plain-text width (escape codes are invisible but non-zero-length).
 		if ci := i - start; showCow && ci < len(m.cow) {

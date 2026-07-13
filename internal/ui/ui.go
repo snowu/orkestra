@@ -106,7 +106,8 @@ var (
 	styleCyan   = renderer.NewStyle().Foreground(lipgloss.Color("80"))
 	styleDim    = renderer.NewStyle().Foreground(lipgloss.Color("244"))
 	styleBold   = renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("254"))
-	styleSel    = renderer.NewStyle().Background(lipgloss.Color("237"))
+	colorSelBg  = lipgloss.Color("237")
+	styleSel    = renderer.NewStyle().Background(colorSelBg)
 )
 
 type mode int
