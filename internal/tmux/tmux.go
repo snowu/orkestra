@@ -78,14 +78,31 @@ func NewOrAttach(name, dir string) error {
 			if err := exec.Command("tmux", "new", "-d", "-s", name, "-c", dir).Run(); err != nil {
 				return err
 			}
+		} else {
+			cdSession(name, dir)
 		}
 		return exec.Command("tmux", "switch-client", "-t", name).Run()
 	}
+	existed := HasSession(name)
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
 		return err
 	}
+	if existed {
+		cdSession(name, dir)
+	}
 	return syscall.Exec(tmuxPath, []string{"tmux", "new", "-A", "-s", name, "-c", dir}, os.Environ())
+}
+
+// cdSession sends a cd command to an existing session's active pane so
+// reused ("shared") sessions land in the target worktree dir instead of
+// wherever the pane's cwd happened to be from creation.
+func cdSession(name, dir string) {
+	exec.Command("tmux", "send-keys", "-t", name, "cd "+shellQuote(dir), "Enter").Run()
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // CapturePane returns the pane's visible content. Occasionally empty on
