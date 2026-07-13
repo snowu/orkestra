@@ -60,7 +60,14 @@ func (m *Model) View() string {
 	b.WriteString("  " + styleBold.Render(fmt.Sprintf("%-16s %-32s %-14s %-8s %-8s %-10s %-16s %-9s %s",
 		"REPO", "TASK", "BRANCH", "STATE", "AGENT", "FE/BE", "SESSION", "LAST USED", "CMD")) + "\n")
 	// Always drawn (even empty) so typing a filter doesn't shift the rows.
-	b.WriteString("> " + m.filter + "\n")
+	// The kill/end confirmation takes over this line — top of the screen,
+	// next to the rows it's about, instead of buried under the preview.
+	if m.mode == modeConfirmEnd || m.mode == modeConfirmKill {
+		b.WriteString(m.viewConfirm() + "\n")
+	} else {
+		// fzf-style match counter, like the bash picker had.
+		b.WriteString("> " + m.filter + styleDim.Render(fmt.Sprintf("   %d/%d", len(m.visible), len(m.rows))) + "\n")
+	}
 
 	listH := m.height - 5
 	if m.preview != previewOff {
@@ -204,9 +211,6 @@ func (m *Model) View() string {
 		b.WriteString(m.previewText)
 	}
 
-	if m.mode == modeConfirmEnd || m.mode == modeConfirmKill {
-		b.WriteString("\n" + m.viewConfirm())
-	}
 	if m.err != "" {
 		b.WriteString("\n" + styleYellow.Render(m.err))
 	}
@@ -219,13 +223,15 @@ func (m *Model) viewConfirm() string {
 	if m.mode == modeConfirmKill {
 		verb = fmt.Sprintf("kill tmux session for %s/%s (worktree+branch untouched)", sel.Repo, sel.Task)
 	}
-	no, yes := "[ no ]", "  yes "
+	no, yes := "[no]", " yes"
 	if m.confirmYes {
-		no, yes = "  no  ", "[ yes ]"
+		no, yes = " no ", "[yes]"
 	}
-	return styleBold.Render(" "+verb) + "\n " +
-		styleGreen.Render(no) + "  " + styleYellow.Render(yes) +
-		styleDim.Render("   (enter=confirm, esc=cancel, y/n)")
+	// Single line: takes over the filter slot at the top of the screen, so
+	// it must not wrap or shift the layout.
+	return styleBold.Render(verb+"?") + "  " +
+		styleGreen.Render(no) + " " + styleYellow.Render(yes) +
+		styleDim.Render("  (enter/esc/y/n)")
 }
 
 func (m *Model) viewPickRepo() string {
