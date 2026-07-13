@@ -1,7 +1,10 @@
 package ui
 
 import (
+	"fmt"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +14,19 @@ import (
 
 	"orkestra/internal/worktree"
 )
+
+// openBrowser fires the OS default browser at url, fire-and-forget — errors
+// deliberately ignored (nothing sane to do in a TUI if no browser exists).
+func openBrowser(url string) {
+	switch runtime.GOOS {
+	case "darwin":
+		exec.Command("open", url).Start()
+	case "windows":
+		exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	default:
+		exec.Command("xdg-open", url).Start()
+	}
+}
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
@@ -73,6 +89,14 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			worktree.TouchAccess(sel.Repo, sel.Task)
 			m.result = Result{Action: ActionOpenAll, Repo: sel.Repo, Task: sel.Task, WtPath: sel.Path}
 			return m, tea.Quit
+		}
+	case "ctrl+o":
+		// Open the task's FE in the default browser — port is derived, so
+		// this works whether or not the dev server is up yet (browser just
+		// shows connection refused until it is). Stays in the TUI.
+		if sel, ok := m.selected(); ok {
+			fePort, _ := worktree.TaskPorts(sel.Task)
+			openBrowser(fmt.Sprintf("http://localhost:%d", fePort))
 		}
 
 	case "ctrl+r":
