@@ -50,6 +50,66 @@ func SessionName(cfg config.Config, repo, task string) string {
 	return task
 }
 
+// feBEDirs finds the fe/be sibling worktrees for task — separate repos
+// (ORK_FE_REPO/ORK_BE_REPO), not subdirs, that share task names. Row's own
+// repo/path is reused directly when it matches one side, so pressing the
+// key from either the fe or the be row works without a second filesystem
+// lookup.
+func feBEDirs(cfg config.Config, repo, task, wt string) (feDir, beDir string, err error) {
+	if cfg.FERepo == "" || cfg.BERepo == "" {
+		return "", "", fmt.Errorf("ORK_FE_REPO / ORK_BE_REPO not configured in ~/.ork.conf")
+	}
+	switch repo {
+	case cfg.FERepo:
+		feDir = wt
+	default:
+		feDir = FindWorktree(cfg.WorktreeRoots, cfg.FERepo, task)
+	}
+	switch repo {
+	case cfg.BERepo:
+		beDir = wt
+	default:
+		beDir = FindWorktree(cfg.WorktreeRoots, cfg.BERepo, task)
+	}
+	if feDir == "" {
+		return "", "", fmt.Errorf("no %s/%s worktree found", cfg.FERepo, task)
+	}
+	if beDir == "" {
+		return "", "", fmt.Errorf("no %s/%s worktree found", cfg.BERepo, task)
+	}
+	return feDir, beDir, nil
+}
+
+// SpawnFEBE starts (if not already running) detached tmux sessions
+// <task>_fe and <task>_be running the configured fe/be commands, rooted at
+// their respective sibling worktrees. Used for background dev servers that
+// don't need to be watched (hot reload does the rest).
+func SpawnFEBE(cfg config.Config, repo, task, wt string) error {
+	feDir, beDir, err := feBEDirs(cfg, repo, task, wt)
+	if err != nil {
+		return err
+	}
+	name := SessionName(cfg, repo, task)
+	if err := tmux.SpawnDetached(name+"_fe", feDir, cfg.FECmd); err != nil {
+		return err
+	}
+	return tmux.SpawnDetached(name+"_be", beDir, cfg.BECmd)
+}
+
+// EnsureFEBEWindows makes sure the base session for repo/task has fe/be
+// windows running the configured commands, creating them if missing.
+func EnsureFEBEWindows(cfg config.Config, repo, task, wt string) error {
+	feDir, beDir, err := feBEDirs(cfg, repo, task, wt)
+	if err != nil {
+		return err
+	}
+	name := SessionName(cfg, repo, task)
+	if err := tmux.EnsureWindow(name, "fe", feDir, cfg.FECmd); err != nil {
+		return err
+	}
+	return tmux.EnsureWindow(name, "be", beDir, cfg.BECmd)
+}
+
 // NewTask creates <firstRoot>/<repo>/<task> as a worktree on a new branch
 // off the repo's default branch, copies .env.local, runs the repo hook,
 // writes .claude-profile, and touches the access marker (a fresh task

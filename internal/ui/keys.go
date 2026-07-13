@@ -56,6 +56,20 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+	case "ctrl+g":
+		// Spawn fe/be dev servers detached — no attach, hot reload does the
+		// rest; see ideas.txt fe/be friction note.
+		if sel, ok := m.selected(); ok {
+			m.result = Result{Action: ActionSpawnServices, Repo: sel.Repo, Task: sel.Task, WtPath: sel.Path}
+			return m, tea.Quit
+		}
+	case "ctrl+a":
+		if sel, ok := m.selected(); ok {
+			worktree.TouchAccess(sel.Repo, sel.Task)
+			m.result = Result{Action: ActionOpenAll, Repo: sel.Repo, Task: sel.Task, WtPath: sel.Path}
+			return m, tea.Quit
+		}
+
 	case "ctrl+r":
 		return m, m.reloadCmd()
 

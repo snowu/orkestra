@@ -20,6 +20,12 @@ type Config struct {
 	ScopeSessionsToRepo bool
 	HooksConfig         string
 	ClaudePersonalDirs  []string
+
+	// FE/BE pairing: separate sibling repos (not subdirs) that share task
+	// names — e.g. ORK_FE_REPO=cr-frontend, ORK_BE_REPO=cr-managament. From
+	// any row, the paired worktree is <root>/<FERepo|BERepo>/<sameTask>.
+	FERepo, BERepo string
+	FECmd, BECmd   string
 }
 
 func defaults() Config {
@@ -28,6 +34,8 @@ func defaults() Config {
 		WorktreeRoots: []string{filepath.Join(home, "worktrees")},
 		ScanMaxDepth:  3,
 		HooksConfig:   filepath.Join(home, ".config/ork/hooks.json"),
+		FECmd:         "rund",
+		BECmd:         "bund",
 	}
 }
 
@@ -73,6 +81,18 @@ func Load(path string) (Config, error) {
 		case "ORK_HOOKS_CONFIG":
 			if v := expand(unquote(val)); v != "" {
 				cfg.HooksConfig = v
+			}
+		case "ORK_FE_REPO":
+			cfg.FERepo = unquote(val)
+		case "ORK_BE_REPO":
+			cfg.BERepo = unquote(val)
+		case "ORK_FE_CMD":
+			if v := unquote(val); v != "" {
+				cfg.FECmd = v
+			}
+		case "ORK_BE_CMD":
+			if v := unquote(val); v != "" {
+				cfg.BECmd = v
 			}
 		}
 	}

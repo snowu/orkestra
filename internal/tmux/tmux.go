@@ -105,6 +105,52 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// EnsureSession creates a detached session named name rooted at dir if it
+// doesn't already exist, running the shell's default command.
+func EnsureSession(name, dir string) error {
+	if HasSession(name) {
+		return nil
+	}
+	return exec.Command("tmux", "new", "-d", "-s", name, "-c", dir).Run()
+}
+
+// SpawnDetached creates a detached session named name rooted at dir, then
+// sends cmd to its shell — if it doesn't already exist. Existing sessions
+// are left untouched — callers that want to guarantee a fresh cwd/command
+// should kill first.
+//
+// cmd is sent via send-keys to the pane's own interactive shell rather than
+// passed as the tmux new-session command: rund/bund are typically shell
+// aliases/functions from .bashrc/.zshrc, which a non-interactive `sh -c cmd`
+// won't have sourced — the pane would exit instantly with "command not
+// found" and the session would vanish before anyone saw it.
+func SpawnDetached(name, dir, cmd string) error {
+	if HasSession(name) {
+		return nil
+	}
+	if err := exec.Command("tmux", "new", "-d", "-s", name, "-c", dir).Run(); err != nil {
+		return err
+	}
+	return exec.Command("tmux", "send-keys", "-t", name, cmd, "Enter").Run()
+}
+
+// EnsureWindow makes sure session has a window named window running cmd
+// rooted at dir; a no-op if that window already exists. Like SpawnDetached,
+// cmd runs via send-keys so shell aliases/functions are available.
+func EnsureWindow(session, window, dir, cmd string) error {
+	out, _ := exec.Command("tmux", "list-windows", "-t", "="+session, "-F", "#{window_name}").Output()
+	for _, w := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(w) == window {
+			return nil
+		}
+	}
+	target := session + ":" + window
+	if err := exec.Command("tmux", "new-window", "-d", "-t", session, "-n", window, "-c", dir).Run(); err != nil {
+		return err
+	}
+	return exec.Command("tmux", "send-keys", "-t", target, cmd, "Enter").Run()
+}
+
 // CapturePane returns the pane's visible content. Occasionally empty on
 // the first try (socket contention when many panes/clients are active) —
 // one retry makes it reliable.

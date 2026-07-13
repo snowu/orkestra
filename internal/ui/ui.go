@@ -28,6 +28,8 @@ const (
 	ActionAttach
 	ActionCD
 	ActionNewTask
+	ActionSpawnServices // ctrl+g: fe/be detached sessions, no attach
+	ActionOpenAll       // ctrl+a: attach base session with fe/be windows ensured
 )
 
 type Result struct {
