@@ -101,7 +101,7 @@ for cfg in "$HOME/.tmux.conf" \
            "$HOME/.config/kitty/kitty.conf" \
            "$HOME/.config/alacritty/alacritty.toml"; do
   [[ -f "$cfg" ]] || continue
-  grep -qF '# >>> ork keybind >>>' "$cfg" || continue
+  grep -qF '# >>> ork keybind >>>' "$cfg" || grep -qF '# >>> ork nav keybinds >>>' "$cfg" || continue
 
   # For tmux specifically: capture the bound key from the fenced block
   # BEFORE stripping it, so we can unbind it from any live server below —
@@ -118,13 +118,21 @@ for cfg in "$HOME/.tmux.conf" \
   awk '
     $0 == "# >>> ork keybind >>>" { skip = 1; next }
     $0 == "# <<< ork keybind <<<" { skip = 0; next }
+    $0 == "# >>> ork nav keybinds >>>" { skip = 1; next }
+    $0 == "# <<< ork nav keybinds <<<" { skip = 0; next }
     !skip
   ' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
-  echo "Removed ork keybind from $cfg"
+  echo "Removed ork keybind block(s) from $cfg"
 done
 
 # Unbind live, if a tmux server is running — see comment above for why
-# source-file alone isn't enough.
+# source-file alone isn't enough. Nav keybinds (prefix-free root table) get
+# the same treatment.
+if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
+  for k in C-M-S-Left C-M-S-Right C-M-S-Up C-M-S-Down; do
+    tmux unbind-key -T root "$k" 2>/dev/null || true
+  done
+fi
 if [[ -n "${tmux_key:-}" ]] && command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
   tmux unbind-key -T prefix "$tmux_key" 2>/dev/null || true
   if tmux source-file "$HOME/.tmux.conf" >/dev/null 2>&1; then

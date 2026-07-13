@@ -122,6 +122,16 @@ add_tmux() {
   # on its own — no ORK_TMUX_CLIENT targeting workaround needed here.
   add_inject_keybind "" "$HOME/.tmux.conf" tmux \
     "bind-key ${TMUX_KEY} new-window -n ork ork"
+  # Prefix-free navigation, own fence so uninstall can strip it separately:
+  # Left/Right cycle windows (main/fe/be), Up/Down cycle sessions.
+  FENCE_OPEN='# >>> ork nav keybinds >>>' FENCE_CLOSE='# <<< ork nav keybinds <<<' \
+    add_inject_keybind "" "$HOME/.tmux.conf" "tmux-nav" \
+    '# Prefix-free navigation: ctrl+alt+shift+arrows.' \
+    '# Left/Right cycle windows (main/fe/be), Up/Down cycle sessions.' \
+    'bind -n C-M-S-Left  previous-window' \
+    'bind -n C-M-S-Right next-window' \
+    'bind -n C-M-S-Up    switch-client -p' \
+    'bind -n C-M-S-Down  switch-client -n'
   # Reload live, if a tmux server is already running — `source-file` (unlike
   # `source`, a shell builtin) is a tmux command; it applies the new binding
   # to every attached client immediately, no restart needed.

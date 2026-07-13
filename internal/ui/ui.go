@@ -8,6 +8,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"time"
@@ -188,6 +189,12 @@ func Run(cfg config.Config) (Result, error) {
 	if ch, err := agentstate.Watch(ctx, agentstate.Dir()); err == nil {
 		m.reloadCh = ch
 	}
+	// Silence subprocess output (git worktree remove, branch -D, ...) while
+	// bubbletea owns stderr — raw lines injected mid-frame shear the layout
+	// (the "delete breaks line wrapping" bug). Restored after, so post-TUI
+	// operations (new-task, attach) still report normally.
+	worktree.Log = io.Discard
+	defer func() { worktree.Log = os.Stderr }()
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
 	out, err := p.Run()
 	if err != nil {

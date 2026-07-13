@@ -114,10 +114,8 @@ func runEndTask(task string) {
 	// If we're inside the worktree being removed, land the caller in the
 	// main checkout afterwards (printed for the shim to cd).
 	repos := worktree.AllRepoDirs(homeDirMust(), cfg.ScanMaxDepth, repoCache(), 60*time.Second)
-	if err := worktree.EndTask(cfg, worktree.LiveTmuxOps(), repos, repo, task); err != nil {
-		fatal(err.Error())
-	}
-	fmt.Fprintln(os.Stderr, "Worktree '"+task+"' cleaned up")
+	summary := worktree.EndTask(cfg, worktree.LiveTmuxOps(), repos, repo, task)
+	fmt.Fprintln(os.Stderr, summary)
 	if main := worktree.FindRepoRoot(repos, repo); main != "" {
 		fmt.Println(main)
 	}

@@ -43,7 +43,16 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "esc":
+	case "ctrl+c":
+		m.result = Result{Action: ActionQuit}
+		return m, tea.Quit
+	case "esc":
+		// First esc clears an active filter; only a second one quits.
+		if m.filter != "" {
+			m.filter = ""
+			m.applyFilter()
+			return m, m.previewCmd()
+		}
 		m.result = Result{Action: ActionQuit}
 		return m, tea.Quit
 
@@ -194,12 +203,13 @@ func (m *Model) confirmAccept() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	ops := worktree.LiveTmuxOps()
+	m.err = ""
 	switch mode {
 	case modeConfirmKill:
 		worktree.KillSessionFor(m.cfg, ops, sel.Repo, sel.Task)
 	case modeConfirmEnd:
 		repos := worktree.AllRepoDirs(homeDir(), m.cfg.ScanMaxDepth, repoCachePath(), 60*time.Second)
-		worktree.EndTask(m.cfg, ops, repos, sel.Repo, sel.Task)
+		m.err = worktree.EndTask(m.cfg, ops, repos, sel.Repo, sel.Task)
 	}
 	return m, m.reloadCmd()
 }

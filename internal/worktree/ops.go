@@ -2,8 +2,10 @@ package worktree
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,11 +17,22 @@ import (
 	"orkestra/internal/tmux"
 )
 
+// Log receives subprocess output (git, hooks). Defaults to stderr for CLI
+// use; the TUI swaps in io.Discard — raw git output on stderr while
+// bubbletea is drawing there shears the whole layout.
+var Log io.Writer = os.Stderr
+
 func git(dir string, args ...string) error {
+	var buf bytes.Buffer
 	c := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	c.Stdout = os.Stderr
-	c.Stderr = os.Stderr
-	return c.Run()
+	c.Stdout = io.MultiWriter(Log, &buf)
+	c.Stderr = io.MultiWriter(Log, &buf)
+	if err := c.Run(); err != nil {
+		// Log may be io.Discard (TUI) — carry the output in the error so
+		// failures still surface somewhere instead of vanishing.
+		return fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(buf.String()))
+	}
+	return nil
 }
 
 func gitOut(dir string, args ...string) string {
@@ -285,8 +298,20 @@ func KillSessionFor(cfg config.Config, t TmuxOps, repo, task string) {
 // runs inside the session being ended, the kill also kills this process —
 // with the kill first, nothing after it ever ran (branch+folder left
 // behind). Killing last means cleanup is already done if we die here.
-func EndTask(cfg config.Config, t TmuxOps, repos []string, repo, task string) error {
+// EndTask is best-effort by design (a branch that was never pushed makes
+// `push origin --delete` fail — that must not abort the rest), so instead
+// of an error it returns a summary of what each step actually did, for the
+// TUI's status line / CLI output.
+func EndTask(cfg config.Config, t TmuxOps, repos []string, repo, task string) string {
 	wt := WorktreeOrDefault(cfg.WorktreeRoots, repo, task)
+	var steps []string
+	step := func(label string, err error) {
+		if err != nil {
+			steps = append(steps, label+" FAILED")
+		} else {
+			steps = append(steps, label)
+		}
+	}
 
 	repoRoot := FindRepoRoot(repos, repo)
 	if repoRoot == "" {
@@ -294,16 +319,19 @@ func EndTask(cfg config.Config, t TmuxOps, repos []string, repo, task string) er
 		repoRoot = filepath.Join(home, "code", repo)
 	}
 	if _, err := os.Stat(repoRoot); err == nil {
-		git(repoRoot, "worktree", "remove", wt, "--force")
+		step("worktree removed", git(repoRoot, "worktree", "remove", wt, "--force"))
 		git(repoRoot, "worktree", "prune")
-		git(repoRoot, "branch", "-D", task)
-		git(repoRoot, "push", "origin", "--delete", task)
+		step("branch deleted", git(repoRoot, "branch", "-D", task))
+		step("origin branch deleted", git(repoRoot, "push", "origin", "--delete", task))
+	} else {
+		steps = append(steps, "repo root not found ("+repoRoot+") — git cleanup skipped")
 	}
 	if _, err := os.Stat(wt); err == nil {
-		os.RemoveAll(wt)
+		step("folder removed", os.RemoveAll(wt))
 	}
 	os.Remove(AccessFile(repo, task))
 
 	KillSessionFor(cfg, t, repo, task)
-	return nil
+	steps = append(steps, "session killed")
+	return repo + "/" + task + ": " + strings.Join(steps, " · ")
 }

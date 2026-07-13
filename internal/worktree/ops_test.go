@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"orkestra/internal/config"
@@ -110,8 +111,9 @@ func TestNewTaskRealGit(t *testing.T) {
 
 	// EndTask removes worktree + branch
 	ops := TmuxOps{Panes: func() []tmux.Pane { return nil }, HasSession: func(string) bool { return false }, KillSession: func(string) {}}
-	if err := EndTask(cfg, ops, []string{repoRoot}, filepath.Base(repoRoot), "feat-x"); err != nil {
-		t.Fatal(err)
+	summary := EndTask(cfg, ops, []string{repoRoot}, filepath.Base(repoRoot), "feat-x")
+	if !strings.Contains(summary, "worktree removed") || !strings.Contains(summary, "branch deleted") {
+		t.Errorf("summary missing expected steps: %q", summary)
 	}
 	if _, err := os.Stat(wt); !os.IsNotExist(err) {
 		t.Error("worktree still exists")

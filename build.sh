@@ -20,10 +20,12 @@ if ! command -v go &>/dev/null; then
 fi
 
 # Built to bin/ first: `go build -o $BIN_DEST/ork` directly would leave a
-# half-written binary on a failed build.
+# half-written binary on a failed build. Installed with `install` (not
+# plain cp): cp writes into the existing inode and fails with "Text file
+# busy" while an ork instance is running; install unlinks the target
+# first, which works even mid-run.
 (cd "$DIR" && go build -o bin/ork ./cmd/ork)
-cp "$DIR/bin/ork" "$BIN_DEST/ork"
-chmod +x "$BIN_DEST/ork"
+install -m755 "$DIR/bin/ork" "$BIN_DEST/ork"
 
 cp "$DIR/worktree-tasks.sh" "$SCRIPTS_DEST/worktree-tasks.sh"
 cp "$DIR/ork.sh" "$SCRIPTS_DEST/ork.sh"
