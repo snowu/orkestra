@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sahilm/fuzzy"
 
+	"orkestra/internal/tmux"
 	"orkestra/internal/worktree"
 )
 
@@ -147,7 +148,20 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	default:
 		if msg.Type == tea.KeyRunes && !msg.Alt {
-			m.filter += string(msg.Runes)
+			s := string(msg.Runes)
+			// Digits answer the selected row's agent prompt in place (claude
+			// AskUserQuestion / permission menus) — only when that agent is
+			// actually waiting for input, so digits keep working as filter
+			// text everywhere else. Free-text answers need a real attach.
+			if s >= "0" && s <= "9" && len(s) == 1 {
+				if sel, ok := m.selected(); ok && (sel.Agent == "waiting" || sel.Agent == "input") {
+					if p := resolvePane(m.cfg, sel); p != nil {
+						tmux.SendKeys(p.Target, s)
+						return m, m.previewCmd()
+					}
+				}
+			}
+			m.filter += s
 			m.applyFilter()
 		}
 	}

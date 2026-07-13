@@ -124,6 +124,11 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// SendKeys types keys into target (pane id or session), verbatim.
+func SendKeys(target, keys string) {
+	exec.Command("tmux", "send-keys", "-t", target, keys).Run()
+}
+
 // EnsureSession creates a detached session named name rooted at dir if it
 // doesn't already exist, running the shell's default command.
 func EnsureSession(name, dir string) error {
