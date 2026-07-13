@@ -57,28 +57,42 @@ func (m *Model) View() string {
 	// header sits exactly over its columns.
 	b.WriteString("  " + styleBold.Render(fmt.Sprintf("%-16s %-32s %-14s %-8s %-8s %-16s %-9s %s",
 		"REPO", "TASK", "BRANCH", "STATE", "AGENT", "SESSION", "LAST USED", "CMD")) + "\n")
-	if m.filter != "" {
-		b.WriteString("> " + m.filter + "\n")
-	}
+	// Always drawn (even empty) so typing a filter doesn't shift the rows.
+	b.WriteString("> " + m.filter + "\n")
 
-	listH := m.height - 4
+	listH := m.height - 5
 	if m.preview != previewOff {
-		listH = m.height - m.height*6/10 - 4
+		listH = m.height - m.height*6/10 - 5
 	}
 	if listH < 3 {
 		listH = 3
 	}
 
 	// Visible width of a full row (plain text, before styling): the padded
-	// columns joined by single spaces, plus the 2-char cursor prefix. The
-	// cow sidebar starts a fixed gap right of that.
+	// columns joined by single spaces, plus the 2-char cursor prefix.
 	const rowPlainWidth = 2 + 16 + 1 + 32 + 1 + 14 + 1 + 8 + 1 + 8 + 1 + 16 + 1 + 9 + 1 + 12
-	cowCol := rowPlainWidth + 6
+
+	// Cow sidebar sits a comfortable gap right of the table, but never
+	// past the terminal edge — a wide fortune bubble gets pulled left
+	// toward the minimum gap, and hidden entirely if it still can't fit
+	// (otherwise lines wrap and the whole layout shears).
+	cowW := 0
+	for _, l := range m.cow {
+		if len(l) > cowW {
+			cowW = len(l)
+		}
+	}
+	cowCol := rowPlainWidth + 25
+	if cowCol+cowW > m.width {
+		cowCol = m.width - cowW
+	}
+	showCow := len(m.cow) > 0 && cowCol >= rowPlainWidth+6
 
 	start := 0
 	if m.cursor >= listH {
 		start = m.cursor - listH + 1
 	}
+	rendered := 0
 	for i := start; i < len(m.visible) && i < start+listH; i++ {
 		r := m.rows[m.visible[i]]
 
@@ -129,7 +143,7 @@ func (m *Model) View() string {
 		}
 		// Paste the cowsay block beside the table — padding computed on
 		// plain-text width (escape codes are invisible but non-zero-length).
-		if ci := i - start; ci < len(m.cow) && m.width > cowCol+10 {
+		if ci := i - start; showCow && ci < len(m.cow) {
 			plainLen := rowPlainWidth - 12 + len(cmdShown)
 			padN := cowCol - plainLen
 			if padN < 1 {
@@ -138,9 +152,21 @@ func (m *Model) View() string {
 			line += strings.Repeat(" ", padN) + styleDim.Render(m.cow[ci])
 		}
 		b.WriteString(line + "\n")
+		rendered++
 	}
 	if len(m.visible) == 0 {
 		b.WriteString(styleDim.Render("  (no worktrees found)") + "\n")
+		rendered++
+	}
+	// Pad the list area to a fixed height so filtering down to fewer rows
+	// doesn't collapse the panel and yank the preview upward — and the orc
+	// keeps its remaining lines on the blank rows.
+	for ; rendered < listH; rendered++ {
+		blank := ""
+		if ci := rendered; showCow && ci < len(m.cow) {
+			blank = strings.Repeat(" ", cowCol) + styleDim.Render(m.cow[ci])
+		}
+		b.WriteString(blank + "\n")
 	}
 
 	if m.preview != previewOff {
