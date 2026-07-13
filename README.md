@@ -3,8 +3,9 @@
 Command the horde, fell the branches.
 
 Terminal UI to control and jump between coding agents running in git
-worktrees + tmux. Built on `fzf` + `tmux`. Ships as a standalone executable
-(`ork`) — works from bash or zsh, like `mise`/`nvim`.
+worktrees + tmux. A single Go binary with a native TUI (bubbletea) driving
+`tmux` + `git` — works from bash or zsh, like `mise`/`nvim`. (The original
+bash/fzf implementation lives in `legacy/`, functional but frozen.)
 
 ## What it does
 
@@ -32,10 +33,14 @@ worktrees + tmux. Built on `fzf` + `tmux`. Ships as a standalone executable
 
 ## Requirements
 
-- `tmux`, `fzf` — both required, no fallback without them
+- `tmux` — required, no fallback without it
 - `bash` or `zsh`
 - git (worktrees)
-- `jq` — only needed if you use per-repo setup hooks (`~/.config/ork/hooks.json`)
+- Go 1.22+ — build-time only (`install.sh` compiles the binary; e.g.
+  `mise use -g go@latest`)
+- `fortune` + `cowsay` — optional, for the orc sidebar
+- fzf and jq are no longer needed (the Go TUI replaced fzf; hooks.json is
+  parsed natively)
 
 ## Install
 
@@ -47,11 +52,16 @@ source ~/.zshrc   # or ~/.bashrc
 ork
 ```
 
-The installer copies:
-- `ork`, `ork-helper.sh` → `~/.local/bin/` (the real executable — put this
-  dir on your `$PATH` if it isn't already)
-- `worktree-tasks.sh`, `ork.sh` → `~/scripts/` (sourced from your shell rc)
+The installer builds the Go binary and copies:
+- `ork` → `~/.local/bin/` (put this dir on your `$PATH` if it isn't
+  already)
+- `worktree-tasks.sh`, `ork.sh` → `~/scripts/` (sourced from your shell
+  rc; `new-task`/`end-task` are thin shims over `ork new-task` /
+  `ork end-task`)
 - `~/.ork.conf` from the example, if you don't already have one
+
+No Go available? The frozen bash version still works: `legacy/build.sh`
+(requires fzf + jq; see `legacy/README.md`).
 
 ### Why a wrapper function at all?
 
@@ -59,7 +69,7 @@ The installer copies:
 itself (no subprocess can). It prints the target directory as its last
 stdout line when it wants you to land somewhere; `ork.sh` defines a ~4-line
 `ork()` shell function that captures that and `cd`s for you. Everything
-else (the fzf UI, tmux control, git operations) runs in the binary itself.
+else (the TUI, tmux control, git operations) runs in the binary itself.
 
 If you already have your own `new-task`/`end-task` functions with the same
 `~/worktrees/<repo>/<task>` layout, remove the `worktree-tasks.sh` source
