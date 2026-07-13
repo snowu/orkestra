@@ -62,6 +62,12 @@ func feBEDirs(cfg config.Config, repo, task, wt string) (feDir, beDir string, er
 	if cfg.FERepo == "" || cfg.BERepo == "" {
 		return "", "", fmt.Errorf("ORK_FE_REPO / ORK_BE_REPO not configured in ~/.ork.conf")
 	}
+	// Only rows belonging to the configured pair get fe/be windows —
+	// an unrelated repo whose task name happens to exist in both sibling
+	// repos must not spawn dev servers for them.
+	if repo != cfg.FERepo && repo != cfg.BERepo {
+		return "", "", fmt.Errorf("%s is not the fe/be pair (%s / %s)", repo, cfg.FERepo, cfg.BERepo)
+	}
 	switch repo {
 	case cfg.FERepo:
 		feDir = wt

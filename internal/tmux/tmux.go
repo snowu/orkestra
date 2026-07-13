@@ -176,6 +176,30 @@ func SessionWindowNames(session string) []string {
 	return names
 }
 
+// WindowInfo identifies a window by its unique id (@N) — names are NOT
+// unique (two "zsh" windows are common), and name-based targets silently
+// resolve to the first match, which made side-by-side previews replicate
+// one window into every column.
+type WindowInfo struct {
+	ID, Name, Cmd string
+}
+
+// SessionWindows lists session's windows with their active pane command.
+func SessionWindows(session string) []WindowInfo {
+	out, err := exec.Command("tmux", "list-windows", "-t", "="+session, "-F", "#{window_id}\t#{window_name}\t#{pane_current_command}").Output()
+	if err != nil {
+		return nil
+	}
+	var wins []WindowInfo
+	for _, l := range strings.Split(string(out), "\n") {
+		f := strings.SplitN(strings.TrimSpace(l), "\t", 3)
+		if len(f) == 3 && f[0] != "" {
+			wins = append(wins, WindowInfo{ID: f[0], Name: f[1], Cmd: f[2]})
+		}
+	}
+	return wins
+}
+
 // CapturePane returns the pane's visible content. Occasionally empty on
 // the first try (socket contention when many panes/clients are active) —
 // one retry makes it reliable.

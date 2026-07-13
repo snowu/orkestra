@@ -108,15 +108,30 @@ func infoPreview(cfg config.Config, r worktree.Row, lines, width int) string {
 // visible without leaving ork. width<=0 means "don't columnize": single
 // window falls back to the plain full-width tail.
 func windowsPreview(session, activeTarget string, lines, width int) string {
-	names := tmux.SessionWindowNames(session)
-	if len(names) <= 1 {
+	// Skip windows running ork itself (the prefix+o keybind opens ork as a
+	// window of the current session) — capturing our own UI would render a
+	// recursive mirror in the preview. Windows are captured by unique id,
+	// never by name: names collide (two "zsh" windows), and a name target
+	// silently resolves to the first match — every column would show the
+	// same window.
+	var wins []tmux.WindowInfo
+	for _, w := range tmux.SessionWindows(session) {
+		if w.Cmd == "ork" || w.Name == "ork" {
+			continue
+		}
+		wins = append(wins, w)
+	}
+	if len(wins) == 0 {
 		return lastLines(tmux.CapturePane(activeTarget), lines)
+	}
+	if len(wins) == 1 {
+		return lastLines(tmux.CapturePane(wins[0].ID), lines)
 	}
 
 	var cols [][]string
-	for _, w := range names {
-		content := lastLines(tmux.CapturePane(session+":"+w), lines-1)
-		col := []string{styleBold.Render(w)}
+	for _, w := range wins {
+		content := lastLines(tmux.CapturePane(w.ID), lines-1)
+		col := []string{styleBold.Render(w.Name)}
 		col = append(col, strings.Split(content, "\n")...)
 		cols = append(cols, col)
 	}
