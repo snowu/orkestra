@@ -55,8 +55,8 @@ func (m *Model) View() string {
 	b.WriteString(styleDim.Render(helpLine) + "\n")
 	// Two leading spaces match the rows' cursor-marker prefix so the
 	// header sits exactly over its columns.
-	b.WriteString("  " + styleBold.Render(fmt.Sprintf("%-16s %-32s %-14s %-8s %-8s %-16s %-9s %s",
-		"REPO", "TASK", "BRANCH", "STATE", "AGENT", "SESSION", "LAST USED", "CMD")) + "\n")
+	b.WriteString("  " + styleBold.Render(fmt.Sprintf("%-16s %-32s %-14s %-8s %-8s %-5s %-16s %-9s %s",
+		"REPO", "TASK", "BRANCH", "STATE", "AGENT", "FE/BE", "SESSION", "LAST USED", "CMD")) + "\n")
 	// Always drawn (even empty) so typing a filter doesn't shift the rows.
 	b.WriteString("> " + m.filter + "\n")
 
@@ -70,7 +70,7 @@ func (m *Model) View() string {
 
 	// Visible width of a full row (plain text, before styling): the padded
 	// columns joined by single spaces, plus the 2-char cursor prefix.
-	const rowPlainWidth = 2 + 16 + 1 + 32 + 1 + 14 + 1 + 8 + 1 + 8 + 1 + 16 + 1 + 9 + 1 + 12
+	const rowPlainWidth = 2 + 16 + 1 + 32 + 1 + 14 + 1 + 8 + 1 + 8 + 1 + 5 + 1 + 16 + 1 + 9 + 1 + 12
 
 	// Cow sidebar sits a comfortable gap right of the table, but never
 	// past the terminal edge — a wide fortune bubble gets pulled left
@@ -127,6 +127,17 @@ func (m *Model) View() string {
 			cmd = "-"
 		}
 
+		feCh, feStyle := "-", styleDim
+		if r.FELive {
+			feCh, feStyle = "f", styleGreen
+		}
+		beCh, beStyle := "-", styleDim
+		if r.BELive {
+			beCh, beStyle = "b", styleGreen
+		}
+		febe := feStyle.Render(feCh) + "/" + beStyle.Render(beCh)
+		febeShown := febe + strings.Repeat(" ", 5-3) // "f/b" is 3 visible cols, pad to 5
+
 		taskShown := pad(r.Task, 32)
 		sessShown := pad(trunc(sess, 16), 16)
 		if c, ok := m.taskColors[r.Task]; ok {
@@ -140,6 +151,7 @@ func (m *Model) View() string {
 			pad(trunc(branch, 14), 14) + " " +
 			stateStyle.Render(pad(state, 8)) + " " +
 			agentStyle.Render(pad(agent, 8)) + " " +
+			febeShown + " " +
 			sessShown + " " +
 			pad(ago(r.LastUsed), 9) + " " +
 			cmdShown

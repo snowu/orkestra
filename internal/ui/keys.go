@@ -58,10 +58,14 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+g":
 		// Spawn fe/be dev servers detached — no attach, hot reload does the
-		// rest; see ideas.txt fe/be friction note.
+		// rest; see ideas.txt fe/be friction note. Stays in the TUI: this is
+		// a background trigger, not a "go do something else" action like
+		// attach/cd, so there's no reason to lose your place in the list.
 		if sel, ok := m.selected(); ok {
-			m.result = Result{Action: ActionSpawnServices, Repo: sel.Repo, Task: sel.Task, WtPath: sel.Path}
-			return m, tea.Quit
+			cfg, repo, task, wt := m.cfg, sel.Repo, sel.Task, sel.Path
+			return m, func() tea.Msg {
+				return spawnDoneMsg{err: worktree.SpawnFEBE(cfg, repo, task, wt)}
+			}
 		}
 	case "ctrl+a":
 		if sel, ok := m.selected(); ok {

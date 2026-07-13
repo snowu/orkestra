@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"orkestra/internal/config"
 	"orkestra/internal/tmux"
 )
 
@@ -15,6 +16,7 @@ type Row struct {
 	Repo, Task, Branch  string
 	Session, Cmd, Agent string
 	Live                bool
+	FELive, BELive      bool      // <session>_fe / <session>_be running (ctrl-g)
 	LastUsed            time.Time // zero = never used via ork
 	Path                string
 }
@@ -68,7 +70,7 @@ func GitBranch(wt string) string {
 // in one folder but not the other" bug. Agent state is read in the same
 // per-task pass so siblings can't observe different values within one
 // build either.
-func BuildRows(roots []string, d Deps) []Row {
+func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 	dirs := AllWorktreeDirs(roots)
 
 	type sess struct{ name, cmd, agent string }
@@ -114,6 +116,11 @@ func BuildRows(roots []string, d Deps) []Row {
 		}
 		if s := taskSess[task]; s != nil {
 			r.Session, r.Cmd, r.Agent, r.Live = s.name, s.cmd, s.agent, true
+		}
+		if d.HasSession != nil {
+			name := SessionName(cfg, repo, task)
+			r.FELive = d.HasSession(name + "_fe")
+			r.BELive = d.HasSession(name + "_be")
 		}
 		rows = append(rows, r)
 	}

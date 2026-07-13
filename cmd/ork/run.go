@@ -54,10 +54,6 @@ func runTUI() {
 			fatal("new-task failed for " + res.Repo + "/" + res.Task + ": " + err.Error())
 		}
 		attach(cfg, res.Repo, res.Task, wt)
-	case ui.ActionSpawnServices:
-		if err := worktree.SpawnFEBE(cfg, res.Repo, res.Task, res.WtPath); err != nil {
-			fatal("spawn fe/be failed: " + err.Error())
-		}
 	case ui.ActionOpenAll:
 		name := worktree.SessionName(cfg, res.Repo, res.Task)
 		if err := tmux.EnsureSession(name, res.WtPath); err != nil {

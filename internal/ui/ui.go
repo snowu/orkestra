@@ -28,8 +28,7 @@ const (
 	ActionAttach
 	ActionCD
 	ActionNewTask
-	ActionSpawnServices // ctrl+g: fe/be detached sessions, no attach
-	ActionOpenAll       // ctrl+a: attach base session with fe/be windows ensured
+	ActionOpenAll // ctrl+a: attach base session with fe/be windows ensured
 )
 
 type Result struct {
@@ -163,6 +162,7 @@ type Model struct {
 type rowsMsg []worktree.Row
 type stateChangedMsg struct{}
 type tickMsg time.Time
+type spawnDoneMsg struct{ err error }
 type previewMsg struct {
 	forPath string // selection the text was computed for
 	text    string
@@ -174,7 +174,7 @@ func New(cfg config.Config) *Model {
 	m := &Model{cfg: cfg, preview: previewInfo}
 	m.loadRows = func() []worktree.Row {
 		deps := worktree.LiveDeps(agentstate.Dir(), agentstate.StaleAfter, agentstate.Read)
-		return worktree.BuildRows(cfg.WorktreeRoots, deps)
+		return worktree.BuildRows(cfg, cfg.WorktreeRoots, deps)
 	}
 	return m
 }
@@ -263,6 +263,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.previewCmd()
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())
+	case spawnDoneMsg:
+		if msg.err != nil {
+			m.err = msg.err.Error()
+			return m, nil
+		}
+		m.err = ""
+		return m, m.reloadCmd()
 	case previewMsg:
 		// Drop stale results — the cursor may have moved while this one
 		// was being computed.
