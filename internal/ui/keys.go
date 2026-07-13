@@ -33,12 +33,12 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "ctrl+p":
 		if m.cursor > 0 {
 			m.cursor--
-			m.refreshPreview()
+			return m, m.previewCmd()
 		}
 	case "down", "ctrl+j":
 		if m.cursor < len(m.visible)-1 {
 			m.cursor++
-			m.refreshPreview()
+			return m, m.previewCmd()
 		}
 
 	case "enter":
@@ -81,8 +81,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.preview = previewInfo
-		m.refreshPreview()
-		return m, tick()
+		return m, m.previewCmd()
 	case "ctrl+s":
 		if m.preview == previewGitStatus {
 			m.preview = previewOff
@@ -90,8 +89,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.preview = previewGitStatus
-		m.refreshPreview()
-		return m, tick()
+		return m, m.previewCmd()
 
 	case "backspace":
 		if len(m.filter) > 0 {

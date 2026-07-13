@@ -38,6 +38,12 @@ type Result struct {
 	RepoRoot string // set for ActionNewTask
 }
 
+// Styles must bind to a stderr renderer: the ork() shell wrapper captures
+// stdout with $(...), so lipgloss's default (stdout-probing) renderer sees
+// a pipe and silently downgrades to no-color ASCII — the TUI actually
+// draws on stderr.
+var renderer = lipgloss.NewRenderer(os.Stderr)
+
 // Same palette + CRC32 hash as the bash version (cksum is CRC32) so every
 // repo keeps the exact color it had before the rewrite.
 var repoPalette = []int{39, 208, 178, 141, 71, 203, 74, 209, 135, 214, 84, 168, 45, 220, 111}
@@ -48,12 +54,12 @@ func repoColor(name string) lipgloss.Color {
 }
 
 var (
-	styleGreen  = lipgloss.NewStyle().Foreground(lipgloss.Color("114"))
-	styleYellow = lipgloss.NewStyle().Foreground(lipgloss.Color("179"))
-	styleCyan   = lipgloss.NewStyle().Foreground(lipgloss.Color("80"))
-	styleDim    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	styleBold   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("254"))
-	styleSel    = lipgloss.NewStyle().Background(lipgloss.Color("237"))
+	styleGreen  = renderer.NewStyle().Foreground(lipgloss.Color("114"))
+	styleYellow = renderer.NewStyle().Foreground(lipgloss.Color("179"))
+	styleCyan   = renderer.NewStyle().Foreground(lipgloss.Color("80"))
+	styleDim    = renderer.NewStyle().Foreground(lipgloss.Color("244"))
+	styleBold   = renderer.NewStyle().Bold(true).Foreground(lipgloss.Color("254"))
+	styleSel    = renderer.NewStyle().Background(lipgloss.Color("237"))
 )
 
 type mode int
@@ -106,6 +112,10 @@ type Model struct {
 type rowsMsg []worktree.Row
 type stateChangedMsg struct{}
 type tickMsg time.Time
+type previewMsg struct {
+	forPath string // selection the text was computed for
+	text    string
+}
 
 func New(cfg config.Config) *Model {
 	// Preview visible by default, like the bash picker's always-on
@@ -197,34 +207,49 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rows = msg
 		m.applyFilter()
 		m.cow = cowSidebar()
-		m.refreshPreview()
-		return m, nil
+		return m, m.previewCmd()
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())
+	case previewMsg:
+		// Drop stale results — the cursor may have moved while this one
+		// was being computed.
+		if sel, ok := m.selected(); ok && sel.Path == msg.forPath {
+			m.previewText = msg.text
+		}
+		return m, nil
 	case tickMsg:
 		// Keep ticking even while the preview is toggled off — the tick is
 		// also what makes re-enabling it come back live immediately.
+		var cmd tea.Cmd
 		if m.preview != previewOff && m.mode == modeList {
-			m.refreshPreview()
+			cmd = m.previewCmd()
 		}
-		return m, tick()
+		return m, tea.Batch(cmd, tick())
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
 }
 
-func (m *Model) refreshPreview() {
+// previewCmd computes the preview in a Cmd (background goroutine) — the
+// tmux/git execs it runs take tens of ms, which felt like input lag when
+// they ran synchronously inside Update on every cursor move.
+func (m *Model) previewCmd() tea.Cmd {
 	sel, ok := m.selected()
-	if !ok {
+	if !ok || m.preview == previewOff {
 		m.previewText = ""
-		return
+		return nil
 	}
-	switch m.preview {
-	case previewInfo:
-		m.previewText = infoPreview(m.cfg, sel, m.previewLines())
-	case previewGitStatus:
-		m.previewText = gitStatusPreview(sel)
+	kind, cfg, lines := m.preview, m.cfg, m.previewLines()
+	return func() tea.Msg {
+		var text string
+		switch kind {
+		case previewInfo:
+			text = infoPreview(cfg, sel, lines)
+		case previewGitStatus:
+			text = gitStatusPreview(sel)
+		}
+		return previewMsg{forPath: sel.Path, text: text}
 	}
 }
 

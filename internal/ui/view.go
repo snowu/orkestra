@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 const helpLine = "ENTER=attach tmux   alt-ENTER=cd only   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   ?=info panel   ctrl-s=git status"
@@ -116,7 +114,7 @@ func (m *Model) View() string {
 		}
 
 		cmdShown := trunc(cmd, 12)
-		line := lipgloss.NewStyle().Foreground(repoColor(r.Repo)).Render(pad(r.Repo, 16)) + " " +
+		line := renderer.NewStyle().Foreground(repoColor(r.Repo)).Render(pad(r.Repo, 16)) + " " +
 			pad(r.Task, 32) + " " +
 			pad(trunc(branch, 14), 14) + " " +
 			stateStyle.Render(pad(state, 8)) + " " +
