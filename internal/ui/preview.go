@@ -59,8 +59,11 @@ func windowsLine(cfg config.Config, r worktree.Row) string {
 
 // infoPreview: branch/path summary + tmux session details + the live
 // pane's bottommost lines (all windows side by side when fe/be spawned).
-func infoPreview(cfg config.Config, r worktree.Row, lines, width int) string {
+// pathStyle: the row's repo color from the top pane, so the path reads as
+// belonging to that row.
+func infoPreview(cfg config.Config, r worktree.Row, lines, width int, pathStyle lipgloss.Style) string {
 	var b strings.Builder
+	const gap = "    "
 
 	// Always the real branch name — never the "=" shorthand; this panel is
 	// meant to be exact where the row list is compact.
@@ -69,9 +72,10 @@ func infoPreview(cfg config.Config, r worktree.Row, lines, width int) string {
 		branch = "none"
 	}
 	shortPath := strings.Replace(r.Path, homeDir(), "~", 1)
-	b.WriteString(styleCyan.Render(" branch:") + " " + styleBold.Render(branch) + "\n")
-	b.WriteString(styleCyan.Render(" path:") + "   " + styleDim.Render(shortPath) + "\n")
 
+	// Header packed into two lines across the full width instead of one
+	// stacked field per line — the vertical space belongs to the live tail.
+	line1 := styleCyan.Render(" branch:") + " " + styleBold.Render(branch)
 	if cfg.FERepo != "" && cfg.BERepo != "" {
 		fePort, bePort := worktree.TaskPorts(r.Task)
 		feOn, beOn := styleDim.Render("-"), styleDim.Render("-")
@@ -81,25 +85,27 @@ func infoPreview(cfg config.Config, r worktree.Row, lines, width int) string {
 		if r.BELive {
 			beOn = styleGreen.Render("up")
 		}
-		b.WriteString(styleCyan.Render(" fe/be:") + fmt.Sprintf("  fe :%d ", fePort) + feOn +
-			fmt.Sprintf("   be :%d ", bePort) + beOn + "\n")
+		line1 += gap + styleCyan.Render("fe") + fmt.Sprintf(" :%d ", fePort) + feOn +
+			"  " + styleCyan.Render("be") + fmt.Sprintf(" :%d ", bePort) + beOn
 	}
+	line1 += gap + strings.TrimRight(windowsLine(cfg, r), "\n")
 
-	b.WriteString(windowsLine(cfg, r))
+	line2 := styleCyan.Render(" path:") + " " + pathStyle.Render(shortPath)
 
 	pane := resolvePane(cfg, r)
 	if pane == nil {
-		b.WriteString("\n(no live tmux session)\n")
+		b.WriteString(line1 + "\n" + line2 + "\n\n(no live tmux session)\n")
 		return b.String()
 	}
 	note := ""
 	if pane.CWD != r.Path {
-		note = "  (shared, cwd: " + strings.Replace(pane.CWD, homeDir(), "~", 1) + ")"
+		note = "  (shared, cwd: " + pathStyle.Render(strings.Replace(pane.CWD, homeDir(), "~", 1)) + ")"
 	}
-	b.WriteString(styleCyan.Render(" running:") + " " + styleGreen.Render(pane.Cmd) + fmt.Sprintf(" (pid %d)%s", pane.PID, note) + "\n")
+	line2 += gap + styleCyan.Render("running:") + " " + styleGreen.Render(pane.Cmd) + fmt.Sprintf(" (pid %d)%s", pane.PID, note)
 
+	b.WriteString(line1 + "\n" + line2 + "\n")
 	b.WriteString(styleDim.Render(strings.Repeat("-", 40)) + "\n")
-	b.WriteString(windowsPreview(pane.Session, pane.Target, lines-5, width))
+	b.WriteString(windowsPreview(pane.Session, pane.Target, lines-3, width))
 	return b.String()
 }
 
@@ -194,13 +200,13 @@ func gitStatusPreview(r worktree.Row) string {
 // splitPreview: ctrl-s view — git status (left) and the live info panel
 // (right), 50/50. Column padding/truncation must be ANSI-aware: both sides
 // carry color codes, and byte-length math would shear the divider.
-func splitPreview(cfg config.Config, r worktree.Row, lines, width int) string {
+func splitPreview(cfg config.Config, r worktree.Row, lines, width int, pathStyle lipgloss.Style) string {
 	colW := width/2 - 2
 	if colW < 20 {
 		colW = 20
 	}
 	left := strings.Split(strings.TrimRight(gitStatusPreview(r), "\n"), "\n")
-	right := strings.Split(strings.TrimRight(infoPreview(cfg, r, lines, colW), "\n"), "\n")
+	right := strings.Split(strings.TrimRight(infoPreview(cfg, r, lines, colW, pathStyle), "\n"), "\n")
 
 	n := len(left)
 	if len(right) > n {

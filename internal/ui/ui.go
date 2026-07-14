@@ -346,15 +346,21 @@ func (m *Model) previewCmd() tea.Cmd {
 		return nil
 	}
 	kind, cfg, lines, width := m.preview, m.cfg, m.previewLines(), m.width
+	// Same color the task column uses in the top pane; solo tasks are
+	// uncolored there, so fall back to the old dim path look.
+	pathStyle := styleDim
+	if c, ok := m.taskColors[sel.Task]; ok {
+		pathStyle = renderer.NewStyle().Foreground(c)
+	}
 	return func() tea.Msg {
 		var text string
 		switch kind {
 		case previewInfo:
-			text = infoPreview(cfg, sel, lines, width)
+			text = infoPreview(cfg, sel, lines, width, pathStyle)
 		case previewGitStatus:
 			text = gitStatusPreview(sel)
 		case previewSplit:
-			text = splitPreview(cfg, sel, lines, width)
+			text = splitPreview(cfg, sel, lines, width, pathStyle)
 		}
 		return previewMsg{forPath: sel.Path, text: text}
 	}
