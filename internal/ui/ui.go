@@ -361,8 +361,11 @@ func (m *Model) previewCmd() tea.Cmd {
 }
 
 func (m *Model) previewLines() int {
-	// preview takes bottom ~60% of the screen
-	n := m.height*6/10 - 6
+	// Preview takes the bottom ~60% of the screen. View() spends
+	// help+header+filter (3) + listH (height - height*6/10 - 5) + divider
+	// (1) lines above it, so the space actually left is height*6/10 + 1;
+	// one line is held back for the error/status line.
+	n := m.height*6/10
 	if n < 5 {
 		n = 5
 	}

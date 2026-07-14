@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"orkestra/internal/worktree"
 )
@@ -183,8 +184,8 @@ func (m *Model) View() string {
 			prefix = "> "
 		}
 		line := rs(styleSel, prefix) +
-			rs(renderer.NewStyle().Foreground(m.repoColors[r.Repo]), pad(r.Repo, 16)) + rs(plain, " ") +
-			rs(taskStyle, pad(r.Task, 32)) + rs(plain, " ") +
+			rs(renderer.NewStyle().Foreground(m.repoColors[r.Repo]), pad(trunc(r.Repo, 16), 16)) + rs(plain, " ") +
+			rs(taskStyle, pad(trunc(r.Task, 32), 32)) + rs(plain, " ") +
 			rs(plain, pad(trunc(branch, 14), 14)) + rs(plain, " ") +
 			rs(stateStyle, pad(state, 8)) + rs(plain, " ") +
 			rs(agentStyle, pad(agent, 8)) + rs(plain, " ") +
@@ -202,7 +203,10 @@ func (m *Model) View() string {
 			}
 			line += strings.Repeat(" ", padN) + styleDim.Render(m.cow[ci])
 		}
-		b.WriteString(line + "\n")
+		// Whole-row clamp: anything past the terminal edge (long cmd, cow
+		// bubble pulled left) would soft-wrap and shear the frame diff,
+		// same failure mode as the preview.
+		b.WriteString(ansi.Truncate(line, max(1, m.width), "…") + "\n")
 		rendered++
 	}
 	if len(m.visible) == 0 {
@@ -222,13 +226,33 @@ func (m *Model) View() string {
 
 	if m.preview != previewOff {
 		b.WriteString(styleDim.Render(strings.Repeat("-", max(1, m.width))) + "\n")
-		b.WriteString(m.previewText)
+		b.WriteString(fitPreview(m.previewText, m.previewLines(), max(1, m.width)))
 	}
 
 	if m.err != "" {
 		b.WriteString("\n" + styleYellow.Render(m.err))
 	}
 	return b.String()
+}
+
+// fitPreview hard-clamps the preview block to the space View budgets for
+// it: at most maxLines lines, each ANSI-truncated to the terminal width.
+// Without this, one over-wide line (raw git-status paths, captured pane
+// columns) soft-wraps, the frame grows taller than bubbletea thinks it is,
+// and its line diff smears stale fragments across the screen until the
+// next full repaint.
+func fitPreview(text string, maxLines, width int) string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+	for i, l := range lines {
+		// Tabs first: the terminal renders \t as up to 8 cells but width
+		// math counts 1, so an un-expanded tab can still wrap the line.
+		l = strings.ReplaceAll(l, "\t", "        ")
+		lines[i] = ansi.Truncate(l, width, "…")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *Model) viewConfirm() string {

@@ -112,7 +112,16 @@ func InsideTmux() bool { return os.Getenv("TMUX") != "" }
 // then switch-client. Deliberately NOT `new -A -d`: when -A hits an
 // existing session, -d is reinterpreted as attach-session's "detach other
 // clients", which would yank other clients off the session.
+// enableTitles makes tmux name the terminal tab after the attached
+// session (= the task): global + idempotent, so the title follows every
+// switch-client (including the ork-home evacuation) with no extra hooks.
+func enableTitles() {
+	exec.Command("tmux", "set-option", "-g", "set-titles", "on").Run()
+	exec.Command("tmux", "set-option", "-g", "set-titles-string", "#S").Run()
+}
+
 func NewOrAttach(name, dir string) error {
+	enableTitles()
 	if InsideTmux() {
 		if !HasSession(name) {
 			if err := exec.Command("tmux", "new", "-d", "-s", name, "-c", dir).Run(); err != nil {
@@ -131,7 +140,12 @@ func NewOrAttach(name, dir string) error {
 	if existed {
 		cdSession(name, dir)
 	}
-	return syscall.Exec(tmuxPath, []string{"tmux", "new", "-A", "-s", name, "-c", dir}, os.Environ())
+	// Title options chained onto the same invocation (";" = tmux command
+	// separator): enableTitles above is a no-op when no server exists yet,
+	// and this exec may be the call that starts it.
+	return syscall.Exec(tmuxPath, []string{"tmux", "new", "-A", "-s", name, "-c", dir,
+		";", "set-option", "-g", "set-titles", "on",
+		";", "set-option", "-g", "set-titles-string", "#S"}, os.Environ())
 }
 
 // cdSession sends a cd command to a shell pane of an existing session so
