@@ -109,8 +109,13 @@ func TaskPorts(task string) (fe, be int) {
 // task-specific backend landed on, since fe/be run as separate processes
 // with no shared env.
 func patchFEEnvVar(feDir, varName, urlPath string, port int) error {
-	path := filepath.Join(feDir, ".env.local")
-	line := fmt.Sprintf("%s=http://localhost:%d%s", varName, port, urlPath)
+	return patchEnvVar(feDir, varName, fmt.Sprintf("http://localhost:%d%s", port, urlPath))
+}
+
+// patchEnvVar rewrites (or appends) VAR=value in dir/.env.local.
+func patchEnvVar(dir, varName, value string) error {
+	path := filepath.Join(dir, ".env.local")
+	line := varName + "=" + value
 
 	f, err := os.Open(path)
 	var lines []string
@@ -168,6 +173,12 @@ func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, feCmd, be
 		if err := patchFEEnvVar(feDir, pair.FEEnvVar, pair.FEEnvPath, bePort); err != nil {
 			return "", "", "", "", err
 		}
+	}
+	// Task name exposed to the fe app so it can label itself (e.g. browser
+	// tab title "[task] app") — otherwise every task's tab reads identically
+	// and only the port distinguishes them. Best-effort: the fe may ignore it.
+	if err := patchEnvVar(feDir, "NEXT_PUBLIC_ORK_TASK", task); err != nil {
+		return "", "", "", "", err
 	}
 	return feDir, beDir, subPort(pair.FECmd, fePort), subPort(pair.BECmd, bePort), nil
 }

@@ -60,7 +60,8 @@ func (m *Model) View() string {
 	b.WriteString(styleDim.Render(helpLine) + "\n")
 	// Two leading spaces match the rows' cursor-marker prefix so the
 	// header sits exactly over its columns.
-	b.WriteString("  " + styleBold.Render(fmt.Sprintf("%-16s %-32s %-14s %-8s %-8s %-10s %-16s %-9s %s",
+	// Extra 2 columns for the pair-link bracket left of REPO.
+	b.WriteString("    " + styleBold.Render(fmt.Sprintf("%-16s %-32s %-14s %-8s %-8s %-10s %-16s %-9s %s",
 		"REPO", "TASK", "BRANCH", "STATE", "AGENT", "FE/BE", "SESSION", "LAST USED", "CMD")) + "\n")
 	// Always drawn (even empty) so typing a filter doesn't shift the rows.
 	// The kill/end confirmation takes over this line — top of the screen,
@@ -82,7 +83,7 @@ func (m *Model) View() string {
 
 	// Visible width of a full row (plain text, before styling): the padded
 	// columns joined by single spaces, plus the 2-char cursor prefix.
-	const rowPlainWidth = 2 + 16 + 1 + 32 + 1 + 14 + 1 + 8 + 1 + 8 + 1 + 10 + 1 + 16 + 1 + 9 + 1 + 12
+	const rowPlainWidth = 2 + 2 + 16 + 1 + 32 + 1 + 14 + 1 + 8 + 1 + 8 + 1 + 10 + 1 + 16 + 1 + 9 + 1 + 12
 
 	// Cow sidebar sits a comfortable gap right of the table, but never
 	// past the terminal edge — a wide fortune bubble gets pulled left
@@ -183,7 +184,16 @@ func (m *Model) View() string {
 		if selected {
 			prefix = "> "
 		}
-		line := rs(styleSel, prefix) +
+		// Pair-link bracket: fe/be siblings of one task sort adjacent
+		// (see BuildRows), so the top row gets ╭ and the bottom ╰ in the
+		// column left of REPO, colored like the task.
+		link, linkStyle := "  ", taskStyle
+		if i+1 < len(m.visible) && worktree.PairSiblings(m.cfg, r, m.rows[m.visible[i+1]]) {
+			link = "╭ "
+		} else if i > 0 && worktree.PairSiblings(m.cfg, r, m.rows[m.visible[i-1]]) {
+			link = "╰ "
+		}
+		line := rs(styleSel, prefix) + rs(linkStyle, link) +
 			rs(renderer.NewStyle().Foreground(m.repoColors[r.Repo]), pad(trunc(r.Repo, 16), 16)) + rs(plain, " ") +
 			rs(taskStyle, pad(trunc(r.Task, 32), 32)) + rs(plain, " ") +
 			rs(plain, pad(trunc(branch, 14), 14)) + rs(plain, " ") +

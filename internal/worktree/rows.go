@@ -131,11 +131,73 @@ func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 		}
 		rows = append(rows, r)
 	}
-	// Most recently used first; never-used (zero time) sort last.
+	// Most recently used first; never-used (zero time) sort last. Rows
+	// that are the two sides of a configured fe/be pair under one task
+	// share the newer sibling's time (fe first on the tie) so they always
+	// sort adjacent — the picker draws them linked by a bracket.
+	group := pairGroups(cfg, rows)
+	effTime := func(r Row) time.Time {
+		if g, ok := group[r.Repo+"/"+r.Task]; ok {
+			return g
+		}
+		return r.LastUsed
+	}
+	isFE := func(repo string) bool {
+		p, _ := cfg.PairFor(repo)
+		return repo == p.FERepo
+	}
 	sort.SliceStable(rows, func(i, j int) bool {
-		return rows[i].LastUsed.After(rows[j].LastUsed)
+		ti, tj := effTime(rows[i]), effTime(rows[j])
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		if rows[i].Task == rows[j].Task && rows[i].Repo != rows[j].Repo {
+			return isFE(rows[i].Repo) && !isFE(rows[j].Repo)
+		}
+		return false
 	})
 	return rows
+}
+
+// pairGroups maps "repo/task" -> shared sort time for rows where both
+// sides of a configured pair have a worktree under the same task name.
+func pairGroups(cfg config.Config, rows []Row) map[string]time.Time {
+	have := map[string]Row{}
+	for _, r := range rows {
+		have[r.Repo+"/"+r.Task] = r
+	}
+	out := map[string]time.Time{}
+	for _, p := range cfg.Pairs {
+		for _, r := range rows {
+			if r.Repo != p.FERepo {
+				continue
+			}
+			sib, ok := have[p.BERepo+"/"+r.Task]
+			if !ok {
+				continue
+			}
+			t := r.LastUsed
+			if sib.LastUsed.After(t) {
+				t = sib.LastUsed
+			}
+			out[r.Repo+"/"+r.Task] = t
+			out[sib.Repo+"/"+sib.Task] = t
+		}
+	}
+	return out
+}
+
+// PairSiblings reports whether rows a and b are the fe and be sides of one
+// configured pair under the same task — the picker's cue to draw them linked.
+func PairSiblings(cfg config.Config, a, b Row) bool {
+	if a.Task != b.Task || a.Repo == b.Repo {
+		return false
+	}
+	p, ok := cfg.PairFor(a.Repo)
+	if !ok {
+		return false
+	}
+	return (a.Repo == p.FERepo && b.Repo == p.BERepo) || (a.Repo == p.BERepo && b.Repo == p.FERepo)
 }
 
 // LiveDeps builds Deps against the real system.

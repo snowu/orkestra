@@ -84,3 +84,35 @@ func TestSortByAccessDescNeverLast(t *testing.T) {
 		t.Errorf("never-used last, got %s/%s", last.Repo, last.Task)
 	}
 }
+
+func TestPairRowsSortAdjacent(t *testing.T) {
+	cfg := config.Config{Pairs: []config.Pair{{FERepo: "fe-repo", BERepo: "be-repo"}}}
+	t0 := time.Now()
+	times := map[string]time.Time{
+		"fe-repo__tsk":  t0.Add(-3 * time.Hour), // fe old
+		"other__mid":    t0.Add(-1 * time.Hour), // would split the pair without grouping
+		"be-repo__tsk":  t0,                     // be fresh
+	}
+	root := t.TempDir()
+	for _, p := range []string{"fe-repo/tsk", "be-repo/tsk", "other/mid"} {
+		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := BuildRows(cfg, []string{root}, Deps{
+		AccessTime: func(repo, task string) time.Time { return times[repo+"__"+task] },
+	})
+	var order []string
+	for _, r := range rows {
+		order = append(order, r.Repo)
+	}
+	want := []string{"fe-repo", "be-repo", "other"}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order = %v, want %v", order, want)
+		}
+	}
+	if !PairSiblings(cfg, rows[0], rows[1]) || PairSiblings(cfg, rows[1], rows[2]) {
+		t.Error("PairSiblings misdetects")
+	}
+}
