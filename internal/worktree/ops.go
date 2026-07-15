@@ -71,33 +71,24 @@ func SessionName(cfg config.Config, repo, task string) string {
 // repo/path is reused directly when it matches one side, so pressing the
 // key from either the fe or the be row works without a second filesystem
 // lookup.
-func feBEDirs(cfg config.Config, repo, task, wt string) (feDir, beDir string, err error) {
-	if cfg.FERepo == "" || cfg.BERepo == "" {
-		return "", "", fmt.Errorf("ORK_FE_REPO / ORK_BE_REPO not configured in ~/.ork.conf")
-	}
-	// Only rows belonging to the configured pair get fe/be windows —
-	// an unrelated repo whose task name happens to exist in both sibling
-	// repos must not spawn dev servers for them.
-	if repo != cfg.FERepo && repo != cfg.BERepo {
-		return "", "", fmt.Errorf("%s is not the fe/be pair (%s / %s)", repo, cfg.FERepo, cfg.BERepo)
-	}
+func feBEDirs(cfg config.Config, pair config.Pair, repo, task, wt string) (feDir, beDir string, err error) {
 	switch repo {
-	case cfg.FERepo:
+	case pair.FERepo:
 		feDir = wt
 	default:
-		feDir = FindWorktree(cfg.WorktreeRoots, cfg.FERepo, task)
+		feDir = FindWorktree(cfg.WorktreeRoots, pair.FERepo, task)
 	}
 	switch repo {
-	case cfg.BERepo:
+	case pair.BERepo:
 		beDir = wt
 	default:
-		beDir = FindWorktree(cfg.WorktreeRoots, cfg.BERepo, task)
+		beDir = FindWorktree(cfg.WorktreeRoots, pair.BERepo, task)
 	}
 	if feDir == "" {
-		return "", "", fmt.Errorf("no %s/%s worktree found", cfg.FERepo, task)
+		return "", "", fmt.Errorf("no %s/%s worktree found", pair.FERepo, task)
 	}
 	if beDir == "" {
-		return "", "", fmt.Errorf("no %s/%s worktree found", cfg.BERepo, task)
+		return "", "", fmt.Errorf("no %s/%s worktree found", pair.BERepo, task)
 	}
 	return feDir, beDir, nil
 }
@@ -117,9 +108,9 @@ func TaskPorts(task string) (fe, be int) {
 // feDir/.env.local — how the fe dev server learns which port the
 // task-specific backend landed on, since fe/be run as separate processes
 // with no shared env.
-func patchFEEnvVar(feDir, varName string, port int) error {
+func patchFEEnvVar(feDir, varName, urlPath string, port int) error {
 	path := filepath.Join(feDir, ".env.local")
-	line := fmt.Sprintf("%s=http://localhost:%d", varName, port)
+	line := fmt.Sprintf("%s=http://localhost:%d%s", varName, port, urlPath)
 
 	f, err := os.Open(path)
 	var lines []string
@@ -158,17 +149,27 @@ func subPort(cmd string, port int) string {
 // configured) to point at the be port — the setup shared before actually
 // starting either process.
 func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, feCmd, beCmd string, err error) {
-	feDir, beDir, err = feBEDirs(cfg, repo, task, wt)
+	// Only rows belonging to a configured pair get fe/be windows —
+	// an unrelated repo whose task name happens to exist in both sibling
+	// repos must not spawn dev servers for them.
+	pair, ok := cfg.PairFor(repo)
+	if !ok {
+		if len(cfg.Pairs) == 0 {
+			return "", "", "", "", fmt.Errorf("no fe/be pairs configured (~/.ork.conf or ~/.config/ork/pairs.json)")
+		}
+		return "", "", "", "", fmt.Errorf("%s is not part of any configured fe/be pair", repo)
+	}
+	feDir, beDir, err = feBEDirs(cfg, pair, repo, task, wt)
 	if err != nil {
 		return "", "", "", "", err
 	}
 	fePort, bePort := TaskPorts(task)
-	if cfg.FEEnvVar != "" {
-		if err := patchFEEnvVar(feDir, cfg.FEEnvVar, bePort); err != nil {
+	if pair.FEEnvVar != "" {
+		if err := patchFEEnvVar(feDir, pair.FEEnvVar, pair.FEEnvPath, bePort); err != nil {
 			return "", "", "", "", err
 		}
 	}
-	return feDir, beDir, subPort(cfg.FECmd, fePort), subPort(cfg.BECmd, bePort), nil
+	return feDir, beDir, subPort(pair.FECmd, fePort), subPort(pair.BECmd, bePort), nil
 }
 
 // EnsureFEBEWindows makes sure the base session for repo/task exists and has

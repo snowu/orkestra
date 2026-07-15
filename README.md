@@ -32,7 +32,11 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
   your favorites listed first), type a new task name, creates the
   worktree/branch off the repo's actual default branch, copies the repo's
   `.env.local` if it has one, runs any repo-specific setup hook you've
-  configured, and lands you straight in its tmux session.
+  configured, and lands you straight in its tmux session. Configured fe/be
+  pairs also appear as a combined `fe + be` entry (searching either name
+  finds it) — picking it, or hitting **ctrl-b** on either sibling's row,
+  creates the same-named task in both repos at once (one shared session,
+  since sessions are task-named).
 - **ctrl-x** — end task: asks to confirm ("no" is the default), then
   removes the worktree, kills its tmux session (unless another repo's
   worktree still shares that task name — see "Session naming" below), and
@@ -141,6 +145,32 @@ given repo.
 
 Key = repo folder basename. Repos without a matching key just skip the hook
 step. Point at a different file with `ORK_HOOKS_CONFIG` in `~/.ork.conf`.
+
+### FE/BE pairs
+
+Sibling repos that share task names can be declared as pairs — ctrl-g
+spawns fe/be tmux windows running each side's dev command in its worktree,
+with a stable per-task port ({port} placeholder, FE 3000-3999, BE
+8000-8999) and the fe `.env.local` rewritten to point at the task's
+backend. One pair fits in `~/.ork.conf` (`ORK_FE_REPO`/`ORK_BE_REPO`/...);
+any number more go in `~/.config/ork/pairs.json` (path override:
+`ORK_PAIRS_CONFIG`):
+
+```json
+[
+  {
+    "fe": "my-frontend", "be": "my-backend",
+    "fe_cmd": "bun run dev -- --port {port}",
+    "be_cmd": "uv run fastapi dev src/app.py --port {port}",
+    "fe_env_var": "NEXT_PUBLIC_MY_SERVICE_ENDPOINT",
+    "fe_env_path": "/public/operations"
+  }
+]
+```
+
+`fe_env_path` is optional — appended after the port in the URL written to
+`fe_env_var`. `fe_cmd`/`be_cmd` fall back to the built-in defaults when
+omitted. A repo row triggers pairing only if it belongs to a declared pair.
 
 ### Session naming
 

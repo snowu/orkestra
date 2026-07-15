@@ -38,6 +38,38 @@ ORK_FAVORITES=()
 # Uncomment to point at a different path:
 # ORK_HOOKS_CONFIG="$HOME/.config/ork/hooks.json"
 
+# ── FE/BE pairing (ctrl-g spawn, ctrl-a open-all) ──────────────────────────
+# Sibling repos (not subdirs) that share task names — ctrl-g spawns detached
+# fe/be windows running the pair's commands in each side's worktree; ctrl-a
+# attaches the base session with fe/be as extra windows.
+#
+# One pair can be declared right here with the ORK_FE_*/ORK_BE_* keys below;
+# additional pairs live in a JSON file (same no-code-execution rationale as
+# hooks.json): ~/.config/ork/pairs.json, or wherever ORK_PAIRS_CONFIG points.
+#
+# Example ~/.config/ork/pairs.json:
+#   [
+#     {
+#       "fe": "my-frontend", "be": "my-backend",
+#       "fe_cmd": "bun run dev -- --port {port}",
+#       "be_cmd": "uv run fastapi dev src/app.py --port {port}",
+#       "fe_env_var": "NEXT_PUBLIC_MY_SERVICE_ENDPOINT",
+#       "fe_env_path": "/public/operations"
+#     }
+#   ]
+#
+# {port} gets a stable per-task port (FE 3000-3999, BE 8000-8999) so
+# concurrent tasks' dev servers don't collide. fe_env_var, if set, is the
+# .env.local key ork rewrites in the fe worktree to point at the task's
+# backend port; fe_env_path is an optional URL path appended after the port.
+#
+# ORK_FE_REPO=my-frontend
+# ORK_BE_REPO=my-backend
+# ORK_FE_CMD="bun run dev -- --port {port}"
+# ORK_BE_CMD="uv run fastapi dev src/app.py --port {port}"
+# ORK_FE_ENV_VAR=NEXT_PUBLIC_MY_SERVICE_ENDPOINT
+# ORK_PAIRS_CONFIG="$HOME/.config/ork/pairs.json"
+
 # ── Tmux session naming ────────────────────────────────────────────────────
 # ENTER opens a tmux session named after the task (shared across repos by
 # default — handy when one agent works a BE+FE pair under the same task

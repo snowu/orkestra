@@ -274,7 +274,7 @@ func (m *Model) viewConfirm() string {
 
 func (m *Model) viewPickRepo() string {
 	var b strings.Builder
-	b.WriteString(styleBold.Render("ctrl-n new-task: pick a repo (esc to cancel)") + "\n")
+	b.WriteString(styleBold.Render("ctrl-n new-task: pick a repo (esc to cancel, ctrl-b = fe+be pair)") + "\n")
 	b.WriteString("repo> " + m.repoFilter + "\n\n")
 	repos := m.filteredRepos()
 	fav := map[string]bool{}
@@ -288,11 +288,16 @@ func (m *Model) viewPickRepo() string {
 	}
 	for i := start; i < len(repos) && i < start+listH; i++ {
 		name := repos[i]
+		sel := i == m.repoCursor
+		if pair, isPair := m.pairEntries[name]; isPair {
+			b.WriteString(m.renderPairEntry(pair, sel) + "\n")
+			continue
+		}
 		line := name
 		if fav[name] {
 			line = name + styleDim.Render("  *")
 		}
-		if i == m.repoCursor {
+		if sel {
 			b.WriteString(styleSel.Render("> "+line) + "\n")
 		} else {
 			b.WriteString("  " + line + "\n")
@@ -301,10 +306,41 @@ func (m *Model) viewPickRepo() string {
 	return b.String()
 }
 
+// renderPairEntry draws a fe/be pair row as two repo-colored names joined
+// by a link line, so pairs read as one unit instead of a plain string.
+func (m *Model) renderPairEntry(pair [2]string, selected bool) string {
+	feStyle := renderer.NewStyle().Foreground(m.pairSideColor(pair[0], pair[1], 0))
+	beStyle := renderer.NewStyle().Foreground(m.pairSideColor(pair[0], pair[1], 1))
+	link, prefix := styleDim, "  "
+	if selected {
+		feStyle = feStyle.Background(colorSelBg)
+		beStyle = beStyle.Background(colorSelBg)
+		link = link.Background(colorSelBg)
+		prefix = styleSel.Render("> ")
+	}
+	return prefix + feStyle.Render(pair[0]) + link.Render(" ──⇄── ") + beStyle.Render(pair[1])
+}
+
+// pairSideColor reuses the repo's list color when it has rows on screen;
+// otherwise falls back to a stable pair of distinct hues so the two sides
+// are always distinguishable even before any worktree exists.
+func (m *Model) pairSideColor(fe, be string, side int) lipgloss.Color {
+	name := [2]string{fe, be}[side]
+	if c, ok := m.repoColors[name]; ok {
+		return c
+	}
+	fallback := [2]lipgloss.Color{"80", "179"} // cyan fe, amber be
+	return fallback[side]
+}
+
 func (m *Model) viewTaskName() string {
 	var b strings.Builder
-	b.WriteString(styleBold.Render(fmt.Sprintf("new task in %s (esc = back, enter = create)", m.pickedRepo)) + "\n")
-	b.WriteString(fmt.Sprintf("task '%s'> %s█\n\n", m.pickedRepo, m.taskInput))
+	target := m.pickedRepo
+	if m.pickedRepo2 != "" {
+		target = m.pickedRepo + " + " + m.pickedRepo2
+	}
+	b.WriteString(styleBold.Render(fmt.Sprintf("new task in %s (esc = back, enter = create)", target)) + "\n")
+	b.WriteString(fmt.Sprintf("task '%s'> %s█\n\n", target, m.taskInput))
 	b.WriteString(styleDim.Render("existing branches (reference):") + "\n")
 	for i, br := range m.branches {
 		if i >= max(3, m.height-8) {

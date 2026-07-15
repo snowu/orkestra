@@ -7,6 +7,7 @@ package config
 
 import (
 	"bufio"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,6 +25,7 @@ type Config struct {
 	// FE/BE pairing: separate sibling repos (not subdirs) that share task
 	// names — e.g. ORK_FE_REPO=cr-frontend, ORK_BE_REPO=cr-managament. From
 	// any row, the paired worktree is <root>/<FERepo|BERepo>/<sameTask>.
+	// These legacy single-pair keys still work; they become Pairs[0].
 	FERepo, BERepo string
 	// FECmd/BECmd run in each sibling worktree. BECmd may contain a {port}
 	// placeholder — ork substitutes a port derived from the task name so
@@ -32,6 +34,36 @@ type Config struct {
 	// port before running FECmd (e.g. NEXT_PUBLIC_CREDIT_RISK_SERVICE_ENDPOINT).
 	FECmd, BECmd string
 	FEEnvVar     string
+
+	// PairsConfig is the JSON file declaring additional FE/BE pairs (same
+	// no-code-execution rationale as HooksConfig). Pairs is the merged
+	// result: the legacy ORK_FE_REPO/ORK_BE_REPO pair first (if set),
+	// then every pair from PairsConfig.
+	PairsConfig string
+	Pairs       []Pair
+}
+
+// Pair is one FE/BE sibling-repo pairing. JSON tags match the keys in
+// pairs.json. FEEnvPath, if set, is appended after the port in the URL
+// written to the fe env var (e.g. "/public/operations" →
+// http://localhost:8123/public/operations).
+type Pair struct {
+	FERepo    string `json:"fe"`
+	BERepo    string `json:"be"`
+	FECmd     string `json:"fe_cmd"`
+	BECmd     string `json:"be_cmd"`
+	FEEnvVar  string `json:"fe_env_var"`
+	FEEnvPath string `json:"fe_env_path"`
+}
+
+// PairFor returns the pair repo belongs to (either side), or false.
+func (c Config) PairFor(repo string) (Pair, bool) {
+	for _, p := range c.Pairs {
+		if repo == p.FERepo || repo == p.BERepo {
+			return p, true
+		}
+	}
+	return Pair{}, false
 }
 
 func defaults() Config {
@@ -40,6 +72,7 @@ func defaults() Config {
 		WorktreeRoots: []string{filepath.Join(home, "worktrees")},
 		ScanMaxDepth:  3,
 		HooksConfig:   filepath.Join(home, ".config/ork/hooks.json"),
+		PairsConfig:   filepath.Join(home, ".config/ork/pairs.json"),
 		FECmd:         "rund",
 		BECmd:         "bund", // override with a {port}-templated command to avoid port collisions across tasks
 	}
@@ -102,9 +135,53 @@ func Load(path string) (Config, error) {
 			}
 		case "ORK_FE_ENV_VAR":
 			cfg.FEEnvVar = unquote(val)
+		case "ORK_PAIRS_CONFIG":
+			if v := expand(unquote(val)); v != "" {
+				cfg.PairsConfig = v
+			}
 		}
 	}
-	return cfg, sc.Err()
+	if err := sc.Err(); err != nil {
+		return cfg, err
+	}
+	cfg.Pairs = mergePairs(cfg)
+	return cfg, nil
+}
+
+// mergePairs builds the pair list: legacy ORK_FE_REPO/ORK_BE_REPO first
+// (so existing setups keep their priority on repo-name collisions), then
+// pairs.json. A missing/unreadable pairs file is not an error — pairing
+// is optional. Cmd defaults mirror the legacy FECmd/BECmd defaults.
+func mergePairs(cfg Config) []Pair {
+	var pairs []Pair
+	if cfg.FERepo != "" && cfg.BERepo != "" {
+		pairs = append(pairs, Pair{
+			FERepo: cfg.FERepo, BERepo: cfg.BERepo,
+			FECmd: cfg.FECmd, BECmd: cfg.BECmd, FEEnvVar: cfg.FEEnvVar,
+		})
+	}
+	data, err := os.ReadFile(cfg.PairsConfig)
+	if err != nil {
+		return pairs
+	}
+	var fromFile []Pair
+	if json.Unmarshal(data, &fromFile) != nil {
+		return pairs
+	}
+	def := defaults()
+	for _, p := range fromFile {
+		if p.FERepo == "" || p.BERepo == "" {
+			continue
+		}
+		if p.FECmd == "" {
+			p.FECmd = def.FECmd
+		}
+		if p.BECmd == "" {
+			p.BECmd = def.BECmd
+		}
+		pairs = append(pairs, p)
+	}
+	return pairs
 }
 
 // parseArray handles bash `(elem "elem" 'elem')` values.

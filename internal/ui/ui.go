@@ -39,6 +39,11 @@ type Result struct {
 	Task     string
 	WtPath   string
 	RepoRoot string // set for ActionNewTask
+	// Set for ActionNewTask when the user picked a fe/be pair entry (or
+	// hit ctrl-b on a paired repo): the sibling repo to create the same
+	// task in, right after Repo's worktree.
+	Repo2     string
+	RepoRoot2 string
 }
 
 // Styles must bind to a stderr renderer: the ork() shell wrapper captures
@@ -145,13 +150,15 @@ type Model struct {
 	endSession  string // temp "ork-end-*" tmux session being tailed in the live pane
 
 	// ctrl-n flow
-	repos      []string // repo basenames, favorites first
-	repoPaths  map[string]string
-	repoFilter string
-	repoCursor int
-	pickedRepo string
-	taskInput  string
-	branches   []string
+	repos       []string // repo basenames, favorites first
+	repoPaths   map[string]string
+	pairEntries map[string][2]string // pair display line -> {feRepo, beRepo}
+	repoFilter  string
+	repoCursor  int
+	pickedRepo  string
+	pickedRepo2 string // sibling repo when a pair entry was picked
+	taskInput   string
+	branches    []string
 
 	width, height int
 	result        Result

@@ -282,7 +282,26 @@ func (m *Model) startPickRepo() {
 	}
 	sort.Strings(rest)
 	m.repos = append(append([]string{}, m.cfg.Favorites...), rest...)
+
+	// Configured fe/be pairs get a combined entry at the top — one enter
+	// creates the same task in both siblings. The display line contains
+	// both names, so fuzzy-searching either repo surfaces it too.
+	m.pairEntries = map[string][2]string{}
+	var pairLines []string
+	for _, p := range m.cfg.Pairs {
+		if m.repoPaths[p.FERepo] == "" || m.repoPaths[p.BERepo] == "" {
+			continue
+		}
+		line := p.FERepo + " + " + p.BERepo
+		if _, dup := m.pairEntries[line]; !dup {
+			m.pairEntries[line] = [2]string{p.FERepo, p.BERepo}
+			pairLines = append(pairLines, line)
+		}
+	}
+	m.repos = append(pairLines, m.repos...)
+
 	m.repoFilter, m.repoCursor = "", 0
+	m.pickedRepo2 = ""
 	m.mode = modePickRepo
 }
 
@@ -312,10 +331,19 @@ func (m *Model) handlePickRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if m.repoCursor < len(repos) {
-			m.pickedRepo = repos[m.repoCursor]
-			m.taskInput = ""
-			m.branches = existingBranches(m.repoPaths[m.pickedRepo])
-			m.mode = modeTaskName
+			m.pickRepoEntry(repos[m.repoCursor])
+		}
+	case "ctrl+b":
+		// Shortcut: from a plain repo row that belongs to a configured
+		// pair, jump straight to creating both siblings.
+		if m.repoCursor < len(repos) {
+			name := repos[m.repoCursor]
+			if pair, ok := m.pairEntries[name]; ok {
+				m.startTaskName(pair[0], pair[1])
+			} else if p, ok := m.cfg.PairFor(name); ok &&
+				m.repoPaths[p.FERepo] != "" && m.repoPaths[p.BERepo] != "" {
+				m.startTaskName(p.FERepo, p.BERepo)
+			}
 		}
 	case "backspace":
 		if len(m.repoFilter) > 0 {
@@ -331,6 +359,23 @@ func (m *Model) handlePickRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// pickRepoEntry routes a picker row to the task-name prompt — pair entries
+// carry both siblings, plain rows just the one repo.
+func (m *Model) pickRepoEntry(name string) {
+	if pair, ok := m.pairEntries[name]; ok {
+		m.startTaskName(pair[0], pair[1])
+		return
+	}
+	m.startTaskName(name, "")
+}
+
+func (m *Model) startTaskName(repo, repo2 string) {
+	m.pickedRepo, m.pickedRepo2 = repo, repo2
+	m.taskInput = ""
+	m.branches = existingBranches(m.repoPaths[repo])
+	m.mode = modeTaskName
+}
+
 func (m *Model) handleTaskNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "esc":
@@ -342,7 +387,9 @@ func (m *Model) handleTaskNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.result = Result{
 			Action: ActionNewTask, Repo: m.pickedRepo, Task: task,
-			RepoRoot: m.repoPaths[m.pickedRepo],
+			RepoRoot:  m.repoPaths[m.pickedRepo],
+			Repo2:     m.pickedRepo2,
+			RepoRoot2: m.repoPaths[m.pickedRepo2],
 		}
 		return m, tea.Quit
 	case "backspace":

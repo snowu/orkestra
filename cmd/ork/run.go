@@ -53,6 +53,13 @@ func runTUI() {
 		if err != nil {
 			fatal("new-task failed for " + res.Repo + "/" + res.Task + ": " + err.Error())
 		}
+		// Pair entry: create the sibling's worktree too, then attach to the
+		// first side — sessions are task-named, so both share one session.
+		if res.Repo2 != "" && res.RepoRoot2 != "" {
+			if _, err := worktree.NewTask(cfg, res.RepoRoot2, res.Task); err != nil {
+				fatal("new-task failed for " + res.Repo2 + "/" + res.Task + ": " + err.Error())
+			}
+		}
 		attach(cfg, res.Repo, res.Task, wt)
 	case ui.ActionOpenAll:
 		if err := worktree.EnsureFEBEWindows(cfg, res.Repo, res.Task, res.WtPath); err != nil {

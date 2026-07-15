@@ -66,3 +66,22 @@ func TestConfirmDefaultsToNo(t *testing.T) {
 		t.Error("enter on 'no' should return to list")
 	}
 }
+
+func TestPickRepoEntryPair(t *testing.T) {
+	m := &Model{
+		repoPaths: map[string]string{
+			"cr-frontend": "/x/cr-frontend", "cr-managament": "/x/cr-managament",
+		},
+		pairEntries: map[string][2]string{
+			"cr-frontend + cr-managament": {"cr-frontend", "cr-managament"},
+		},
+	}
+	m.pickRepoEntry("cr-frontend + cr-managament")
+	if m.pickedRepo != "cr-frontend" || m.pickedRepo2 != "cr-managament" || m.mode != modeTaskName {
+		t.Fatalf("pair pick: repo=%q repo2=%q mode=%v", m.pickedRepo, m.pickedRepo2, m.mode)
+	}
+	m.pickRepoEntry("cr-frontend")
+	if m.pickedRepo != "cr-frontend" || m.pickedRepo2 != "" {
+		t.Fatalf("plain pick should clear repo2, got %q", m.pickedRepo2)
+	}
+}
