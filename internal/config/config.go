@@ -54,6 +54,11 @@ type Pair struct {
 	BECmd     string `json:"be_cmd"`
 	FEEnvVar  string `json:"fe_env_var"`
 	FEEnvPath string `json:"fe_env_path"`
+	// FEURLEnvVars are .env.local keys rewritten to the task's OWN fe url
+	// (http://localhost:<fePort>) — for apps that hardcode their public
+	// origin (e.g. NEXTAUTH_URL=http://localhost:3000) and would otherwise
+	// redirect auth flows to whatever task hashes to port 3000.
+	FEURLEnvVars []string `json:"fe_url_env_vars"`
 }
 
 // PairFor returns the pair repo belongs to (either side), or false.

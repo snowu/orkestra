@@ -180,6 +180,13 @@ func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, feCmd, be
 	if err := patchEnvVar(feDir, "NEXT_PUBLIC_ORK_TASK", task); err != nil {
 		return "", "", "", "", err
 	}
+	// Apps that hardcode their own origin (NEXTAUTH_URL etc.) must learn
+	// the task's real fe port, or auth redirects land on localhost:3000.
+	for _, v := range pair.FEURLEnvVars {
+		if err := patchEnvVar(feDir, v, fmt.Sprintf("http://localhost:%d", fePort)); err != nil {
+			return "", "", "", "", err
+		}
+	}
 	return feDir, beDir, subPort(pair.FECmd, fePort), subPort(pair.BECmd, bePort), nil
 }
 

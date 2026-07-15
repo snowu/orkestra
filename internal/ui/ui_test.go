@@ -85,3 +85,40 @@ func TestPickRepoEntryPair(t *testing.T) {
 		t.Fatalf("plain pick should clear repo2, got %q", m.pickedRepo2)
 	}
 }
+
+func TestStickyColors(t *testing.T) {
+	pal := []int{1, 2, 3, 4}
+	first := updateColors(nil, []string{"alpha", "beta"}, pal)
+	// New name appears: existing assignments must not move.
+	second := updateColors(first, []string{"alpha", "beta", "gamma"}, pal)
+	if second["alpha"] != first["alpha"] || second["beta"] != first["beta"] {
+		t.Fatalf("colors reassigned: %v -> %v", first, second)
+	}
+	if second["gamma"] == "" || second["gamma"] == second["alpha"] || second["gamma"] == second["beta"] {
+		t.Fatalf("gamma got bad color: %v", second)
+	}
+	// alpha leaves: beta/gamma keep theirs.
+	third := updateColors(second, []string{"beta", "delta", "gamma"}, pal)
+	if third["beta"] != second["beta"] || third["gamma"] != second["gamma"] {
+		t.Fatalf("colors moved on removal: %v", third)
+	}
+}
+
+func TestPairColoredWithoutSession(t *testing.T) {
+	m := New(config.Config{
+		WorktreeRoots: []string{"/nowhere"},
+		Pairs:         []config.Pair{{FERepo: "fe-r", BERepo: "be-r"}},
+	})
+	rows := []worktree.Row{
+		{Repo: "fe-r", Task: "tsk"},
+		{Repo: "be-r", Task: "tsk"},
+		{Repo: "solo", Task: "lonely"},
+	}
+	m.updateTaskColors(rows)
+	if _, ok := m.taskColors["tsk"]; !ok {
+		t.Error("sessionless pair task should be colored")
+	}
+	if _, ok := m.taskColors["lonely"]; ok {
+		t.Error("solo task should stay uncolored")
+	}
+}

@@ -54,7 +54,8 @@ ORK_FAVORITES=()
 #       "fe_cmd": "bun run dev -- --port {port}",
 #       "be_cmd": "uv run fastapi dev src/app.py --port {port}",
 #       "fe_env_var": "NEXT_PUBLIC_MY_SERVICE_ENDPOINT",
-#       "fe_env_path": "/public/operations"
+#       "fe_env_path": "/public/operations",
+#       "fe_url_env_vars": ["NEXTAUTH_URL"]
 #     }
 #   ]
 #
@@ -62,6 +63,9 @@ ORK_FAVORITES=()
 # concurrent tasks' dev servers don't collide. fe_env_var, if set, is the
 # .env.local key ork rewrites in the fe worktree to point at the task's
 # backend port; fe_env_path is an optional URL path appended after the port.
+# fe_url_env_vars are keys rewritten to the task's OWN fe url — for apps
+# that hardcode their origin (NEXTAUTH_URL=http://localhost:3000) and would
+# otherwise redirect auth flows to port 3000 instead of the task's port.
 #
 # ORK_FE_REPO=my-frontend
 # ORK_BE_REPO=my-backend

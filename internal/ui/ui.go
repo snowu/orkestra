@@ -8,6 +8,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"sort"
@@ -66,16 +67,53 @@ var repoPalette = []int{39, 208, 84, 201, 220, 51, 196, 141, 154, 213, 43, 178, 
 // session color needs to read as a distinct signal, not a repeat).
 var taskPalette = []int{135, 172, 65, 204, 227, 30, 168, 108, 216, 63}
 
-func assignColors(names []string, palette []int) map[string]lipgloss.Color {
-	sort.Strings(names)
-	colors := make(map[string]lipgloss.Color, len(names))
-	for i, n := range names {
-		colors[n] = lipgloss.Color(fmt.Sprintf("%d", palette[i%len(palette)]))
+// updateColors keeps color assignments STICKY, like ports: a name keeps
+// its color for as long as it's on screen, no matter what appears or
+// disappears around it (the old index-over-sorted-set scheme recolored
+// everything whenever the set changed — e.g. ctrl-g creating a session).
+// New names get a hash-seeded palette slot (stable-ish across restarts,
+// same idea as TaskPorts), probing forward past colors already in use;
+// a color is only reused once its holder leaves the screen.
+func updateColors(prev map[string]lipgloss.Color, names []string, palette []int) map[string]lipgloss.Color {
+	sort.Strings(names) // deterministic allocation order for new names
+	out := make(map[string]lipgloss.Color, len(names))
+	used := map[lipgloss.Color]int{}
+	var fresh []string
+	for _, n := range names {
+		if c, ok := prev[n]; ok {
+			out[n] = c
+			used[c]++
+		} else {
+			fresh = append(fresh, n)
+		}
 	}
-	return colors
+	for _, n := range fresh {
+		h := fnv.New32a()
+		h.Write([]byte(n))
+		start := int(h.Sum32()) % len(palette)
+		if start < 0 {
+			start += len(palette)
+		}
+		best := start
+		for i := 0; i < len(palette); i++ {
+			s := (start + i) % len(palette)
+			c := lipgloss.Color(fmt.Sprintf("%d", palette[s]))
+			if used[c] == 0 {
+				best = s
+				break
+			}
+			if used[lipgloss.Color(fmt.Sprintf("%d", palette[best]))] > used[c] {
+				best = s // palette exhausted: fall back to least-loaded slot
+			}
+		}
+		c := lipgloss.Color(fmt.Sprintf("%d", palette[best]))
+		out[n] = c
+		used[c]++
+	}
+	return out
 }
 
-func assignRepoColors(rows []worktree.Row) map[string]lipgloss.Color {
+func (m *Model) updateRepoColors(rows []worktree.Row) {
 	distinct := map[string]bool{}
 	var names []string
 	for _, r := range rows {
@@ -84,27 +122,40 @@ func assignRepoColors(rows []worktree.Row) map[string]lipgloss.Color {
 			names = append(names, r.Repo)
 		}
 	}
-	return assignColors(names, repoPalette)
+	m.repoColors = updateColors(m.repoColors, names, repoPalette)
 }
 
-// assignTaskColors colors only tasks whose session is shared by 2+ rows —
-// solo tasks stay uncolored so the shared ones stand out.
-func assignTaskColors(rows []worktree.Row) map[string]lipgloss.Color {
+// updateTaskColors colors tasks that span 2+ rows — either a live session
+// shared across worktrees, or both sides of a configured fe/be pair (which
+// deserve the link color even before any session exists).
+func (m *Model) updateTaskColors(rows []worktree.Row) {
 	sessionRows := map[string]int{}
+	repoTask := map[string]bool{}
 	for _, r := range rows {
 		if r.Session != "" {
 			sessionRows[r.Session]++
 		}
+		repoTask[r.Repo+"/"+r.Task] = true
 	}
 	distinct := map[string]bool{}
 	var names []string
-	for _, r := range rows {
-		if sessionRows[r.Session] > 1 && !distinct[r.Task] {
-			distinct[r.Task] = true
-			names = append(names, r.Task)
+	add := func(task string) {
+		if !distinct[task] {
+			distinct[task] = true
+			names = append(names, task)
 		}
 	}
-	return assignColors(names, taskPalette)
+	for _, r := range rows {
+		if r.Session != "" && sessionRows[r.Session] > 1 {
+			add(r.Task)
+			continue
+		}
+		if p, ok := m.cfg.PairFor(r.Repo); ok &&
+			repoTask[p.FERepo+"/"+r.Task] && repoTask[p.BERepo+"/"+r.Task] {
+			add(r.Task)
+		}
+	}
+	m.taskColors = updateColors(m.taskColors, names, taskPalette)
 }
 
 var (
@@ -280,8 +331,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rows = msg
 		m.applyFilter()
 		m.cow = cowSidebar()
-		m.repoColors = assignRepoColors(m.rows)
-		m.taskColors = assignTaskColors(m.rows)
+		m.updateRepoColors(m.rows)
+		m.updateTaskColors(m.rows)
 		return m, m.previewCmd()
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())

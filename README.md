@@ -163,14 +163,18 @@ any number more go in `~/.config/ork/pairs.json` (path override:
     "fe_cmd": "bun run dev -- --port {port}",
     "be_cmd": "uv run fastapi dev src/app.py --port {port}",
     "fe_env_var": "NEXT_PUBLIC_MY_SERVICE_ENDPOINT",
-    "fe_env_path": "/public/operations"
+    "fe_env_path": "/public/operations",
+    "fe_url_env_vars": ["NEXTAUTH_URL"]
   }
 ]
 ```
 
 `fe_env_path` is optional — appended after the port in the URL written to
-`fe_env_var`. `fe_cmd`/`be_cmd` fall back to the built-in defaults when
-omitted. A repo row triggers pairing only if it belongs to a declared pair.
+`fe_env_var`. `fe_url_env_vars` keys get rewritten to the task's own fe
+origin (`http://localhost:<fePort>`) — for apps that hardcode it, like
+next-auth's `NEXTAUTH_URL`, which would otherwise bounce auth redirects to
+whatever runs on port 3000. `fe_cmd`/`be_cmd` fall back to the built-in
+defaults when omitted. A repo row triggers pairing only if it belongs to a declared pair.
 
 ### Session naming
 
