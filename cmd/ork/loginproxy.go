@@ -187,23 +187,47 @@ func liveTaskFEs() []liveFE {
 	return out
 }
 
+const chooserCSS = `
+:root{--bg:#14171a;--card:#1d2126;--ink:#e6e9ec;--muted:#8b939c;--accent:#5eead4;--line:#2b3138}
+@media (prefers-color-scheme: light){:root{--bg:#f5f6f7;--card:#fff;--ink:#1c2126;--muted:#67707a;--accent:#0d9488;--line:#e3e6e9}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
+font:16px/1.5 ui-sans-serif,system-ui,"Segoe UI",sans-serif;display:grid;place-items:center;min-height:100vh}
+main{width:min(30rem,92vw);padding:2rem 0}
+h1{font-size:1.05rem;margin:0 0 .25rem;letter-spacing:.01em}
+h1 span{color:var(--accent);font-family:ui-monospace,Menlo,Consolas,monospace}
+.sub{color:var(--muted);font-size:.9rem;margin:0 0 1.25rem}
+a.card{display:flex;align-items:center;gap:.9rem;background:var(--card);border:1px solid var(--line);
+border-radius:10px;padding:.85rem 1.1rem;margin-bottom:.6rem;text-decoration:none;color:var(--ink)}
+a.card:hover,a.card:focus-visible{border-color:var(--accent);outline:none}
+.dot{width:.55rem;height:.55rem;border-radius:50%;background:var(--accent);flex:none}
+.task{font-weight:600}
+.meta{color:var(--muted);font-size:.82rem;font-family:ui-monospace,Menlo,Consolas,monospace}
+.spacer{flex:1}
+.port{color:var(--accent);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85rem}
+.empty{background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:1.1rem;color:var(--muted);font-size:.92rem}
+kbd{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:.05em .4em;font-size:.85em;font-family:ui-monospace,Menlo,monospace}
+`
+
 // serveChooser renders the pick-your-task page shown when the target can't
 // be inferred (no callbackUrl/Referer/cookie and 0 or 2+ live fe servers).
 func serveChooser(w http.ResponseWriter, r *http.Request, live []liveFE) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "<h2>ork login-proxy</h2>")
+	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ork · login router</title><style>%s</style><main>`, chooserCSS)
+	fmt.Fprint(w, `<h1><span>ork</span> login router</h1>`)
 	if len(live) == 0 {
-		fmt.Fprint(w, "<p>No task frontends are running. Spawn one (ctrl-g in ork), or start the login from the task's own page.</p>")
+		fmt.Fprint(w, `<p class="sub">No task frontends running.</p>`)
+		fmt.Fprint(w, `<div class="empty">Spawn one first — <kbd>ctrl-g</kbd> on the task's row in ork — then come back, or just start the login from the task's own page.</div></main>`)
 		return
 	}
+	fmt.Fprint(w, `<p class="sub">Which task is this login for?</p>`)
 	back := url.QueryEscape(r.URL.RequestURI())
-	fmt.Fprint(w, "<p>Several task frontends are live — which one is this login for?</p><ul>")
 	for _, l := range live {
-		fmt.Fprintf(w, `<li><a href="/__ork/target/%d?back=%s">%s / %s (:%d)</a></li>`,
-			l.port, back, html.EscapeString(l.repo), html.EscapeString(l.task), l.port)
+		fmt.Fprintf(w, `<a class="card" href="/__ork/target/%d?back=%s"><span class="dot"></span><span><div class="task">%s</div><div class="meta">%s</div></span><span class="spacer"></span><span class="port">:%d</span></a>`,
+			l.port, back, html.EscapeString(l.task), html.EscapeString(l.repo), l.port)
 	}
-	fmt.Fprint(w, "</ul>")
+	fmt.Fprint(w, `</main>`)
 }
 
 // parseListenArg allows "ork login-proxy [port|host:port]".
