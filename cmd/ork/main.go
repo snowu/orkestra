@@ -33,6 +33,8 @@ func main() {
 			task = args[1]
 		}
 		runEndTask(task)
+	case "login-proxy":
+		runLoginProxy(parseListenArg(args))
 	case "_end-task":
 		// Internal: cleanup with explicit repo/task, run inside the temp
 		// "ork-end-*" tmux session the TUI spawns so its output can be
@@ -42,7 +44,7 @@ func main() {
 		}
 		runEndTaskDirect(args[1], args[2])
 	default:
-		fatal("usage: ork [new-task <name> | end-task [name] | --version]")
+		fatal("usage: ork [new-task <name> | end-task [name] | login-proxy [port] | --version]")
 	}
 }
 

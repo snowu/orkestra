@@ -176,6 +176,20 @@ next-auth's `NEXTAUTH_URL`, which would otherwise bounce auth redirects to
 whatever runs on port 3000. `fe_cmd`/`be_cmd` fall back to the built-in
 defaults when omitted. A repo row triggers pairing only if it belongs to a declared pair.
 
+### Login proxy (`ork login-proxy`)
+
+For apps whose OAuth provider only whitelists `http://localhost:3000` as a
+redirect URI (and that pin `NEXTAUTH_URL` there): every login handshake
+must pass through port 3000, but any same-app instance can complete it —
+localhost cookies ignore ports. `ork login-proxy` listens on 3000 and
+forwards auth traffic to the task port the login started from (Referer
+pins the target in an `ork_login_target` cookie so the provider's
+Referer-less callback still routes; when nothing pins the target it scans
+the worktrees for live fe dev servers — one alive routes automatically,
+several render a click-to-pick chooser). It starts automatically in a
+detached `ork-login-proxy` tmux session whenever the TUI opens with pairs
+configured and port 3000 is free — no dedicated "login" dev server needed.
+
 ### Session naming
 
 Tmux sessions are named after the task, not the repo — by design, so one

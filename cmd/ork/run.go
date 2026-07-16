@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +34,7 @@ func requireTools() {
 func runTUI() {
 	requireTools()
 	cfg := loadConfig()
+	ensureLoginProxy(cfg)
 
 	res, err := ui.Run(cfg)
 	if err != nil {
@@ -67,6 +69,23 @@ func runTUI() {
 		}
 		attach(cfg, res.Repo, res.Task, res.WtPath)
 	}
+}
+
+// ensureLoginProxy keeps `ork login-proxy` alive in a detached tmux
+// session whenever fe/be pairs are configured — so the auth flow works out
+// of the box, no manual step. Skipped when port 3000 is already taken
+// (someone running a real dev server there deliberately) or the session
+// already exists. Best-effort by design: the TUI must come up regardless.
+func ensureLoginProxy(cfg config.Config) {
+	if len(cfg.Pairs) == 0 || tmux.HasSession("ork-login-proxy") {
+		return
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:3000")
+	if err != nil {
+		return // port taken — respect whatever owns it
+	}
+	l.Close()
+	tmux.NewDetached("ork-login-proxy", "exec ork login-proxy")
 }
 
 func attach(cfg config.Config, repo, task, wt string) {
