@@ -101,6 +101,12 @@ func TaskPorts(task string) (fe, be int) {
 	h := fnv.New32a()
 	h.Write([]byte(task))
 	n := int(h.Sum32() % 1000)
+	// 3000 is reserved for the login proxy (OAuth redirect whitelist) — a
+	// task hashing to slot 0 takes slot 999 instead. Only that one slot
+	// remaps, so every other task keeps its established port.
+	if n == 0 {
+		n = 999
+	}
 	return 3000 + n, 8000 + n
 }
 

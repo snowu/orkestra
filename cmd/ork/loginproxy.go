@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"hash/fnv"
 	"html"
 	"net"
 	"net/http"
@@ -113,13 +114,21 @@ func runLoginProxy(listen string) {
 			Path: "/", MaxAge: 600, SameSite: http.SameSiteLaxMode,
 		})
 		back := r.URL.Query().Get("back")
-		if back == "" || !strings.HasPrefix(back, "/") {
-			back = "/"
+		if back == "" || back == "/" || !strings.HasPrefix(back, "/") {
+			// No real destination — land on the task's own port, not back on
+			// the router (whose root always shows the chooser).
+			back = fmt.Sprintf("http://localhost:%d/", p)
 		}
 		http.Redirect(w, r, back, http.StatusFound)
 	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// The router's root is always the router — a live pin must never
+		// make the chooser unreachable (you couldn't switch apps otherwise).
+		if r.URL.Path == "/" {
+			serveChooser(w, r, liveTaskFEs())
+			return
+		}
 		p := target(r)
 		if p == 0 {
 			// Try to figure it out ourselves: scan the worktrees for live fe
@@ -131,6 +140,14 @@ func runLoginProxy(listen string) {
 				serveChooser(w, r, live)
 				return
 			}
+		}
+		// Only auth traffic is tunneled — for anything else, bounce the
+		// browser to the task's real port instead of mirroring the app on
+		// :3000 (a URL bar reading 3000 while showing a task app confuses
+		// more than it helps).
+		if !strings.HasPrefix(r.URL.Path, "/api/auth/") {
+			http.Redirect(w, r, fmt.Sprintf("http://localhost:%d%s", p, r.URL.RequestURI()), http.StatusFound)
+			return
 		}
 		// Pin/refresh the target so the Referer-less KC callback still routes.
 		http.SetCookie(w, &http.Cookie{
@@ -187,26 +204,38 @@ func liveTaskFEs() []liveFE {
 	return out
 }
 
+// chooserCSS: the router page cosplays as the ork TUI — terminal ground,
+// monospace grid, the TUI's own repo palette, hover row = the `>` cursor.
 const chooserCSS = `
-:root{--bg:#14171a;--card:#1d2126;--ink:#e6e9ec;--muted:#8b939c;--accent:#5eead4;--line:#2b3138}
-@media (prefers-color-scheme: light){:root{--bg:#f5f6f7;--card:#fff;--ink:#1c2126;--muted:#67707a;--accent:#0d9488;--line:#e3e6e9}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);
-font:16px/1.5 ui-sans-serif,system-ui,"Segoe UI",sans-serif;display:grid;place-items:center;min-height:100vh}
-main{width:min(30rem,92vw);padding:2rem 0}
-h1{font-size:1.05rem;margin:0 0 .25rem;letter-spacing:.01em}
-h1 span{color:var(--accent);font-family:ui-monospace,Menlo,Consolas,monospace}
-.sub{color:var(--muted);font-size:.9rem;margin:0 0 1.25rem}
-a.card{display:flex;align-items:center;gap:.9rem;background:var(--card);border:1px solid var(--line);
-border-radius:10px;padding:.85rem 1.1rem;margin-bottom:.6rem;text-decoration:none;color:var(--ink)}
-a.card:hover,a.card:focus-visible{border-color:var(--accent);outline:none}
-.dot{width:.55rem;height:.55rem;border-radius:50%;background:var(--accent);flex:none}
-.task{font-weight:600}
-.meta{color:var(--muted);font-size:.82rem;font-family:ui-monospace,Menlo,Consolas,monospace}
-.spacer{flex:1}
-.port{color:var(--accent);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85rem}
-.empty{background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:1.1rem;color:var(--muted);font-size:.92rem}
-kbd{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:.05em .4em;font-size:.85em;font-family:ui-monospace,Menlo,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:#101317;color:#d8dde2;min-height:100vh;display:grid;place-items:center;
+font:14px/1.7 ui-monospace,"Cascadia Code",Menlo,Consolas,monospace}
+main{width:min(46rem,94vw);padding:2rem 0}
+.title{color:#f4f6f8;font-weight:700}
+.dim{color:#6c7680}
+.head{color:#f4f6f8;font-weight:700;white-space:pre}
+a.row{display:block;color:inherit;text-decoration:none;white-space:pre;padding:.05rem .25rem;border-radius:3px}
+a.row:hover,a.row:focus-visible{background:#31363d;outline:none}
+a.row::before{content:"  "}
+a.row:hover::before,a.row:focus-visible::before{content:"> "}
+.live{color:#87d787}
+.port{color:#5fd7d7}
+.filter{color:#6c7680;margin:.35rem 0 .8rem}
+.wrap{overflow-x:auto}
 `
+
+// TUI repoPalette (see internal/ui) mapped from xterm-256 to hex.
+var chooserPalette = []string{
+	"#00afff", "#ff8700", "#5fff87", "#ff00ff", "#ffd700",
+	"#00ffff", "#ff0000", "#af87ff", "#afff00", "#ff87ff",
+	"#00d7af", "#d7af00", "#875fff", "#ff875f", "#00ff87",
+}
+
+func chooserColor(repo string) string {
+	h := fnv.New32a()
+	h.Write([]byte(repo))
+	return chooserPalette[int(h.Sum32())%len(chooserPalette)]
+}
 
 // serveChooser renders the pick-your-task page shown when the target can't
 // be inferred (no callbackUrl/Referer/cookie and 0 or 2+ live fe servers).
@@ -215,19 +244,20 @@ func serveChooser(w http.ResponseWriter, r *http.Request, live []liveFE) {
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ork · login router</title><style>%s</style><main>`, chooserCSS)
-	fmt.Fprint(w, `<h1><span>ork</span> login router</h1>`)
+	fmt.Fprint(w, `<div class="title">ork login router <span class="dim">— pick the task this login is for (click = pin &amp; continue)</span></div>`)
+	fmt.Fprintf(w, `<div class="filter">&gt; <span class="dim">%d/%d</span></div>`, len(live), len(live))
 	if len(live) == 0 {
-		fmt.Fprint(w, `<p class="sub">No task frontends running.</p>`)
-		fmt.Fprint(w, `<div class="empty">Spawn one first — <kbd>ctrl-g</kbd> on the task's row in ork — then come back, or just start the login from the task's own page.</div></main>`)
+		fmt.Fprint(w, `<div class="dim">no task frontends running — spawn one (ctrl-g on the task's row in ork), or start the login from the task's own page</div></main>`)
 		return
 	}
-	fmt.Fprint(w, `<p class="sub">Which task is this login for?</p>`)
+	fmt.Fprintf(w, `<div class="wrap"><div class="head">  %-18s %-34s %-6s %s</div>`, "REPO", "TASK", "STATE", "PORT")
 	back := url.QueryEscape(r.URL.RequestURI())
 	for _, l := range live {
-		fmt.Fprintf(w, `<a class="card" href="/__ork/target/%d?back=%s"><span class="dot"></span><span><div class="task">%s</div><div class="meta">%s</div></span><span class="spacer"></span><span class="port">:%d</span></a>`,
-			l.port, back, html.EscapeString(l.task), html.EscapeString(l.repo), l.port)
+		fmt.Fprintf(w, `<a class="row" href="/__ork/target/%d?back=%s"><span style="color:%s">%-18s</span> %-34s <span class="live">%-6s</span> <span class="port">:%d</span></a>`,
+			l.port, back, chooserColor(l.repo),
+			html.EscapeString(fmt.Sprintf("%-18s", l.repo)), html.EscapeString(fmt.Sprintf("%-34s", l.task)), "live", l.port)
 	}
-	fmt.Fprint(w, `</main>`)
+	fmt.Fprint(w, `</div></main>`)
 }
 
 // parseListenArg allows "ork login-proxy [port|host:port]".
