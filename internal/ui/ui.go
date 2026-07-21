@@ -416,7 +416,7 @@ func (m *Model) previewCmd() tea.Cmd {
 		case previewInfo:
 			text = infoPreview(cfg, sel, lines, width, pathStyle)
 		case previewGitStatus:
-			text = gitStatusPreview(sel)
+			text = gitStatusSplit(sel, lines, width)
 		case previewSplit:
 			text = splitPreview(cfg, sel, lines, width, pathStyle)
 		}

@@ -77,15 +77,43 @@ func runTUI() {
 // (someone running a real dev server there deliberately) or the session
 // already exists. Best-effort by design: the TUI must come up regardless.
 func ensureLoginProxy(cfg config.Config) {
-	if len(cfg.Pairs) == 0 || tmux.HasSession("ork-login-proxy") {
+	if len(cfg.Pairs) == 0 {
 		return
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:3000")
-	if err != nil {
-		return // port taken — respect whatever owns it
+	if portListening("127.0.0.1:3000") {
+		return // something (our proxy, presumably) already answers — leave it
 	}
-	l.Close()
+	// Port's dead. If a stale ork-login-proxy tmux session is still around
+	// (the process inside exited or was killed but the window/shell lingers,
+	// e.g. after a crash or manual ctrl-c), HasSession alone would wrongly
+	// treat that as "already running" and never respawn — this is the case
+	// that left the proxy silently down indefinitely. Clear it so the fresh
+	// session below can bind the port.
+	if tmux.HasSession("ork-login-proxy") {
+		tmux.KillSession("ork-login-proxy")
+	}
 	tmux.NewDetached("ork-login-proxy", "exec ork login-proxy")
+
+	// Session creation -> process exec -> http.ListenAndServe takes real
+	// wall-clock time. Block until it's actually accepting connections (or
+	// give up after a bounded wait; best-effort by design still holds) so a
+	// login attempted right after launch doesn't hit a not-yet-bound :3000.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if portListening("127.0.0.1:3000") {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func portListening(addr string) bool {
+	c, err := net.DialTimeout("tcp", addr, 150*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
 }
 
 func attach(cfg config.Config, repo, task, wt string) {

@@ -197,16 +197,53 @@ func gitStatusPreview(r worktree.Row) string {
 	return string(out)
 }
 
-// splitPreview: ctrl-s view — git status (left) and the live info panel
-// (right), 50/50. Column padding/truncation must be ANSI-aware: both sides
-// carry color codes, and byte-length math would shear the divider.
+// gitDiffStatPreview: which files changed and by how much. Against HEAD so
+// staged and unstaged edits both count — the row's whole story, not just
+// what happens to be unstaged. Untracked files don't diff; git status
+// (always shown alongside) covers those.
+func gitDiffStatPreview(r worktree.Row) string {
+	if _, err := os.Stat(r.Path); err != nil {
+		return ""
+	}
+	out, _ := exec.Command("git", "-C", r.Path, "-c", "color.diff=always", "diff", "--stat", "HEAD").CombinedOutput()
+	if strings.TrimSpace(string(out)) == "" {
+		return styleDim.Render("(no changes)")
+	}
+	return string(out)
+}
+
+// gitStatusSplit: the tab view — git status (left) and diff --stat
+// (right), 50/50.
+func gitStatusSplit(r worktree.Row, lines, width int) string {
+	return twoColumns(
+		styleBold.Render("status")+"\n"+strings.TrimRight(gitStatusPreview(r), "\n"),
+		styleBold.Render("diff --stat HEAD")+"\n"+strings.TrimRight(gitDiffStatPreview(r), "\n"),
+		lines, width)
+}
+
+// splitPreview: ctrl-s view — git status + diff --stat stacked (left) and
+// the live info panel (right), 50/50.
 func splitPreview(cfg config.Config, r worktree.Row, lines, width int, pathStyle lipgloss.Style) string {
 	colW := width/2 - 2
 	if colW < 20 {
 		colW = 20
 	}
-	left := strings.Split(strings.TrimRight(gitStatusPreview(r), "\n"), "\n")
-	right := strings.Split(strings.TrimRight(infoPreview(cfg, r, lines, colW, pathStyle), "\n"), "\n")
+	left := strings.TrimRight(gitStatusPreview(r), "\n") + "\n" +
+		styleDim.Render(strings.Repeat("-", 24)) + "\n" +
+		strings.TrimRight(gitDiffStatPreview(r), "\n")
+	return twoColumns(left, strings.TrimRight(infoPreview(cfg, r, lines, colW, pathStyle), "\n"), lines, width)
+}
+
+// twoColumns renders left │ right at 50/50. Column padding/truncation must
+// be ANSI-aware: both sides carry color codes, and byte-length math would
+// shear the divider.
+func twoColumns(leftText, rightText string, lines, width int) string {
+	colW := width/2 - 2
+	if colW < 20 {
+		colW = 20
+	}
+	left := strings.Split(leftText, "\n")
+	right := strings.Split(rightText, "\n")
 
 	n := len(left)
 	if len(right) > n {
