@@ -91,13 +91,27 @@ func runLoginProxy(listen string) {
 				return nil
 			}
 			p := resp.Request.Header.Get("X-Ork-Target")
+			rewritten := loc
 			if u, err := url.Parse(loc); err == nil && p != "" &&
 				(u.Host == "" || u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1") {
-				resp.Header.Set("Location", fmt.Sprintf("http://localhost:%s%s", p, u.RequestURI()))
+				rewritten = fmt.Sprintf("http://localhost:%s%s", p, u.RequestURI())
+				resp.Header.Set("Location", rewritten)
 			}
 			// The pin has served its flow — expire it so a later login for a
 			// different app family can't silently follow a stale target.
 			resp.Header.Add("Set-Cookie", "ork_login_target=; Path=/; Max-Age=0")
+
+			// NextAuth lands OAuthCallback failures (stale/reused code, state
+			// mismatch — e.g. a login retried after a dead proxy window) here
+			// instead of erroring loudly. Bounce straight back to signin once
+			// instead of dumping the user on the error page — guarded by a
+			// one-shot cookie so a genuinely broken app doesn't loop forever.
+			if u, err := url.Parse(rewritten); err == nil && u.Path == "/api/auth/error" &&
+				resp.Request.Header.Get("Cookie") != "" &&
+				!strings.Contains(resp.Request.Header.Get("Cookie"), "ork_login_retry=1") {
+				resp.Header.Set("Location", fmt.Sprintf("http://localhost:%s/api/auth/signin", p))
+				resp.Header.Add("Set-Cookie", "ork_login_retry=1; Path=/; Max-Age=30")
+			}
 			return nil
 		},
 	}
