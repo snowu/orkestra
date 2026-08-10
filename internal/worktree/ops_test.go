@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"orkestra/internal/config"
-	"orkestra/internal/tmux"
+	"orkestra/internal/mux"
 )
 
 func TestKillSessionForSiblingGuard(t *testing.T) {
@@ -20,7 +20,7 @@ func TestKillSessionForSiblingGuard(t *testing.T) {
 
 	killed := []string{}
 	ops := TmuxOps{
-		Panes:       func() []tmux.Pane { return nil },
+		Panes:       func() []mux.Pane { return nil },
 		HasSession:  func(n string) bool { return n == "mytask" || n == "solo" },
 		KillSession: func(n string) { killed = append(killed, n) },
 	}
@@ -55,7 +55,7 @@ func TestKillSessionForCwdMatch(t *testing.T) {
 
 	killed := []string{}
 	ops := TmuxOps{
-		Panes:       func() []tmux.Pane { return []tmux.Pane{{Session: "othername", CWD: wt}} },
+		Panes:       func() []mux.Pane { return []mux.Pane{{Session: "othername", CWD: wt}} },
 		HasSession:  func(n string) bool { return false },
 		KillSession: func(n string) { killed = append(killed, n) },
 	}
@@ -110,7 +110,7 @@ func TestNewTaskRealGit(t *testing.T) {
 	}
 
 	// EndTask removes worktree + branch
-	ops := TmuxOps{Panes: func() []tmux.Pane { return nil }, HasSession: func(string) bool { return false }, KillSession: func(string) {}}
+	ops := TmuxOps{Panes: func() []mux.Pane { return nil }, HasSession: func(string) bool { return false }, KillSession: func(string) {}}
 	summary := EndTask(cfg, ops, []string{repoRoot}, filepath.Base(repoRoot), "feat-x")
 	if !strings.Contains(summary, "worktree removed") || !strings.Contains(summary, "branch deleted") {
 		t.Errorf("summary missing expected steps: %q", summary)

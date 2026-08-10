@@ -1,6 +1,6 @@
-// Package tmux shells out to the tmux CLI — a stable interface; no
+// tmux backend: shells out to the tmux CLI — a stable interface; no
 // control-mode or library dependency needed for what ork does.
-package tmux
+package mux
 
 import (
 	"os"
@@ -11,19 +11,15 @@ import (
 	"time"
 )
 
-type Pane struct {
-	Session string // session name
-	Target  string // session:window.pane
-	CWD     string
-	Cmd     string
-	PID     int
-}
+type tmuxBackend struct{}
+
+func (tmuxBackend) Binary() string { return "tmux" }
 
 const paneFormat = "#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}"
 
 // ListPanes snapshots every pane on the server. Empty slice when no
 // server is running.
-func ListPanes() []Pane {
+func (tmuxBackend) ListPanes() []Pane {
 	out, err := exec.Command("tmux", "list-panes", "-a", "-F", paneFormat).Output()
 	if err != nil {
 		return nil
@@ -52,24 +48,24 @@ func ParsePanes(out string) []Pane {
 }
 
 // HasSession uses tmux's exact-match (=) target syntax.
-func HasSession(name string) bool {
+func (tmuxBackend) HasSession(name string) bool {
 	return exec.Command("tmux", "has-session", "-t", "="+name).Run() == nil
 }
 
-func KillSession(name string) {
+func (tmuxBackend) KillSession(name string) {
 	exec.Command("tmux", "kill-session", "-t", "="+name).Run()
 }
 
 // NewDetached starts a detached session running cmd; the session dies on
 // its own when cmd exits. Used for transient work whose output the TUI
 // tails via CapturePane (e.g. end-task cleanup).
-func NewDetached(name, cmd string) error {
+func (tmuxBackend) NewDetached(name, cmd string) error {
 	return exec.Command("tmux", "new-session", "-d", "-s", name, cmd).Run()
 }
 
 // CurrentWindow returns the session name and window id of the pane this
 // process runs in (empty strings outside tmux).
-func CurrentWindow() (session, windowID string) {
+func (tmuxBackend) CurrentWindow() (session, windowID string) {
 	pane := os.Getenv("TMUX_PANE")
 	if pane == "" {
 		return "", ""
@@ -88,8 +84,8 @@ func CurrentWindow() (session, windowID string) {
 // EvacuateWindow moves windowID into session dst (created detached if
 // missing) and switches this client to follow it — used before killing the
 // session the window lives in, so the process inside (ork) survives.
-func EvacuateWindow(windowID, dst string) error {
-	if !HasSession(dst) {
+func (t tmuxBackend) EvacuateWindow(windowID, dst string) error {
+	if !t.HasSession(dst) {
 		if err := exec.Command("tmux", "new-session", "-d", "-s", dst).Run(); err != nil {
 			return err
 		}
@@ -100,8 +96,8 @@ func EvacuateWindow(windowID, dst string) error {
 	return exec.Command("tmux", "switch-client", "-t", dst).Run()
 }
 
-// InsideTmux reports whether we're already running inside a tmux client.
-func InsideTmux() bool { return os.Getenv("TMUX") != "" }
+// Inside reports whether we're already running inside a tmux client.
+func (tmuxBackend) Inside() bool { return os.Getenv("TMUX") != "" }
 
 // NewOrAttach lands the user in a session named name rooted at dir.
 //
@@ -120,10 +116,10 @@ func enableTitles() {
 	exec.Command("tmux", "set-option", "-g", "set-titles-string", "#S").Run()
 }
 
-func NewOrAttach(name, dir string) error {
+func (t tmuxBackend) NewOrAttach(name, dir string) error {
 	enableTitles()
-	if InsideTmux() {
-		if !HasSession(name) {
+	if t.Inside() {
+		if !t.HasSession(name) {
 			if err := exec.Command("tmux", "new", "-d", "-s", name, "-c", dir).Run(); err != nil {
 				return err
 			}
@@ -132,7 +128,7 @@ func NewOrAttach(name, dir string) error {
 		}
 		return exec.Command("tmux", "switch-client", "-t", name).Run()
 	}
-	existed := HasSession(name)
+	existed := t.HasSession(name)
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {
 		return err
@@ -166,12 +162,19 @@ func cdSession(name, dir string) {
 		if !ok {
 			continue
 		}
-		switch cmd {
-		case "zsh", "bash", "fish", "sh", "dash", "ksh":
+		if isShell(cmd) {
 			exec.Command("tmux", "send-keys", "-t", id, "cd "+shellQuote(dir), "Enter").Run()
 			return
 		}
 	}
+}
+
+func isShell(cmd string) bool {
+	switch cmd {
+	case "zsh", "bash", "fish", "sh", "dash", "ksh":
+		return true
+	}
+	return false
 }
 
 func shellQuote(s string) string {
@@ -179,14 +182,14 @@ func shellQuote(s string) string {
 }
 
 // SendKeys types keys into target (pane id or session), verbatim.
-func SendKeys(target, keys string) {
+func (tmuxBackend) SendKeys(target, keys string) {
 	exec.Command("tmux", "send-keys", "-t", target, keys).Run()
 }
 
 // EnsureSession creates a detached session named name rooted at dir if it
 // doesn't already exist, running the shell's default command.
-func EnsureSession(name, dir string) error {
-	if HasSession(name) {
+func (t tmuxBackend) EnsureSession(name, dir string) error {
+	if t.HasSession(name) {
 		return nil
 	}
 	return exec.Command("tmux", "new", "-d", "-s", name, "-c", dir).Run()
@@ -201,8 +204,8 @@ func EnsureSession(name, dir string) error {
 // non-interactive `sh -c cmd` won't have sourced — the pane would exit
 // instantly with "command not found" and the window would vanish before
 // anyone saw it.
-func EnsureWindow(session, window, dir, cmd string) error {
-	for _, w := range SessionWindowNames(session) {
+func (t tmuxBackend) EnsureWindow(session, window, dir, cmd string) error {
+	for _, w := range t.SessionWindowNames(session) {
 		if w == window {
 			return nil
 		}
@@ -216,7 +219,7 @@ func EnsureWindow(session, window, dir, cmd string) error {
 
 // SessionWindowNames lists window names for session; empty if the session
 // doesn't exist.
-func SessionWindowNames(session string) []string {
+func (tmuxBackend) SessionWindowNames(session string) []string {
 	out, err := exec.Command("tmux", "list-windows", "-t", "="+session, "-F", "#{window_name}").Output()
 	if err != nil {
 		return nil
@@ -230,16 +233,8 @@ func SessionWindowNames(session string) []string {
 	return names
 }
 
-// WindowInfo identifies a window by its unique id (@N) — names are NOT
-// unique (two "zsh" windows are common), and name-based targets silently
-// resolve to the first match, which made side-by-side previews replicate
-// one window into every column.
-type WindowInfo struct {
-	ID, Name, Cmd string
-}
-
 // SessionWindows lists session's windows with their active pane command.
-func SessionWindows(session string) []WindowInfo {
+func (tmuxBackend) SessionWindows(session string) []WindowInfo {
 	out, err := exec.Command("tmux", "list-windows", "-t", "="+session, "-F", "#{window_id}\t#{window_name}\t#{pane_current_command}").Output()
 	if err != nil {
 		return nil
@@ -257,7 +252,7 @@ func SessionWindows(session string) []WindowInfo {
 // CapturePane returns the pane's visible content. Occasionally empty on
 // the first try (socket contention when many panes/clients are active) —
 // one retry makes it reliable.
-func CapturePane(target string) string {
+func (tmuxBackend) CapturePane(target string) string {
 	out, _ := exec.Command("tmux", "capture-pane", "-pet", target).Output()
 	if len(out) == 0 {
 		time.Sleep(50 * time.Millisecond)
@@ -267,7 +262,7 @@ func CapturePane(target string) string {
 }
 
 // SessionSummary returns window and attached-client counts for a session.
-func SessionSummary(name string) (windows, clients int) {
+func (tmuxBackend) SessionSummary(name string) (windows, clients int) {
 	if out, err := exec.Command("tmux", "list-windows", "-t", "="+name).Output(); err == nil {
 		windows = countLines(string(out))
 	}

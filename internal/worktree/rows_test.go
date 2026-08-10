@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"orkestra/internal/config"
-	"orkestra/internal/tmux"
+	"orkestra/internal/mux"
 )
 
 func fixtureRoots(t *testing.T) string {
@@ -24,7 +24,7 @@ func TestSiblingsShareSessionAndAgent(t *testing.T) {
 	beWT := filepath.Join(root, "repoBE/mytask")
 	stateReads := 0
 	d := Deps{
-		Panes:      []tmux.Pane{{Session: "mytask", Target: "mytask:0.0", CWD: beWT, Cmd: "node"}},
+		Panes:      []mux.Pane{{Session: "mytask", Target: "mytask:0.0", CWD: beWT, Cmd: "node"}},
 		HasSession: func(n string) bool { return n == "mytask" },
 		AgentState: func(s string) string { stateReads++; return "running" },
 	}
@@ -55,7 +55,7 @@ func TestCwdMatchBeatsNameMatch(t *testing.T) {
 	root := fixtureRoots(t)
 	beWT := filepath.Join(root, "repoBE/mytask")
 	d := Deps{
-		Panes:      []tmux.Pane{{Session: "weird-name", Target: "weird-name:0.0", CWD: beWT, Cmd: "vim"}},
+		Panes:      []mux.Pane{{Session: "weird-name", Target: "weird-name:0.0", CWD: beWT, Cmd: "vim"}},
 		HasSession: func(n string) bool { return true }, // name-match would also succeed
 	}
 	rows := BuildRows(config.Config{}, []string{root}, d)

@@ -361,11 +361,66 @@ dim "Review $CONF for ORK_FAVORITES."
 dim "Per-repo setup hooks go in ~/.config/ork/hooks.json — see"
 dim "ork.conf.example for the format."
 
+# ── 3b. Session backend (tmux or herdr) ─────────────────────────────────
+subsection "Session backend"
+
+# ork drives exactly ONE multiplexer — the choice here is forced via
+# ORK_MULTIPLEXER even when both tmux and herdr are installed.
+HAVE_TMUX=0; command -v tmux >/dev/null 2>&1 && HAVE_TMUX=1
+HAVE_HERDR=0; command -v herdr >/dev/null 2>&1 && HAVE_HERDR=1
+
+MUX_DEFAULT=tmux
+[[ "$HAVE_TMUX" -eq 0 && "$HAVE_HERDR" -eq 1 ]] && MUX_DEFAULT=herdr
+existing_mux=$(grep '^ORK_MULTIPLEXER=' "$CONF" 2>/dev/null | head -1 | cut -d= -f2 | tr -d '"' || true)
+[[ "$existing_mux" == tmux || "$existing_mux" == herdr ]] && MUX_DEFAULT="$existing_mux"
+
+ORK_MUX="$MUX_DEFAULT"
+if [[ -t 0 ]]; then
+  dim "ork runs task sessions inside a terminal multiplexer. Pick one:"
+  dim "  tmux  — classic, prefix-key driven ($( [[ "$HAVE_TMUX" -eq 1 ]] && echo installed || echo NOT installed ))"
+  dim "  herdr — mouse-first, agent-aware (https://herdr.dev) ($( [[ "$HAVE_HERDR" -eq 1 ]] && echo installed || echo NOT installed ))"
+  dim "ork will use ONLY the one you pick, even if both are installed."
+  while true; do
+    prompt "Session backend? tmux/herdr [$MUX_DEFAULT]: "
+    read -r reply || reply=""
+    [[ -z "$reply" ]] && reply="$MUX_DEFAULT"
+    case "$reply" in
+      tmux|herdr) ORK_MUX="$reply"; break ;;
+      *) note "'$reply' — type tmux or herdr." ;;
+    esac
+  done
+else
+  note "Non-interactive — using $ORK_MUX."
+fi
+
+if { [[ "$ORK_MUX" == tmux && "$HAVE_TMUX" -eq 0 ]]; } || { [[ "$ORK_MUX" == herdr && "$HAVE_HERDR" -eq 0 ]]; }; then
+  note "WARNING: $ORK_MUX is not installed — ork will refuse to start until it is."
+  [[ "$ORK_MUX" == herdr ]] && dim "Install with: curl -fsSL https://herdr.dev/install.sh | sh"
+fi
+
+# Same substitute-or-append mechanism as ORK_WORKTREES_ROOTS above.
+python3 - "$CONF" "ORK_MULTIPLEXER=$ORK_MUX" <<'PYEOF'
+import re, sys
+conf_path, line = sys.argv[1], sys.argv[2]
+text = open(conf_path).read()
+pattern = r'^ORK_MULTIPLEXER=.*$'
+if re.search(pattern, text, flags=re.M):
+    text = re.sub(pattern, line, text, count=1, flags=re.M)
+else:
+    if not text.endswith("\n"):
+        text += "\n"
+    text += line + "\n"
+open(conf_path, "w").write(text)
+PYEOF
+ok "Wrote to $CONF: ORK_MULTIPLEXER=$ORK_MUX"
+
 # ── 4. Keybinds ─────────────────────────────────────────────────────────
 subsection "Keybinds"
 
 if [[ "$KEYBIND" != "no" && -t 0 ]]; then
-  if command -v tmux >/dev/null 2>&1; then
+  # The prefix-key keybind is tmux-only; herdr keybindings live under
+  # [keys] in ~/.config/herdr/config.toml (see herdr docs).
+  if [[ "$ORK_MUX" == tmux ]] && command -v tmux >/dev/null 2>&1; then
     ask_yn "Add a tmux keybind for ork (prefix + key opens it in a pane on top of current pan, same rules as other tmux commands)? [Y/n] " y
     if [[ "$REPLY_YN" == y ]]; then
       TMUX_KEY=o
@@ -458,7 +513,7 @@ elif [[ "$KEYBIND" != "no" ]]; then
 fi
 
 section "Done"
-dim "Requires: tmux, fzf."
+dim "Requires: $ORK_MUX, fzf."
 dim "If you already have your own new-task/end-task functions, remove the"
 dim "worktree-tasks.sh source line from your shell rc to keep using yours."
 printf '%sRestart your shell (or re-source your rc file), then run: %s%sork%s\n' "$DIM" "$RESET" "$BOLD$GREEN" "$RESET"

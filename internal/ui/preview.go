@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"orkestra/internal/config"
-	"orkestra/internal/tmux"
+	"orkestra/internal/mux"
 	"orkestra/internal/worktree"
 )
 
@@ -27,14 +27,14 @@ func repoCachePath() string {
 // resolvePane: same rule as row building — match by cwd first, else by a
 // session named after the task (sessions are shared by task name across
 // repos by default).
-func resolvePane(cfg config.Config, r worktree.Row) *tmux.Pane {
-	panes := tmux.ListPanes()
+func resolvePane(cfg config.Config, r worktree.Row) *mux.Pane {
+	panes := mux.ListPanes()
 	for i, p := range panes {
 		if p.CWD == r.Path {
 			return &panes[i]
 		}
 	}
-	if tmux.HasSession(r.Task) {
+	if mux.HasSession(r.Task) {
 		for i, p := range panes {
 			if p.Session == r.Task {
 				return &panes[i]
@@ -50,7 +50,7 @@ func resolvePane(cfg config.Config, r worktree.Row) *tmux.Pane {
 // hunt for.
 func windowsLine(cfg config.Config, r worktree.Row) string {
 	name := worktree.SessionName(cfg, r.Repo, r.Task)
-	names := tmux.SessionWindowNames(name)
+	names := mux.SessionWindowNames(name)
 	if len(names) == 0 {
 		return styleCyan.Render(" windows:") + " none\n"
 	}
@@ -94,7 +94,7 @@ func infoPreview(cfg config.Config, r worktree.Row, lines, width int, pathStyle 
 
 	pane := resolvePane(cfg, r)
 	if pane == nil {
-		b.WriteString(line1 + "\n" + line2 + "\n\n(no live tmux session)\n")
+		b.WriteString(line1 + "\n" + line2 + "\n\n(no live session)\n")
 		return b.String()
 	}
 	note := ""
@@ -120,23 +120,23 @@ func windowsPreview(session, activeTarget string, lines, width int) string {
 	// never by name: names collide (two "zsh" windows), and a name target
 	// silently resolves to the first match — every column would show the
 	// same window.
-	var wins []tmux.WindowInfo
-	for _, w := range tmux.SessionWindows(session) {
+	var wins []mux.WindowInfo
+	for _, w := range mux.SessionWindows(session) {
 		if w.Cmd == "ork" || w.Name == "ork" {
 			continue
 		}
 		wins = append(wins, w)
 	}
 	if len(wins) == 0 {
-		return lastLines(tmux.CapturePane(activeTarget), lines)
+		return lastLines(mux.CapturePane(activeTarget), lines)
 	}
 	if len(wins) == 1 {
-		return lastLines(tmux.CapturePane(wins[0].ID), lines)
+		return lastLines(mux.CapturePane(wins[0].ID), lines)
 	}
 
 	var cols [][]string
 	for _, w := range wins {
-		content := lastLines(tmux.CapturePane(w.ID), lines-1)
+		content := lastLines(mux.CapturePane(w.ID), lines-1)
 		col := []string{styleBold.Render(w.Name)}
 		col = append(col, strings.Split(content, "\n")...)
 		cols = append(cols, col)

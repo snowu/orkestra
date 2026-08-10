@@ -76,21 +76,22 @@ if [[ "$PURGE_CONFIG" -eq 1 ]]; then
   rm -f "$HOME/.ork.conf" "$HOME/.config/ork/hooks.json"
   echo "Removed ~/.ork.conf, ~/.config/ork/hooks.json"
 elif [[ -f "$HOME/.ork.conf" ]]; then
-  # Strip only the ORK_WORKTREES_ROOTS line install.sh wrote (plus a
-  # leftover ORK_CODE_ROOTS from an older install, if present — that key
-  # is dead config now, repos are discovered by scanning $HOME live) — both
-  # point at THIS install's chosen folders and are meaningless once ork
-  # itself is gone. ORK_FAVORITES/ORK_HOOK_*/ORK_SCOPE_SESSIONS_TO_REPO
-  # are the user's own customization and shouldn't be touched by an
-  # uninstall.
+  # Strip only the lines install.sh wrote — ORK_WORKTREES_ROOTS and
+  # ORK_MULTIPLEXER (plus a leftover ORK_CODE_ROOTS from an older
+  # install, if present — that key is dead config now, repos are
+  # discovered by scanning $HOME live). All are THIS install's choices
+  # and meaningless once ork itself is gone.
+  # ORK_FAVORITES/ORK_HOOK_*/ORK_SCOPE_SESSIONS_TO_REPO are the user's
+  # own customization and shouldn't be touched by an uninstall.
   sed -i.bak \
     -e '/^ORK_CODE_ROOTS=/d' \
     -e '/^ORK_WORKTREES_ROOTS=/d' \
+    -e '/^ORK_MULTIPLEXER=/d' \
     "$HOME/.ork.conf"
   rm -f "$HOME/.ork.conf.bak"
   echo "Left ~/.ork.conf in place (pass --purge-config to remove it too)"
-  echo "but removed ORK_WORKTREES_ROOTS (specific to this install; your"
-  echo "favorites/hooks/other settings are untouched)."
+  echo "but removed ORK_WORKTREES_ROOTS and ORK_MULTIPLEXER (specific to"
+  echo "this install; your favorites/hooks/other settings are untouched)."
 else
   echo "No ~/.ork.conf found."
 fi

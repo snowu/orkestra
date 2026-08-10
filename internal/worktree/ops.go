@@ -14,7 +14,7 @@ import (
 
 	"orkestra/internal/config"
 	"orkestra/internal/hooks"
-	"orkestra/internal/tmux"
+	"orkestra/internal/mux"
 )
 
 // Log receives subprocess output (git, hooks). Defaults to stderr for CLI
@@ -209,13 +209,13 @@ func EnsureFEBEWindows(cfg config.Config, repo, task, wt string) error {
 		return err
 	}
 	name := SessionName(cfg, repo, task)
-	if err := tmux.EnsureSession(name, wt); err != nil {
+	if err := mux.EnsureSession(name, wt); err != nil {
 		return err
 	}
-	if err := tmux.EnsureWindow(name, "fe", feDir, fe); err != nil {
+	if err := mux.EnsureWindow(name, "fe", feDir, fe); err != nil {
 		return err
 	}
-	return tmux.EnsureWindow(name, "be", beDir, be)
+	return mux.EnsureWindow(name, "be", beDir, be)
 }
 
 // NewTask creates <firstRoot>/<repo>/<task> as a worktree on a new branch
@@ -269,13 +269,13 @@ func WriteClaudeProfile(personalDirs []string, repoRoot, wt string) {
 
 // TmuxOps abstracts the session-killing surface for tests.
 type TmuxOps struct {
-	Panes       func() []tmux.Pane
+	Panes       func() []mux.Pane
 	HasSession  func(string) bool
 	KillSession func(string)
 }
 
 func LiveTmuxOps() TmuxOps {
-	return TmuxOps{Panes: tmux.ListPanes, HasSession: tmux.HasSession, KillSession: tmux.KillSession}
+	return TmuxOps{Panes: mux.ListPanes, HasSession: mux.HasSession, KillSession: mux.KillSession}
 }
 
 // KillSessionFor kills whatever session(s) belong to a worktree without

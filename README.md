@@ -56,7 +56,10 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
 
 ## Requirements
 
-- `tmux` — required, no fallback without it
+- `tmux` or [`herdr`](https://herdr.dev) — one of the two, chosen at
+  install time (`ORK_MULTIPLEXER` in `~/.ork.conf`). ork drives ONLY the
+  one you picked, even if both are installed, and refuses to start
+  without its binary.
 - `bash` or `zsh`
 - git (worktrees)
 - Go 1.22+ — build-time only (`install.sh` compiles the binary; e.g.

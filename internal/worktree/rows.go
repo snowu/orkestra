@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"orkestra/internal/config"
-	"orkestra/internal/tmux"
+	"orkestra/internal/mux"
 )
 
 type Row struct {
@@ -24,7 +24,7 @@ type Row struct {
 // Deps injects the impure lookups so BuildRows is testable without a tmux
 // server or real git repos.
 type Deps struct {
-	Panes          []tmux.Pane
+	Panes          []mux.Pane
 	HasSession     func(name string) bool
 	SessionWindows func(session string) []string
 	AgentState     func(session string) string
@@ -203,9 +203,9 @@ func PairSiblings(cfg config.Config, a, b Row) bool {
 // LiveDeps builds Deps against the real system.
 func LiveDeps(agentStateDir string, staleAfter time.Duration, readState func(dir, session string, staleAfter time.Duration) string) Deps {
 	return Deps{
-		Panes:          tmux.ListPanes(),
-		HasSession:     tmux.HasSession,
-		SessionWindows: tmux.SessionWindowNames,
+		Panes:          mux.ListPanes(),
+		HasSession:     mux.HasSession,
+		SessionWindows: mux.SessionWindowNames,
 		AgentState:     func(s string) string { return readState(agentStateDir, s, staleAfter) },
 		Branch:         GitBranch,
 		AccessTime: func(repo, task string) time.Time {

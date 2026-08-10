@@ -16,6 +16,14 @@
 # already living in either.
 ORK_WORKTREES_ROOTS=("$HOME/worktrees")
 
+# ── Session backend ───────────────────────────────────────────────────────
+# ORK_MULTIPLEXER: which terminal multiplexer ork drives for task
+# sessions — "tmux" (default) or "herdr" (https://herdr.dev). install.sh
+# sets this for you. The choice is forced: ork uses ONLY this backend,
+# even when both are installed, and refuses to start if its binary is
+# missing.
+ORK_MULTIPLEXER=tmux
+
 # ── Repo picker ───────────────────────────────────────────────────────────
 # ORK_FAVORITES: shown first in the ctrl-n repo picker (order preserved).
 # Empty by default — fill in your own repo folder names.

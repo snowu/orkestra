@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"orkestra/internal/config"
-	"orkestra/internal/tmux"
+	"orkestra/internal/mux"
 	"orkestra/internal/ui"
 	"orkestra/internal/worktree"
 )
@@ -23,17 +23,21 @@ func loadConfig() config.Config {
 	return cfg
 }
 
-func requireTools() {
-	for _, tool := range []string{"tmux", "git"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			fatal(tool + " not installed — required")
-		}
+// requireTools verifies git and selects the configured multiplexer
+// backend (ORK_MULTIPLEXER) — a missing binary or unknown value is fatal,
+// never a fallback to the other backend.
+func requireTools(cfg config.Config) {
+	if _, err := exec.LookPath("git"); err != nil {
+		fatal("git not installed — required")
+	}
+	if err := mux.Select(cfg.Multiplexer); err != nil {
+		fatal(err.Error())
 	}
 }
 
 func runTUI() {
-	requireTools()
 	cfg := loadConfig()
+	requireTools(cfg)
 	ensureLoginProxy(cfg)
 
 	res, err := ui.Run(cfg)
@@ -89,10 +93,10 @@ func ensureLoginProxy(cfg config.Config) {
 	// treat that as "already running" and never respawn — this is the case
 	// that left the proxy silently down indefinitely. Clear it so the fresh
 	// session below can bind the port.
-	if tmux.HasSession("ork-login-proxy") {
-		tmux.KillSession("ork-login-proxy")
+	if mux.HasSession("ork-login-proxy") {
+		mux.KillSession("ork-login-proxy")
 	}
-	tmux.NewDetached("ork-login-proxy", "exec ork login-proxy")
+	mux.NewDetached("ork-login-proxy", "exec ork login-proxy")
 
 	// Session creation -> process exec -> http.ListenAndServe takes real
 	// wall-clock time. Block until it's actually accepting connections (or
@@ -118,8 +122,8 @@ func portListening(addr string) bool {
 
 func attach(cfg config.Config, repo, task, wt string) {
 	name := worktree.SessionName(cfg, repo, task)
-	if err := tmux.NewOrAttach(name, wt); err != nil {
-		fatal("tmux attach failed: " + err.Error())
+	if err := mux.NewOrAttach(name, wt); err != nil {
+		fatal(mux.Binary() + " attach failed: " + err.Error())
 	}
 }
 
@@ -127,8 +131,8 @@ func attach(cfg config.Config, repo, task, wt string) {
 // the worktree for the repo at cwd and prints its path on stdout (the shim
 // cd's there).
 func runNewTask(task string) {
-	requireTools()
 	cfg := loadConfig()
+	requireTools(cfg)
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		fatal("not inside a git repository")
@@ -145,8 +149,8 @@ func runNewTask(task string) {
 // runEndTask: CLI subcommand — task defaults to the current dir's basename
 // when run from inside a worktree.
 func runEndTask(task string) {
-	requireTools()
 	cfg := loadConfig()
+	requireTools(cfg)
 	cwd, _ := os.Getwd()
 	if task == "" {
 		for _, root := range cfg.WorktreeRoots {
@@ -179,8 +183,8 @@ func runEndTask(task string) {
 // cwd derivation: the session's cwd must not sit inside the dir being
 // deleted). Output goes to the session's tty so the TUI can tail it.
 func runEndTaskDirect(repo, task string) {
-	requireTools()
 	cfg := loadConfig()
+	requireTools(cfg)
 	repos := worktree.AllRepoDirs(homeDirMust(), cfg.ScanMaxDepth, repoCache(), 60*time.Second)
 	summary := worktree.EndTask(cfg, worktree.LiveTmuxOps(), repos, repo, task)
 	fmt.Fprintln(os.Stderr, summary)

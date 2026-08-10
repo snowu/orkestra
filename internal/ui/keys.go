@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sahilm/fuzzy"
 
-	"orkestra/internal/tmux"
+	"orkestra/internal/mux"
 	"orkestra/internal/worktree"
 )
 
@@ -168,7 +168,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if s >= "0" && s <= "9" && len(s) == 1 {
 				if sel, ok := m.selected(); ok && (sel.Agent == "waiting" || sel.Agent == "input") {
 					if p := resolvePane(m.cfg, sel); p != nil {
-						tmux.SendKeys(p.Target, s)
+						mux.SendKeys(p.Target, s)
 						return m, m.previewCmd()
 					}
 				}
@@ -223,7 +223,7 @@ func (m *Model) confirmAccept() (tea.Model, tea.Cmd) {
 		repo, task := sel.Repo, sel.Task
 		name := "ork-end-" + endSessionSafe.Replace(repo+"-"+task)
 		cmd := fmt.Sprintf("ork _end-task %q %q 2>&1; echo; echo '[done]'; sleep 3", repo, task)
-		if err := tmux.NewDetached(name, cmd); err != nil {
+		if err := mux.NewDetached(name, cmd); err != nil {
 			// tmux refused — inline fallback, summary in the status line.
 			repos := worktree.AllRepoDirs(homeDir(), m.cfg.ScanMaxDepth, repoCachePath(), 60*time.Second)
 			m.err = worktree.EndTask(m.cfg, ops, repos, repo, task)
@@ -244,7 +244,7 @@ func (m *Model) confirmAccept() (tea.Model, tea.Cmd) {
 // so, moves ork's window into the fallback "ork-home" session so ork — and
 // the user's client — survive the kill.
 func (m *Model) evacuateIfDoomed(sel worktree.Row) {
-	cur, win := tmux.CurrentWindow()
+	cur, win := mux.CurrentWindow()
 	if cur == "" {
 		return
 	}
@@ -255,7 +255,7 @@ func (m *Model) evacuateIfDoomed(sel worktree.Row) {
 		}
 	}
 	if doomed {
-		tmux.EvacuateWindow(win, "ork-home")
+		mux.EvacuateWindow(win, "ork-home")
 	}
 }
 

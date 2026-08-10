@@ -22,6 +22,11 @@ type Config struct {
 	HooksConfig         string
 	ClaudePersonalDirs  []string
 
+	// Multiplexer is the session backend ork drives: "tmux" or "herdr".
+	// Chosen at install time and forced — ork never falls back to the
+	// other one even when both are installed.
+	Multiplexer string
+
 	// FE/BE pairing: separate sibling repos (not subdirs) that share task
 	// names — e.g. ORK_FE_REPO=cr-frontend, ORK_BE_REPO=cr-managament. From
 	// any row, the paired worktree is <root>/<FERepo|BERepo>/<sameTask>.
@@ -77,6 +82,7 @@ func defaults() Config {
 		WorktreeRoots: []string{filepath.Join(home, "worktrees")},
 		ScanMaxDepth:  3,
 		HooksConfig:   filepath.Join(home, ".config/ork/hooks.json"),
+		Multiplexer:   "tmux",
 		PairsConfig:   filepath.Join(home, ".config/ork/pairs.json"),
 		FECmd:         "rund",
 		BECmd:         "bund", // override with a {port}-templated command to avoid port collisions across tasks
@@ -122,6 +128,10 @@ func Load(path string) (Config, error) {
 			}
 		case "ORK_SCOPE_SESSIONS_TO_REPO":
 			cfg.ScopeSessionsToRepo = unquote(val) == "1"
+		case "ORK_MULTIPLEXER":
+			if v := unquote(val); v != "" {
+				cfg.Multiplexer = v
+			}
 		case "ORK_HOOKS_CONFIG":
 			if v := expand(unquote(val)); v != "" {
 				cfg.HooksConfig = v

@@ -1,4 +1,5 @@
-// ork: control/jump between worktree agents running in tmux.
+// ork: control/jump between worktree agents running in a terminal
+// multiplexer (tmux or herdr — forced by ORK_MULTIPLEXER).
 //
 // cd contract (shared with the ork.sh shell wrapper): the ONLY thing this
 // program ever writes to stdout is the directory to cd into, as the last

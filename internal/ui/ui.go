@@ -20,7 +20,7 @@ import (
 
 	"orkestra/internal/agentstate"
 	"orkestra/internal/config"
-	"orkestra/internal/tmux"
+	"orkestra/internal/mux"
 	"orkestra/internal/worktree"
 )
 
@@ -390,12 +390,12 @@ func (m *Model) previewCmd() tea.Cmd {
 	if m.endSession != "" {
 		name, lines := m.endSession, m.previewLines()
 		return func() tea.Msg {
-			if !tmux.HasSession(name) {
+			if !mux.HasSession(name) {
 				return endDoneMsg{}
 			}
 			// Plain name, no "=" exact-match prefix: capture-pane (unlike
 			// has-session) rejects it on tmux 3.2a.
-			return previewMsg{forPath: endPreviewKey, text: lastLines(tmux.CapturePane(name), lines)}
+			return previewMsg{forPath: endPreviewKey, text: lastLines(mux.CapturePane(name), lines)}
 		}
 	}
 	sel, ok := m.selected()

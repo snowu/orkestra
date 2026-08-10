@@ -11,7 +11,7 @@ import (
 	"orkestra/internal/worktree"
 )
 
-const helpLine = "ENTER=attach tmux   alt-ENTER=cd only   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   tab=cycle info/status   ctrl-s=split   ctrl-g=spawn fe/be   ctrl-a=open all   ctrl-o=browser"
+const helpLine = "ENTER=attach session   alt-ENTER=cd only   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   tab=cycle info/status   ctrl-s=split   ctrl-g=spawn fe/be   ctrl-a=open all   ctrl-o=browser"
 
 func trunc(s string, w int) string {
 	if len(s) > w {
@@ -269,7 +269,7 @@ func (m *Model) viewConfirm() string {
 	sel, _ := m.selected()
 	verb := fmt.Sprintf("DELETE worktree + branch (local & origin) for %s/%s", sel.Repo, sel.Task)
 	if m.mode == modeConfirmKill {
-		verb = fmt.Sprintf("kill tmux session for %s/%s (worktree+branch untouched)", sel.Repo, sel.Task)
+		verb = fmt.Sprintf("kill session for %s/%s (worktree+branch untouched)", sel.Repo, sel.Task)
 	}
 	no, yes := "[no]", " yes"
 	if m.confirmYes {
