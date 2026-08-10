@@ -418,8 +418,13 @@ ok "Wrote to $CONF: ORK_MULTIPLEXER=$ORK_MUX"
 subsection "Keybinds"
 
 if [[ "$KEYBIND" != "no" && -t 0 ]]; then
-  # The prefix-key keybind is tmux-only; herdr keybindings live under
-  # [keys] in ~/.config/herdr/config.toml (see herdr docs).
+  if [[ "$ORK_MUX" == herdr ]] && command -v herdr >/dev/null 2>&1; then
+    ask_yn "Add herdr keybinds for ork (prefix+o opens ork in a popup; ctrl+alt+shift+arrows cycle tabs/workspaces)? [Y/n] " y
+    if [[ "$REPLY_YN" == y ]]; then
+      "$DIR/keybind-install.sh" herdr
+    fi
+  fi
+
   if [[ "$ORK_MUX" == tmux ]] && command -v tmux >/dev/null 2>&1; then
     ask_yn "Add a tmux keybind for ork (prefix + key opens it in a pane on top of current pan, same rules as other tmux commands)? [Y/n] " y
     if [[ "$REPLY_YN" == y ]]; then

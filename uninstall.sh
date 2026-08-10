@@ -98,6 +98,7 @@ fi
 
 # Remove the keybind block installed by keybind-install.sh, if any.
 for cfg in "$HOME/.tmux.conf" \
+           "$HOME/.config/herdr/config.toml" \
            "$HOME/.config/ghostty/config" \
            "$HOME/.config/kitty/kitty.conf" \
            "$HOME/.config/alacritty/alacritty.toml"; do
@@ -125,6 +126,12 @@ for cfg in "$HOME/.tmux.conf" \
   ' "$cfg" > "$tmp" && mv "$tmp" "$cfg"
   echo "Removed ork keybind block(s) from $cfg"
 done
+
+# herdr reads config only on reload — apply the stripped file to a
+# running server so the removed bindings die now, not on restart.
+if command -v herdr >/dev/null 2>&1 && herdr status >/dev/null 2>&1; then
+  herdr server reload-config >/dev/null 2>&1 || true
+fi
 
 # Unbind live, if a tmux server is running — see comment above for why
 # source-file alone isn't enough. Nav keybinds (prefix-free root table) get

@@ -3,7 +3,7 @@
 # you name.
 #
 # Usage: keybind-install.sh <terminal>[,<terminal>...] [CHORD] [TMUX_KEY]
-#   terminal: tmux | ghostty | kitty | alacritty
+#   terminal: tmux | herdr | ghostty | kitty | alacritty
 #   CHORD:    e.g. ctrl+alt+o, super+o (default: ctrl+alt+o) — used by
 #             ghostty/kitty/alacritty.
 #   TMUX_KEY: single key pressed after the tmux prefix, e.g. o (default: o)
@@ -31,7 +31,7 @@ set -eu
 
 usage() {
   echo "Usage: keybind-install.sh <terminal>[,<terminal>...] [CHORD] [TMUX_KEY]" >&2
-  echo "  terminal: tmux | ghostty | kitty | alacritty" >&2
+  echo "  terminal: tmux | herdr | ghostty | kitty | alacritty" >&2
   echo "  CHORD:    e.g. ctrl+alt+o (default: ctrl+alt+o) — non-tmux terminals" >&2
   echo "  TMUX_KEY: single key after tmux prefix, e.g. o (default: o) — tmux only" >&2
 }
@@ -144,6 +144,51 @@ add_tmux() {
   fi
 }
 
+# herdr: nav bindings (same chords/semantics as the tmux-nav block:
+# Left/Right cycle tabs = ork's windows, Up/Down cycle workspaces = ork's
+# sessions) plus prefix+o opening ork in a popup — the herdr counterpart
+# of tmux's `bind o new-window ork`. herdr binding values must be single
+# strings (array-per-action silently breaks the binding on 0.8.0).
+#
+# TOML wrinkle: a fenced append would duplicate an existing [keys] table
+# and corrupt the config, so a config that already has one is left alone
+# with a note instead.
+add_herdr() {
+  if ! command -v herdr >/dev/null 2>&1; then
+    echo "WARNING: herdr not found on \$PATH — skipping herdr" >&2
+    ERRORS=1; return 0
+  fi
+  local cfg="$HOME/.config/herdr/config.toml"
+  if [[ -f "$cfg" ]] && ! grep -qF "$FENCE_OPEN" "$cfg" && grep -q '^\[keys\]' "$cfg"; then
+    echo "NOTE: $cfg already defines [keys] — not touching it. Add by hand:" >&2
+    echo '  previous_tab = "ctrl+alt+shift+left"' >&2
+    echo '  next_tab = "ctrl+alt+shift+right"' >&2
+    echo '  previous_workspace = "ctrl+alt+shift+up"' >&2
+    echo '  next_workspace = "ctrl+alt+shift+down"' >&2
+    return 0
+  fi
+  add_inject_keybind "$HOME/.config/herdr" "$cfg" herdr \
+    '[keys]' \
+    'previous_tab = "ctrl+alt+shift+left"' \
+    'next_tab = "ctrl+alt+shift+right"' \
+    'previous_workspace = "ctrl+alt+shift+up"' \
+    'next_workspace = "ctrl+alt+shift+down"' \
+    '' \
+    '[[keys.command]]' \
+    'key = "prefix+o"' \
+    'type = "popup"' \
+    'command = "ork"' \
+    'width = "90%"' \
+    'height = "90%"'
+  if herdr status >/dev/null 2>&1; then
+    if herdr server reload-config >/dev/null 2>&1; then
+      echo "herdr: reloaded config — bindings are live now."
+    else
+      echo "WARNING: 'herdr server reload-config' failed — reload manually." >&2
+    fi
+  fi
+}
+
 add_ghostty() {
   add_inject_keybind "$HOME/.config/ghostty" "$HOME/.config/ghostty/config" ghostty \
     "keybind = ${CHORD}=text:ork\\n"
@@ -168,11 +213,12 @@ IFS=',' read -r -a TERMS <<<"$TERMLIST"
 for term in "${TERMS[@]}"; do
   case "$term" in
     tmux)            add_tmux ;;
+    herdr)           add_herdr ;;
     ghostty)         add_ghostty ;;
     kitty)           add_kitty ;;
     alacritty)       add_alacritty ;;
     *)
-      echo "WARNING: unknown terminal '$term' (expected: tmux, ghostty, kitty, alacritty)" >&2
+      echo "WARNING: unknown terminal '$term' (expected: tmux, herdr, ghostty, kitty, alacritty)" >&2
       ERRORS=1
       ;;
   esac

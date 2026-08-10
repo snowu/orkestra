@@ -109,12 +109,21 @@ func herdrPanes(wsID string) []map[string]any {
 	return jList(herdrJSON("pane", "list", "--workspace", wsID), "panes")
 }
 
-// paneProc returns the foreground command name and pid for a pane — the
-// FIRST entry of foreground_processes (the group leader, matching tmux's
-// pane_current_command). Not the last: the list includes short-lived
-// children (an idle zsh briefly reports [zsh, mkdir] while a prompt hook
-// runs), which would misreport what the pane is running and break the
-// shell check cdWorkspace relies on.
+// paneProc returns the command name and pid of the pane's foreground
+// process, the equivalent of tmux's pane_current_command.
+//
+// herdr reports foreground_processes as a list, and an idle shell does
+// NOT reliably report just itself: prompt hooks fork short-lived children
+// (oh-my-zsh's git status is the common one), so sampling an idle pane
+// returns [zsh] most of the time and [git] for the few ms a hook is
+// running. Taking the list's first or last entry therefore makes Cmd flap
+// between refreshes, which misreports the AGENT column and — worse —
+// makes cdWorkspace's isShell check miss on an unlucky sample, silently
+// skipping the cd into the task's worktree.
+//
+// shell_pid is the pane's own stable shell, so a process matching it is
+// the steady state: prefer it, and only fall back to the group leader for
+// panes genuinely running something else (a dev server, an agent).
 func paneProc(paneID string) (cmd string, pid int) {
 	v := herdrJSON("pane", "process-info", "--pane", paneID)
 	m, ok := v.(map[string]any)
@@ -127,6 +136,13 @@ func paneProc(paneID string) (cmd string, pid int) {
 	procs := jList(m["foreground_processes"], "foreground_processes")
 	if len(procs) == 0 {
 		return "", 0
+	}
+	if shellPID := jInt(m, "shell_pid"); shellPID != 0 {
+		for _, p := range procs {
+			if jInt(p, "pid") == shellPID {
+				return jStr(p, "name", "command"), shellPID
+			}
+		}
 	}
 	return jStr(procs[0], "name", "command"), jInt(procs[0], "pid")
 }
