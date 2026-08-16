@@ -142,6 +142,7 @@ func BranchCandidates(repoRoot string, maxAge time.Duration) []BranchCand {
 		return nil
 	}
 	repo := filepath.Base(repoRoot)
+	checkedOut := checkedOutBranches(repoRoot)
 	var cands []BranchCand
 	for _, line := range strings.Split(out, "\n") {
 		name, ts, ok := strings.Cut(strings.TrimSpace(line), "\t")
@@ -156,7 +157,7 @@ func BranchCandidates(repoRoot string, maxAge time.Duration) []BranchCand {
 		if maxAge != 0 && time.Since(tip) > maxAge {
 			continue
 		}
-		if BranchCheckout(repoRoot, name) != nil {
+		if checkedOut[name] {
 			continue
 		}
 		cands = append(cands, BranchCand{Repo: repo, Name: name, Tip: tip})

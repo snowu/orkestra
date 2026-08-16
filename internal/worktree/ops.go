@@ -81,6 +81,28 @@ func BranchCheckout(repoRoot, branch string) *Conflict {
 	return nil
 }
 
+// checkedOutBranches returns the set of local branch short names that are
+// checked out anywhere in repoRoot (primary checkout or any linked
+// worktree), parsed from a single `git worktree list --porcelain` call. A
+// worktree record with no "branch" line (detached HEAD) contributes
+// nothing to the set.
+//
+// Separate from BranchCheckout rather than sharing its loop: BranchCheckout
+// also tracks the record's path and whether it's the first (primary)
+// record, neither of which this needs. Threading those through here would
+// make BranchCheckout more convoluted, not less.
+func checkedOutBranches(repoRoot string) map[string]bool {
+	out := gitOut(repoRoot, "worktree", "list", "--porcelain")
+	set := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if b, ok := strings.CutPrefix(line, "branch refs/heads/"); ok {
+			set[b] = true
+		}
+	}
+	return set
+}
+
 // BaseBranch: origin/HEAD's symbolic ref is git's own record of the
 // remote's default branch (a hardcoded "master" broke on main-default
 // repos); falls back to the currently checked-out branch for local-only
