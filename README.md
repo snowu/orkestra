@@ -36,7 +36,30 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
   pairs also appear as a combined `fe + be` entry (searching either name
   finds it) — picking it, or hitting **ctrl-b** on either sibling's row,
   creates the same-named task in both repos at once (one shared session,
-  since sessions are task-named).
+  since sessions are task-named). On the task-name screen, the picked
+  repo's local branches (any without a worktree already) are listed below
+  what you type — `↓` moves onto one and `enter` creates the worktree on
+  that EXISTING branch instead of a new one; typing still filters the list
+  even while it doubles as the new-branch name, and `↑` back to the top
+  returns to "create a new branch". If the branch you pick is already
+  checked out somewhere else, ork asks before moving it (enter or `y`
+  confirms, anything else cancels): checked out in the repo's main
+  checkout, that checkout is switched to its base branch (origin/HEAD)
+  instead of left detached, so it stays usable for whatever you do there
+  next; checked out in another linked worktree, that worktree is detached.
+  If switching the main checkout would require discarding dirty changes,
+  ork aborts and changes nothing. For fe/be pairs, this prompt only ever
+  covers the primary repo — a sibling whose branch is checked out
+  elsewhere is reported to stderr and skipped rather than forced. Branch
+  names with slashes (`feat/x`) become dashed task names (`feat-x`), since
+  a task name is also a directory and tmux session name; the picker still
+  shows the real branch name.
+- **ctrl-f** (or `ork scan` from the shell) — scan: lists branches across
+  every repo ork knows about whose most recent commit is within the last
+  48 hours and which have no worktree yet, newest first, with each row's
+  age shown compactly (`3h`, `2d`). Typing filters; `enter` creates the
+  worktree for the selected branch and attaches, same as picking an
+  existing branch from ctrl-n.
 - **ctrl-x** — end task: asks to confirm ("no" is the default), then
   removes the worktree, kills its tmux session (unless another repo's
   worktree still shares that task name — see "Session naming" below), and
