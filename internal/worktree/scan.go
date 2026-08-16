@@ -123,10 +123,11 @@ func WorktreeOrDefault(roots []string, repo, task string) string {
 
 // BranchCand is a branch that could get a worktree: it has none yet.
 type BranchCand struct {
-	Repo string // basename, for display
-	Root string // absolute repo root, authoritative for resolving the repo
-	Name string
-	Tip  time.Time
+	Repo   string // basename, for display
+	Root   string // absolute repo root, authoritative for resolving the repo
+	Name   string
+	Tip    time.Time
+	InMain bool // checked out in the repo's primary checkout; picking it prompts to switch that checkout to its base branch
 }
 
 // BranchCandidates lists repoRoot's local branches that have no worktree,
@@ -143,7 +144,7 @@ func BranchCandidates(repoRoot string, maxAge time.Duration) []BranchCand {
 		return nil
 	}
 	repo := filepath.Base(repoRoot)
-	checkedOut := checkedOutBranches(repoRoot)
+	linked, main := checkedOutBranches(repoRoot)
 	var cands []BranchCand
 	for _, line := range strings.Split(out, "\n") {
 		name, ts, ok := strings.Cut(strings.TrimSpace(line), "\t")
@@ -158,10 +159,10 @@ func BranchCandidates(repoRoot string, maxAge time.Duration) []BranchCand {
 		if maxAge != 0 && time.Since(tip) > maxAge {
 			continue
 		}
-		if checkedOut[name] {
+		if linked[name] {
 			continue
 		}
-		cands = append(cands, BranchCand{Repo: repo, Root: repoRoot, Name: name, Tip: tip})
+		cands = append(cands, BranchCand{Repo: repo, Root: repoRoot, Name: name, Tip: tip, InMain: main[name]})
 	}
 	return cands
 }

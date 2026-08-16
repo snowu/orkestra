@@ -88,11 +88,16 @@ func TestBranchCandidates(t *testing.T) {
 	if _, ok := names["recent-one"]; !ok {
 		t.Error("free branch missing from candidates")
 	}
-	if _, ok := names["has-worktree"]; ok {
-		t.Error("branch with a worktree must be excluded")
+	if c, ok := names["recent-one"]; !ok || c.InMain {
+		t.Error("free branch must have InMain == false")
 	}
-	if _, ok := names["main"]; ok {
-		t.Error("branch held by the primary checkout must be excluded")
+	if _, ok := names["has-worktree"]; ok {
+		t.Error("branch held by a LINKED worktree must be excluded")
+	}
+	if c, ok := names["main"]; !ok {
+		t.Error("branch held by the primary checkout must be a candidate")
+	} else if !c.InMain {
+		t.Error("branch held by the primary checkout must have InMain == true")
 	}
 	if c := names["recent-one"]; c.Repo != filepath.Base(repoRoot) {
 		t.Errorf("Repo = %q, want %q", c.Repo, filepath.Base(repoRoot))

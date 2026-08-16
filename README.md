@@ -76,6 +76,8 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
 - **ctrl-s** — toggle a 50/50 split panel: `git status` on the left, the
   live info panel on the right — check for uncommitted changes without
   losing sight of what the agent is doing.
+- **?** — open a full-screen help modal listing every keybinding, grouped
+  by what you're trying to do; `?`, `esc`, `q`, or `enter` closes it.
 
 ## Requirements
 
@@ -212,9 +214,12 @@ forwards auth traffic to the task port the login started from (Referer
 pins the target in an `ork_login_target` cookie so the provider's
 Referer-less callback still routes; when nothing pins the target it scans
 the worktrees for live fe dev servers — one alive routes automatically,
-several render a click-to-pick chooser). It starts automatically in a
-detached `ork-login-proxy` tmux session whenever the TUI opens with pairs
-configured and port 3000 is free — no dedicated "login" dev server needed.
+several render a click-to-pick chooser). It starts automatically as a
+detached background process whenever the TUI opens with pairs configured
+and port 3000 is free — no dedicated "login" dev server needed. It has no
+terminal or multiplexer session of its own; output goes to
+`~/.cache/ork/login-proxy.log` and it keeps running after `ork` exits. The
+main list's header shows `proxy :3000 up`/`down` when pairs are configured.
 
 ### Session naming
 

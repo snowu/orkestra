@@ -214,15 +214,18 @@ func TestCheckedOutBranches(t *testing.T) {
 	detached := filepath.Join(t.TempDir(), "detached")
 	run("worktree", "add", "--detach", detached)
 
-	set := checkedOutBranches(repoRoot)
-	if !set["main"] {
-		t.Error("primary checkout branch missing from set")
+	linked, main := checkedOutBranches(repoRoot)
+	if !main["main"] {
+		t.Error("primary checkout branch missing from main set")
 	}
-	if !set["held"] {
-		t.Error("linked worktree branch missing from set")
+	if len(main) != 1 {
+		t.Errorf("main = %v, want exactly {main}", main)
 	}
-	if len(set) != 2 {
-		t.Errorf("set = %v, want exactly {main, held}", set)
+	if !linked["held"] {
+		t.Error("linked worktree branch missing from linked set")
+	}
+	if len(linked) != 1 {
+		t.Errorf("linked = %v, want exactly {held}", linked)
 	}
 }
 

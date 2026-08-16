@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"net"
 	"os"
 	"sort"
 	"time"
@@ -185,6 +186,7 @@ const (
 	modeTaskName
 	modeConfirmSteal
 	modeScan
+	modeHelp
 )
 
 type previewKind int
@@ -241,6 +243,7 @@ type Model struct {
 	cow           []string // fortune/cowsay sidebar lines, refreshed per reload
 	repoColors    map[string]lipgloss.Color
 	taskColors    map[string]lipgloss.Color
+	proxyUp       bool // login proxy (:3000) reachability, probed off the render path
 }
 
 type rowsMsg []worktree.Row
@@ -250,6 +253,7 @@ type scanMsg struct {
 }
 type stateChangedMsg struct{}
 type tickMsg time.Time
+type proxyStatusMsg bool
 type spawnDoneMsg struct{ err error }
 type endDoneMsg struct{} // the temp end-task session has exited
 type previewMsg struct {
@@ -304,6 +308,9 @@ func run(cfg config.Config, startInScan bool) (Result, error) {
 
 func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.reloadCmd(), m.watchCmd(), tick()}
+	if len(m.cfg.Pairs) > 0 {
+		cmds = append(cmds, proxyProbeCmd())
+	}
 	if m.startInScan {
 		cmds = append(cmds, m.openScan())
 	}
@@ -328,6 +335,28 @@ func (m *Model) watchCmd() tea.Cmd {
 
 func tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// proxyProbeCmd checks whether the login proxy (:3000) is up, off the
+// render path — View() runs on every keystroke/tick and must never dial a
+// socket. Runs on its own 5s cadence (much lower than the 1s UI tick) since
+// a TCP dial, even with a short timeout, is real latency View() can't pay.
+func proxyProbeCmd() tea.Cmd {
+	return tea.Tick(5*time.Second, func(time.Time) tea.Msg {
+		return proxyStatusMsg(portListening("127.0.0.1:3000"))
+	})
+}
+
+// portListening is a short-timeout TCP probe, mirroring cmd/ork/run.go's
+// helper of the same name — kept separate since internal/ui must not import
+// cmd.
+func portListening(addr string) bool {
+	c, err := net.DialTimeout("tcp", addr, 150*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
 }
 
 func (m *Model) applyFilter() {
@@ -383,6 +412,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.scanCands, m.scanning = msg.cands, false
 		return m, nil
+	case proxyStatusMsg:
+		m.proxyUp = bool(msg)
+		return m, proxyProbeCmd()
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())
 	case spawnDoneMsg:

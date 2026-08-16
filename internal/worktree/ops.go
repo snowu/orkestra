@@ -86,26 +86,42 @@ func BranchCheckout(repoRoot, branch string) *Conflict {
 	return nil
 }
 
-// checkedOutBranches returns the set of local branch short names that are
-// checked out anywhere in repoRoot (primary checkout or any linked
-// worktree), parsed from a single `git worktree list --porcelain` call. A
-// worktree record with no "branch" line (detached HEAD) contributes
-// nothing to the set.
+// checkedOutBranches returns the local branch short names checked out
+// anywhere in repoRoot, split by WHERE: linked holds branches held by a
+// linked worktree (offering one as a candidate would be nonsense — it
+// already has a worktree); main holds the branch (if any) held by the
+// primary checkout (no worktree yet — a legitimate candidate, picking it
+// just means the main checkout gets switched to its base branch first).
+// Parsed from a single `git worktree list --porcelain` call, using the same
+// "first record is the primary checkout" rule as BranchCheckout. A worktree
+// record with no "branch" line (detached HEAD) contributes nothing to
+// either set.
 //
 // Separate from BranchCheckout rather than sharing its loop: BranchCheckout
-// also tracks the record's path and whether it's the first (primary)
-// record, neither of which this needs. Threading those through here would
-// make BranchCheckout more convoluted, not less.
-func checkedOutBranches(repoRoot string) map[string]bool {
+// also tracks the record's path, which this doesn't need. Threading that
+// through here would make BranchCheckout more convoluted, not less.
+func checkedOutBranches(repoRoot string) (linked map[string]bool, main map[string]bool) {
 	out := gitOut(repoRoot, "worktree", "list", "--porcelain")
-	set := map[string]bool{}
+	linked = map[string]bool{}
+	main = map[string]bool{}
+	isMain, first := false, true
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		if b, ok := strings.CutPrefix(line, "branch refs/heads/"); ok {
-			set[b] = true
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			isMain = first
+			first = false
+		default:
+			if b, ok := strings.CutPrefix(line, "branch refs/heads/"); ok {
+				if isMain {
+					main[b] = true
+				} else {
+					linked[b] = true
+				}
+			}
 		}
 	}
-	return set
+	return linked, main
 }
 
 // BaseBranch: origin/HEAD's symbolic ref is git's own record of the

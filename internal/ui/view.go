@@ -11,7 +11,7 @@ import (
 	"orkestra/internal/worktree"
 )
 
-const helpLine = "ENTER=attach session   alt-ENTER=cd only   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   tab=cycle info/status   ctrl-s=split   ctrl-g=spawn fe/be   ctrl-a=open all   ctrl-o=browser"
+const helpLine = "ENTER=attach   ctrl-n=new-task   ctrl-g=spawn fe/be   ctrl-k=kill   ctrl-x=end-task   ?=help"
 
 func trunc(s string, w int) string {
 	if len(s) > w {
@@ -58,10 +58,23 @@ func (m *Model) View() string {
 		return m.viewConfirmSteal()
 	case modeScan:
 		return m.viewScan()
+	case modeHelp:
+		return m.viewHelpOverlay()
 	}
+	return m.viewList()
+}
 
+func (m *Model) viewList() string {
 	var b strings.Builder
-	b.WriteString(styleDim.Render(helpLine) + "\n")
+	helpRow := styleDim.Render(helpLine)
+	if len(m.cfg.Pairs) > 0 {
+		status := styleDim.Render("proxy :3000 down")
+		if m.proxyUp {
+			status = styleGreen.Render("proxy :3000 up")
+		}
+		helpRow += "   " + status
+	}
+	b.WriteString(helpRow + "\n")
 	// Two leading spaces match the rows' cursor-marker prefix so the
 	// header sits exactly over its columns.
 	// Extra 2 columns for the pair-link bracket left of REPO.
@@ -376,6 +389,9 @@ func (m *Model) viewTaskName() string {
 			break
 		}
 		row := fmt.Sprintf("  %s  %s", br.Name, humanAge(br.Tip))
+		if br.InMain {
+			row += styleDim.Render(" (in main repo)")
+		}
 		if m.branchCursor == i+1 {
 			row = styleSel.Render("> " + strings.TrimLeft(row, " "))
 		} else {
@@ -423,12 +439,212 @@ func (m *Model) viewScan() string {
 			break
 		}
 		row := fmt.Sprintf("  %-20s %-40s %s", c.Repo, c.Name, humanAge(c.Tip))
+		if c.InMain {
+			row += styleDim.Render(" (in main repo)")
+		}
 		if i == m.scanCursor {
 			row = styleSel.Render(row)
 		}
 		b.WriteString(row + "\n")
 	}
 	return b.String()
+}
+
+// helpBinding is one row of the help modal: a key and what it does.
+type helpBinding struct{ key, desc string }
+
+// helpGroup is a named cluster of bindings, grouped by what the user is
+// trying to DO rather than by which handler happens to own the key.
+type helpGroup struct {
+	title    string
+	bindings []helpBinding
+}
+
+var helpGroups = []helpGroup{
+	{"Navigate", []helpBinding{
+		{"up / ctrl-p", "move cursor up"},
+		{"down / ctrl-j", "move cursor down"},
+		{"(typing)", "filter the list"},
+		{"backspace", "delete filter character"},
+		{"esc", "clear filter"},
+	}},
+	{"Worktrees", []helpBinding{
+		{"ctrl-n", "new task (pick repo, then name it or reuse a branch)"},
+		{"ctrl-f", "scan: branches from the last 48h with no worktree"},
+		{"ctrl-x", "end task (remove worktree + branch)"},
+	}},
+	{"Sessions & dev servers", []helpBinding{
+		{"enter", "attach session"},
+		{"alt+enter", "cd only (no attach)"},
+		{"ctrl-k", "kill session"},
+		{"ctrl-g", "spawn fe/be dev servers in background"},
+		{"ctrl-a", "open all: attach with fe/be windows"},
+		{"ctrl-o", "open fe in browser"},
+		{"ctrl-r", "refresh"},
+	}},
+	{"View", []helpBinding{
+		{"tab", "cycle info / git status / off"},
+		{"ctrl-s", "split preview (git status | live info)"},
+	}},
+	{"Quit", []helpBinding{
+		{"ctrl-c", "quit"},
+	}},
+}
+
+// helpProseLines are the condensed prose sections, one or two lines each,
+// covering screens that have no dedicated key-binding group above.
+var helpProseLines = []string{
+	"",
+	"New-task: typed text (row 0) creates a NEW branch; arrow down to reuse",
+	"an existing branch instead — typing both filters the list and names it.",
+	"",
+	"Scan (ctrl-f / ork scan): recent branches with no worktree. Rows marked",
+	"\"(in main repo)\" prompt to switch that checkout to its base branch.",
+}
+
+// helpContentLines renders the help body (title + groups + prose) as plain
+// (unstyled-width-wise, but ANSI-colored) lines, without any clamping —
+// clamping/truncation is applied by the caller once box size is known.
+func helpContentLines() []string {
+	var lines []string
+	lines = append(lines, styleBold.Render("ork help")+styleDim.Render("  (?, esc, q, or enter to close)"))
+	lines = append(lines, "")
+	for _, g := range helpGroups {
+		lines = append(lines, styleCyan.Render(g.title))
+		for _, bind := range g.bindings {
+			lines = append(lines, styleDim.Render(fmt.Sprintf("  %-16s %s", bind.key, bind.desc)))
+		}
+		lines = append(lines, "")
+	}
+	for _, l := range helpProseLines {
+		if l == "" {
+			lines = append(lines, "")
+			continue
+		}
+		lines = append(lines, styleDim.Render("  "+l))
+	}
+	// Trim a trailing blank line, if any.
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// viewHelp renders the full-screen (non-overlay) help modal. Used as a
+// fallback when the terminal is too small for the floating box, and by the
+// overlay path itself when computing content. Clamped to m.height like every
+// other screen in this file — an overflowing modal would shear the frame
+// diff the same way an overflowing preview does.
+func (m *Model) viewHelp() string {
+	lines := helpContentLines()
+	maxLines := max(3, m.height)
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+	for i, l := range lines {
+		lines[i] = ansi.Truncate(l, max(1, m.width), "…")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// overlay composites `box` (a block of ANSI-styled lines) on top of `bg` at
+// the given row/col offset. bg lines may contain ANSI escapes, so splice
+// points are computed with ansi.StringWidth/Truncate — never len() or plain
+// slicing — or the frame shears (see comments elsewhere in this file about
+// exactly that failure mode).
+func overlay(bg []string, box []string, row, col int) []string {
+	out := make([]string, len(bg))
+	copy(out, bg)
+
+	for i, boxLine := range box {
+		r := row + i
+		if r < 0 || r >= len(out) {
+			continue
+		}
+		bgLine := out[r]
+		bgW := ansi.StringWidth(bgLine)
+		// Pad the background line if it's shorter than the box's left edge.
+		if bgW < col {
+			bgLine += strings.Repeat(" ", col-bgW)
+			bgW = col
+		}
+		left := ansi.Truncate(bgLine, col, "")
+		boxW := ansi.StringWidth(boxLine)
+		rightEdge := col + boxW
+		var right string
+		if bgW > rightEdge {
+			right = ansi.TruncateLeft(bgLine, rightEdge, "")
+		}
+		out[r] = left + boxLine + right
+	}
+	return out
+}
+
+// viewHelpOverlay renders the normal list frame and composites a centered,
+// rounded-border help box on top of it, so worktree rows stay visible
+// around the edges. Falls back to the full-page help render if the terminal
+// is too small for a sensible box.
+func (m *Model) viewHelpOverlay() string {
+	bgStr := m.viewList()
+	bg := strings.Split(bgStr, "\n")
+
+	content := helpContentLines()
+
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("80")). // styleCyan's color
+		Padding(0, 1)
+
+	// Budget content to fit within the frame, leaving at least a 2-line/
+	// 4-column margin on each side for the border+padding to land inside
+	// m.width/m.height.
+	maxContentW := m.width - 8
+	maxContentH := m.height - 6
+	if len(bg)-6 < maxContentH {
+		maxContentH = len(bg) - 6
+	}
+	if maxContentW < 20 || maxContentH < 5 {
+		// Terminal too small for a floating box — degrade to full-page.
+		return m.viewHelp()
+	}
+
+	trimmed := content
+	if len(trimmed) > maxContentH {
+		trimmed = trimmed[:maxContentH]
+	}
+	for i, l := range trimmed {
+		trimmed[i] = ansi.Truncate(l, maxContentW, "…")
+	}
+
+	boxStr := boxStyle.Render(strings.Join(trimmed, "\n"))
+	boxLines := strings.Split(boxStr, "\n")
+
+	boxH := len(boxLines)
+	boxW := 0
+	for _, l := range boxLines {
+		if w := ansi.StringWidth(l); w > boxW {
+			boxW = w
+		}
+	}
+
+	if boxW > m.width || boxH > len(bg) {
+		// Still doesn't fit (extreme aspect ratios) — fall back.
+		return m.viewHelp()
+	}
+
+	row := max(0, (len(bg)-boxH)/2)
+	col := max(0, (m.width-boxW)/2)
+
+	out := overlay(bg, boxLines, row, col)
+	// Final safety clamp: never emit a line wider than m.width or more
+	// lines than m.height.
+	if len(out) > m.height {
+		out = out[:m.height]
+	}
+	for i, l := range out {
+		out[i] = ansi.Truncate(l, max(1, m.width), "")
+	}
+	return strings.Join(out, "\n")
 }
 
 // humanAge renders a branch tip age compactly ("3h", "2d").

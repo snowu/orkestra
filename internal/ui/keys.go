@@ -44,6 +44,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmStealKey(msg)
 	case modeScan:
 		return m.handleScanKey(msg)
+	case modeHelp:
+		return m.handleHelpKey(msg)
 	}
 	return m.handleListKey(msg)
 }
@@ -137,6 +139,10 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+f":
 		return m, m.openScan()
 
+	case "?":
+		m.mode = modeHelp
+		return m, nil
+
 	case "tab":
 		// Cycle: info -> git status -> off -> info. (From the ctrl-s split
 		// view, tab folds back into the cycle at git status.)
@@ -183,6 +189,14 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filter += s
 			m.applyFilter()
 		}
+	}
+	return m, nil
+}
+
+func (m *Model) handleHelpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "?", "esc", "q", "enter":
+		m.mode = modeList
 	}
 	return m, nil
 }
