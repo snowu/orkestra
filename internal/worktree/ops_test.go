@@ -202,3 +202,137 @@ func TestBranchCheckout(t *testing.T) {
 		t.Errorf("unknown branch should be free, got %+v", c)
 	}
 }
+
+func addExistingCfg(t *testing.T, repoRoot string) (config.Config, string) {
+	t.Helper()
+	wtRoot := t.TempDir()
+	return config.Config{
+		WorktreeRoots:      []string{wtRoot},
+		HooksConfig:        filepath.Join(t.TempDir(), "none.json"),
+		ClaudePersonalDirs: []string{filepath.Dir(repoRoot)},
+	}, wtRoot
+}
+
+func TestAddExistingFreeBranch(t *testing.T) {
+	repoRoot, run := gitRepo(t)
+	os.WriteFile(filepath.Join(repoRoot, ".env.local"), []byte("SECRET=1"), 0o644)
+	run("branch", "feat/x")
+	cfg, wtRoot := addExistingCfg(t, repoRoot)
+
+	wt, c, err := AddExisting(cfg, repoRoot, "feat/x", false)
+	if err != nil || c != nil {
+		t.Fatalf("err=%v conflict=%+v", err, c)
+	}
+	want := filepath.Join(wtRoot, filepath.Base(repoRoot), "feat-x")
+	if wt != want {
+		t.Errorf("wt = %s, want %s", wt, want)
+	}
+	if GitBranch(wt) != "feat/x" {
+		t.Errorf("branch = %q, want feat/x", GitBranch(wt))
+	}
+	// the shared tail ran
+	if data, _ := os.ReadFile(filepath.Join(wt, ".env.local")); string(data) != "SECRET=1" {
+		t.Error(".env.local not copied")
+	}
+	if _, err := os.Stat(filepath.Join(wt, ".claude-profile")); err != nil {
+		t.Error(".claude-profile not written")
+	}
+}
+
+func TestAddExistingConflictIsReportedNotForced(t *testing.T) {
+	repoRoot, _ := gitRepo(t)
+	cfg, _ := addExistingCfg(t, repoRoot)
+
+	// "main" is held by the primary checkout
+	wt, c, err := AddExisting(cfg, repoRoot, "main", false)
+	if err != nil {
+		t.Fatalf("conflict must not be an error: %v", err)
+	}
+	if wt != "" {
+		t.Errorf("no worktree should be created, got %s", wt)
+	}
+	if c == nil || !c.IsMain || c.Path != repoRoot {
+		t.Fatalf("conflict = %+v", c)
+	}
+	// repo untouched
+	if GitBranch(repoRoot) != "main" {
+		t.Errorf("main checkout was disturbed: on %q", GitBranch(repoRoot))
+	}
+}
+
+func TestAddExistingForceMovesMainToBase(t *testing.T) {
+	repoRoot, run := gitRepo(t)
+	run("checkout", "-b", "feature")
+	cfg, _ := addExistingCfg(t, repoRoot)
+
+	// BaseBranch falls back to the current branch for local-only repos, so
+	// point origin/HEAD at main explicitly — the real-world shape.
+	run("update-ref", "refs/remotes/origin/main", "refs/heads/main")
+	run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+	wt, c, err := AddExisting(cfg, repoRoot, "feature", true)
+	if err != nil || c != nil {
+		t.Fatalf("err=%v conflict=%+v", err, c)
+	}
+	if GitBranch(wt) != "feature" {
+		t.Errorf("worktree branch = %q", GitBranch(wt))
+	}
+	if got := GitBranch(repoRoot); got != "main" {
+		t.Errorf("main checkout = %q, want main", got)
+	}
+}
+
+func TestAddExistingForceRefusesDirtyMain(t *testing.T) {
+	repoRoot, run := gitRepo(t)
+	run("update-ref", "refs/remotes/origin/main", "refs/heads/main")
+	run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	run("checkout", "-b", "feature")
+	// diverge the branches on the same file, then dirty it — switching away
+	// would have to overwrite the change, so git must refuse
+	os.WriteFile(filepath.Join(repoRoot, "f.txt"), []byte("on-feature"), 0o644)
+	run("commit", "-am", "feature change")
+	os.WriteFile(filepath.Join(repoRoot, "f.txt"), []byte("uncommitted"), 0o644)
+
+	cfg, _ := addExistingCfg(t, repoRoot)
+	wt, _, err := AddExisting(cfg, repoRoot, "feature", true)
+	if err == nil {
+		t.Fatal("dirty conflicting tree must abort")
+	}
+	if wt != "" {
+		t.Errorf("no worktree on failure, got %s", wt)
+	}
+	if got := GitBranch(repoRoot); got != "feature" {
+		t.Errorf("repo must stay on feature, got %q", got)
+	}
+}
+
+func TestAddExistingForceDetachesLinkedWorktree(t *testing.T) {
+	repoRoot, run := gitRepo(t)
+	other := filepath.Join(t.TempDir(), "linked")
+	run("worktree", "add", other, "-b", "held")
+	cfg, _ := addExistingCfg(t, repoRoot)
+
+	wt, c, err := AddExisting(cfg, repoRoot, "held", true)
+	if err != nil || c != nil {
+		t.Fatalf("err=%v conflict=%+v", err, c)
+	}
+	if GitBranch(wt) != "held" {
+		t.Errorf("new worktree branch = %q", GitBranch(wt))
+	}
+	// detached HEAD reports an empty branch name
+	if got := GitBranch(other); got != "" {
+		t.Errorf("old worktree should be detached, on %q", got)
+	}
+}
+
+func TestAddExistingRefusesExistingPath(t *testing.T) {
+	repoRoot, run := gitRepo(t)
+	run("branch", "dup")
+	cfg, wtRoot := addExistingCfg(t, repoRoot)
+	existing := filepath.Join(wtRoot, filepath.Base(repoRoot), "dup")
+	os.MkdirAll(existing, 0o755)
+
+	if _, _, err := AddExisting(cfg, repoRoot, "dup", false); err == nil {
+		t.Fatal("existing target path must error")
+	}
+}
