@@ -240,8 +240,19 @@ func TestAddExistingFreeBranch(t *testing.T) {
 }
 
 func TestAddExistingConflictIsReportedNotForced(t *testing.T) {
-	repoRoot, _ := gitRepo(t)
+	repoRoot, run := gitRepo(t)
 	cfg, _ := addExistingCfg(t, repoRoot)
+
+	// Stage a STALE worktree entry: add a linked worktree, then delete its
+	// directory from disk without telling git. `git worktree list` still
+	// reports it until something runs `worktree prune`. This makes the
+	// before/after snapshot below an actual regression guard — if prune
+	// ever ran on the non-forced path, this entry would vanish and the
+	// assertion would catch it; without a stale entry, prune is a silent
+	// no-op and proves nothing.
+	stale := filepath.Join(t.TempDir(), "stale")
+	run("worktree", "add", stale, "-b", "stale-branch")
+	os.RemoveAll(stale)
 
 	before := gitOut(repoRoot, "worktree", "list")
 
