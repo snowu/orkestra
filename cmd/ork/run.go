@@ -81,8 +81,15 @@ func runTUI() {
 		// one, matching how ActionNewTask treats asymmetric pairs.
 		if res.RepoRoot2 != "" {
 			if worktree.HasBranch(res.RepoRoot2, res.Branch) {
-				if _, _, err := worktree.AddExisting(cfg, res.RepoRoot2, res.Branch, res.Force); err != nil {
+				// res.Force is the user's answer to a prompt that named the
+				// PRIMARY repo's checkout — it never showed them the
+				// sibling's state, so it carries no consent to disturb the
+				// sibling. Always pass false here; a sibling whose branch is
+				// checked out elsewhere is reported below, not forced.
+				if _, conflict2, err := worktree.AddExisting(cfg, res.RepoRoot2, res.Branch, false); err != nil {
 					fmt.Fprintln(os.Stderr, "ork: sibling worktree failed: "+err.Error())
+				} else if conflict2 != nil {
+					fmt.Fprintln(os.Stderr, "ork: sibling worktree skipped: "+res.Branch+" is checked out in "+conflict2.Path)
 				}
 			} else if _, err := worktree.NewTask(cfg, res.RepoRoot2, res.Task); err != nil {
 				fmt.Fprintln(os.Stderr, "ork: sibling worktree failed: "+err.Error())
