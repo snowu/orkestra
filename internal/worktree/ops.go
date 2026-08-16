@@ -287,6 +287,55 @@ func NewTask(cfg config.Config, repoRoot, task string) (string, error) {
 	return wt, nil
 }
 
+// AddExisting creates <firstRoot>/<repo>/<TaskNameFor(branch)> as a
+// worktree on an EXISTING branch.
+//
+// When the branch is already checked out somewhere, the conflict is
+// RETURNED and nothing is mutated — resolving it disturbs another
+// checkout, which is the user's call. The caller confirms, then calls
+// again with force=true.
+func AddExisting(cfg config.Config, repoRoot, branch string, force bool) (string, *Conflict, error) {
+	repo := filepath.Base(repoRoot)
+	task := TaskNameFor(branch)
+	git(repoRoot, "worktree", "prune")
+
+	wt := filepath.Join(cfg.WorktreeRoots[0], repo, task)
+	if _, err := os.Stat(wt); err == nil {
+		return "", nil, fmt.Errorf("%s already exists", wt)
+	}
+
+	if c := BranchCheckout(repoRoot, branch); c != nil {
+		if !force {
+			return "", c, nil
+		}
+		if c.IsMain {
+			// Leave the primary checkout on a real branch rather than
+			// detached: later commits there would otherwise be orphan-prone.
+			base := BaseBranch(repoRoot)
+			if base == "" {
+				return "", nil, fmt.Errorf("couldn't determine a base branch for %s", repoRoot)
+			}
+			if base == branch {
+				return "", nil, fmt.Errorf("%s is %s's base branch — it must stay checked out there", branch, repo)
+			}
+			if err := git(c.Path, "checkout", base); err != nil {
+				return "", nil, fmt.Errorf("couldn't switch %s to %s: %w", c.Path, base, err)
+			}
+		} else if err := git(c.Path, "checkout", "--detach"); err != nil {
+			return "", nil, fmt.Errorf("couldn't detach %s: %w", c.Path, err)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(wt), 0o755); err != nil {
+		return "", nil, err
+	}
+	if err := git(repoRoot, "worktree", "add", wt, branch); err != nil {
+		return "", nil, fmt.Errorf("git worktree add failed for %s: %w", wt, err)
+	}
+	finishWorktree(cfg, repoRoot, repo, task, wt)
+	return wt, nil, nil
+}
+
 // finishWorktree is the shared post-creation tail of NewTask and
 // AddExisting: seed config, run the repo's setup hook, mark the profile,
 // and count the worktree as used (a fresh task that sorted to the bottom
