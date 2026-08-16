@@ -137,3 +137,68 @@ func TestTaskNameFor(t *testing.T) {
 		}
 	}
 }
+
+// gitRepo builds a temp repo with one commit on main and returns its path
+// plus a runner for further git commands in it.
+func gitRepo(t *testing.T) (string, func(args ...string)) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := t.TempDir()
+	run := func(args ...string) {
+		c := exec.Command("git", append([]string{"-C", root}, args...)...)
+		c.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	os.WriteFile(filepath.Join(root, "f.txt"), []byte("x"), 0o644)
+	run("add", "f.txt")
+	run("commit", "-m", "init")
+	return root, run
+}
+
+func TestBranchCheckout(t *testing.T) {
+	repoRoot, run := gitRepo(t)
+
+	// main is checked out in the primary checkout
+	c := BranchCheckout(repoRoot, "main")
+	if c == nil {
+		t.Fatal("main should be reported as checked out")
+	}
+	if !c.IsMain {
+		t.Error("primary checkout must set IsMain")
+	}
+	if c.Path != repoRoot || c.Branch != "main" {
+		t.Errorf("conflict = %+v, want path %s", c, repoRoot)
+	}
+
+	// a branch with no checkout is free
+	run("branch", "free-branch")
+	if c := BranchCheckout(repoRoot, "free-branch"); c != nil {
+		t.Errorf("free-branch should be free, got %+v", c)
+	}
+
+	// a branch held by a linked worktree is a non-main conflict
+	other := filepath.Join(t.TempDir(), "linked")
+	run("worktree", "add", other, "-b", "held")
+	c = BranchCheckout(repoRoot, "held")
+	if c == nil {
+		t.Fatal("held should be reported as checked out")
+	}
+	if c.IsMain {
+		t.Error("linked worktree must not set IsMain")
+	}
+	if c.Path != other {
+		t.Errorf("conflict path = %s, want %s", c.Path, other)
+	}
+
+	// unknown branch is free, not an error
+	if c := BranchCheckout(repoRoot, "no-such-branch"); c != nil {
+		t.Errorf("unknown branch should be free, got %+v", c)
+	}
+}
