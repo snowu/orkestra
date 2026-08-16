@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -118,6 +119,49 @@ func WorktreeOrDefault(roots []string, repo, task string) string {
 		return wt
 	}
 	return filepath.Join(roots[0], repo, task)
+}
+
+// BranchCand is a branch that could get a worktree: it has none yet.
+type BranchCand struct {
+	Repo string
+	Name string
+	Tip  time.Time
+}
+
+// BranchCandidates lists repoRoot's local branches that have no worktree,
+// newest tip first. maxAge > 0 keeps only branches whose tip is younger
+// than that; 0 means no time filter.
+//
+// Local refs only — no fetch. A fetch per repo would add seconds of
+// network latency to a UI action, and the user's own `git fetch` is what
+// brings branches from elsewhere into these refs.
+func BranchCandidates(repoRoot string, maxAge time.Duration) []BranchCand {
+	out := gitOut(repoRoot, "for-each-ref", "--sort=-committerdate",
+		"--format=%(refname:short)\t%(committerdate:unix)", "refs/heads")
+	if out == "" {
+		return nil
+	}
+	repo := filepath.Base(repoRoot)
+	var cands []BranchCand
+	for _, line := range strings.Split(out, "\n") {
+		name, ts, ok := strings.Cut(strings.TrimSpace(line), "\t")
+		if !ok || name == "" {
+			continue
+		}
+		sec, err := strconv.ParseInt(ts, 10, 64)
+		if err != nil {
+			continue
+		}
+		tip := time.Unix(sec, 0)
+		if maxAge != 0 && time.Since(tip) > maxAge {
+			continue
+		}
+		if BranchCheckout(repoRoot, name) != nil {
+			continue
+		}
+		cands = append(cands, BranchCand{Repo: repo, Name: name, Tip: tip})
+	}
+	return cands
 }
 
 func splitLines(s string) []string {
