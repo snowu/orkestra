@@ -210,18 +210,18 @@ type Model struct {
 	endSession  string // temp "ork-end-*" tmux session being tailed in the live pane
 
 	// ctrl-n flow
-	repos       []string // repo basenames, favorites first
-	repoPaths   map[string]string
-	pairEntries map[string][2]string // pair display line -> {feRepo, beRepo}
-	repoFilter  string
-	repoCursor  int
-	pickedRepo  string
-	pickedRepo2 string // sibling repo when a pair entry was picked
-	taskInput   string
+	repos         []string // repo basenames, favorites first
+	repoPaths     map[string]string
+	pairEntries   map[string][2]string // pair display line -> {feRepo, beRepo}
+	repoFilter    string
+	repoCursor    int
+	pickedRepo    string
+	pickedRepo2   string // sibling repo when a pair entry was picked
+	taskInput     string
 	branches      []worktree.BranchCand
-	branchCursor  int                 // 0 = the typed-text row, 1..n = branches
-	stealConflict *worktree.Conflict  // pending "checked out elsewhere" prompt
-	stealBranch   string              // branch the prompt is about
+	branchCursor  int                // 0 = the typed-text row, 1..n = branches
+	stealConflict *worktree.Conflict // pending "checked out elsewhere" prompt
+	stealBranch   string             // branch the prompt is about
 
 	width, height int
 	result        Result
