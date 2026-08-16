@@ -122,3 +122,92 @@ func TestPairColoredWithoutSession(t *testing.T) {
 		t.Error("solo task should stay uncolored")
 	}
 }
+
+func taskNameModel(t *testing.T) *Model {
+	t.Helper()
+	m := testModel()
+	m.pickedRepo = "repoA"
+	m.repoPaths = map[string]string{"repoA": "/nowhere/repoA"}
+	m.mode = modeTaskName
+	m.taskInput = ""
+	m.branchCursor = 0
+	m.branches = []worktree.BranchCand{
+		{Repo: "repoA", Name: "feat/alpha"},
+		{Repo: "repoA", Name: "fix-beta"},
+	}
+	return m
+}
+
+func TestTaskNameCursorZeroCreatesNewBranch(t *testing.T) {
+	m := taskNameModel(t)
+	m.taskInput = "brand-new"
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.result.Action != ActionNewTask || m.result.Task != "brand-new" {
+		t.Errorf("result = %+v, want ActionNewTask/brand-new", m.result)
+	}
+}
+
+func TestTaskNameTypingFiltersBranches(t *testing.T) {
+	m := taskNameModel(t)
+	m.taskInput = "alpha"
+	got := m.filteredBranches()
+	if len(got) != 1 || got[0].Name != "feat/alpha" {
+		t.Errorf("filtered = %+v", got)
+	}
+}
+
+func TestTaskNameDownSelectsBranch(t *testing.T) {
+	m := taskNameModel(t)
+	m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if m.branchCursor != 1 {
+		t.Fatalf("branchCursor = %d, want 1", m.branchCursor)
+	}
+	// cursor cannot run past the last branch
+	m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if m.branchCursor != 2 {
+		t.Errorf("branchCursor = %d, want clamped to 2", m.branchCursor)
+	}
+	// back to the text row
+	for i := 0; i < 5; i++ {
+		m.handleKey(tea.KeyMsg{Type: tea.KeyUp})
+	}
+	if m.branchCursor != 0 {
+		t.Errorf("branchCursor = %d, want clamped to 0", m.branchCursor)
+	}
+}
+
+func TestTaskNameEnterOnBranchUsesIt(t *testing.T) {
+	m := taskNameModel(t)
+	m.branchCursor = 1 // feat/alpha
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.result.Action != ActionUseBranch {
+		t.Fatalf("action = %v, want ActionUseBranch", m.result.Action)
+	}
+	if m.result.Branch != "feat/alpha" || m.result.Task != "feat-alpha" {
+		t.Errorf("result = %+v, want branch feat/alpha task feat-alpha", m.result)
+	}
+	if m.result.Force {
+		t.Error("Force must be false when no conflict was confirmed")
+	}
+}
+
+func TestStealConfirmSetsForce(t *testing.T) {
+	m := taskNameModel(t)
+	m.mode = modeConfirmSteal
+	m.stealBranch = "feat/alpha"
+	m.stealConflict = &worktree.Conflict{Branch: "feat/alpha", Path: "/code/repoA", IsMain: true}
+	m.pickedRepo = "repoA"
+
+	// esc cancels back to the task-name screen, no result
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != modeTaskName || m.result.Action == ActionUseBranch {
+		t.Errorf("esc should cancel, mode=%v result=%+v", m.mode, m.result)
+	}
+
+	m.mode = modeConfirmSteal
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.result.Action != ActionUseBranch || !m.result.Force {
+		t.Errorf("enter should confirm with Force, got %+v", m.result)
+	}
+}

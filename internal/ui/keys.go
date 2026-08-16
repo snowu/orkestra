@@ -40,6 +40,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePickRepoKey(msg)
 	case modeTaskName:
 		return m.handleTaskNameKey(msg)
+	case modeConfirmSteal:
+		return m.handleConfirmStealKey(msg)
 	}
 	return m.handleListKey(msg)
 }
@@ -372,16 +374,71 @@ func (m *Model) pickRepoEntry(name string) {
 func (m *Model) startTaskName(repo, repo2 string) {
 	m.pickedRepo, m.pickedRepo2 = repo, repo2
 	m.taskInput = ""
-	m.branches = worktree.BranchCandidates(m.repoPaths[repo], 0)
 	m.branchCursor = 0
+	// maxAge 0: when you are already naming a task, every branch without a
+	// worktree is a candidate — the 48h cut belongs to the scan screen.
+	m.branches = worktree.BranchCandidates(m.repoPaths[repo], 0)
 	m.mode = modeTaskName
 }
 
+// filteredBranches narrows the branch list by the same text being typed as
+// a possible new branch name — one input, two meanings, disambiguated by
+// branchCursor.
+func (m *Model) filteredBranches() []worktree.BranchCand {
+	if m.taskInput == "" {
+		return m.branches
+	}
+	names := make([]string, len(m.branches))
+	for i, b := range m.branches {
+		names[i] = b.Name
+	}
+	var out []worktree.BranchCand
+	for _, match := range fuzzy.Find(m.taskInput, names) {
+		out = append(out, m.branches[match.Index])
+	}
+	return out
+}
+
+// useBranch returns the ActionUseBranch result, prompting first when the
+// branch is checked out elsewhere. The check happens HERE, not in run.go,
+// because returning a Result quits the TUI — there would be nothing left
+// to prompt with.
+func (m *Model) useBranch(b worktree.BranchCand, force bool) (tea.Model, tea.Cmd) {
+	repoRoot := m.repoPaths[m.pickedRepo]
+	if !force {
+		if c := worktree.BranchCheckout(repoRoot, b.Name); c != nil {
+			m.stealConflict, m.stealBranch = c, b.Name
+			m.mode = modeConfirmSteal
+			return m, nil
+		}
+	}
+	m.result = Result{
+		Action: ActionUseBranch, Repo: m.pickedRepo, Task: worktree.TaskNameFor(b.Name),
+		Branch: b.Name, Force: force,
+		RepoRoot:  repoRoot,
+		Repo2:     m.pickedRepo2,
+		RepoRoot2: m.repoPaths[m.pickedRepo2],
+	}
+	return m, tea.Quit
+}
+
 func (m *Model) handleTaskNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	branches := m.filteredBranches()
 	switch msg.String() {
 	case "ctrl+c", "esc":
 		m.mode = modePickRepo
+	case "up", "ctrl+p":
+		if m.branchCursor > 0 {
+			m.branchCursor--
+		}
+	case "down", "ctrl+j":
+		if m.branchCursor < len(branches) {
+			m.branchCursor++
+		}
 	case "enter":
+		if m.branchCursor > 0 && m.branchCursor <= len(branches) {
+			return m.useBranch(branches[m.branchCursor-1], false)
+		}
 		task := strings.TrimSpace(m.taskInput)
 		if task == "" {
 			return m, nil
@@ -396,11 +453,26 @@ func (m *Model) handleTaskNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "backspace":
 		if len(m.taskInput) > 0 {
 			m.taskInput = m.taskInput[:len(m.taskInput)-1]
+			m.branchCursor = 0
 		}
 	default:
 		if msg.Type == tea.KeyRunes && !msg.Alt {
 			m.taskInput += string(msg.Runes)
+			m.branchCursor = 0 // typing re-filters; a held cursor would point at a different branch
 		}
+	}
+	return m, nil
+}
+
+func (m *Model) handleConfirmStealKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "y":
+		b := worktree.BranchCand{Repo: m.pickedRepo, Name: m.stealBranch}
+		m.stealConflict = nil
+		return m.useBranch(b, true)
+	default: // esc, ctrl+c, n, anything else — cancel is the safe default
+		m.stealConflict = nil
+		m.mode = modeTaskName
 	}
 	return m, nil
 }
