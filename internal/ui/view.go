@@ -54,6 +54,8 @@ func (m *Model) View() string {
 		return m.viewPickRepo()
 	case modeTaskName:
 		return m.viewTaskName()
+	case modeConfirmSteal:
+		return m.viewConfirmSteal()
 	}
 
 	var b strings.Builder
@@ -349,14 +351,70 @@ func (m *Model) viewTaskName() string {
 	if m.pickedRepo2 != "" {
 		target = m.pickedRepo + " + " + m.pickedRepo2
 	}
-	b.WriteString(styleBold.Render(fmt.Sprintf("new task in %s (esc = back, enter = create)", target)) + "\n")
-	b.WriteString(fmt.Sprintf("task '%s'> %s█\n\n", target, m.taskInput))
-	b.WriteString(styleDim.Render("existing branches (reference):") + "\n")
-	for i, br := range m.branches {
-		if i >= max(3, m.height-8) {
+	b.WriteString(styleBold.Render(fmt.Sprintf("new task in %s (esc = back, ↑↓ = reuse a branch)", target)) + "\n")
+
+	cursor := " "
+	if m.branchCursor == 0 {
+		cursor = ">"
+	}
+	line := fmt.Sprintf("%s new branch '%s'> %s█", cursor, target, m.taskInput)
+	if m.branchCursor == 0 {
+		line = styleSel.Render(line)
+	}
+	b.WriteString(line + "\n\n")
+
+	branches := m.filteredBranches()
+	if len(branches) == 0 {
+		b.WriteString(styleDim.Render("  (no branches without a worktree)") + "\n")
+		return b.String()
+	}
+	b.WriteString(styleDim.Render("branches without a worktree:") + "\n")
+	for i, br := range branches {
+		if i >= max(3, m.height-10) {
 			break
 		}
-		b.WriteString(styleDim.Render("  "+br.Name) + "\n")
+		row := fmt.Sprintf("  %s  %s", br.Name, humanAge(br.Tip))
+		if m.branchCursor == i+1 {
+			row = styleSel.Render("> " + strings.TrimLeft(row, " "))
+		} else {
+			row = styleDim.Render(row)
+		}
+		b.WriteString(row + "\n")
 	}
 	return b.String()
+}
+
+func (m *Model) viewConfirmSteal() string {
+	c := m.stealConflict
+	if c == nil {
+		return ""
+	}
+	where := "worktree"
+	fix := c.Path + " will be detached"
+	if c.IsMain {
+		where = "main repo"
+		fix = c.Path + " will be switched to its base branch"
+	}
+	var b strings.Builder
+	b.WriteString(styleBold.Render(fmt.Sprintf("branch '%s' is checked out in %s (%s)", c.Branch, c.Path, where)) + "\n\n")
+	b.WriteString(fmt.Sprintf("move it to a new worktree for %s?\n\n", worktree.TaskNameFor(c.Branch)))
+	b.WriteString("  " + fix + "   [enter]\n")
+	b.WriteString("  " + styleDim.Render("cancel                          [esc]") + "\n")
+	return b.String()
+}
+
+// humanAge renders a branch tip age compactly ("3h", "2d").
+func humanAge(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
