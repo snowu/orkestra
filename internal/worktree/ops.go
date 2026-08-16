@@ -66,6 +66,14 @@ func SessionName(cfg config.Config, repo, task string) string {
 	return task
 }
 
+// TaskNameFor maps a branch name to an ork task name. A task is both a
+// directory name and a multiplexer session name, so slashes cannot
+// survive; Row.Branch still shows the real branch, keeping the mapping
+// visible in the picker.
+func TaskNameFor(branch string) string {
+	return strings.ReplaceAll(branch, "/", "-")
+}
+
 // feBEDirs finds the fe/be sibling worktrees for task — separate repos
 // (ORK_FE_REPO/ORK_BE_REPO), not subdirs, that share task names. Row's own
 // repo/path is reused directly when it matches one side, so pressing the
@@ -237,16 +245,22 @@ func NewTask(cfg config.Config, repoRoot, task string) (string, error) {
 	if err := git(repoRoot, "worktree", "add", wt, "-b", task, base); err != nil {
 		return "", fmt.Errorf("git worktree add failed for %s", wt)
 	}
+	finishWorktree(cfg, repoRoot, repo, task, wt)
+	return wt, nil
+}
 
+// finishWorktree is the shared post-creation tail of NewTask and
+// AddExisting: seed config, run the repo's setup hook, mark the profile,
+// and count the worktree as used (a fresh task that sorted to the bottom
+// of the picker was the bug this last line prevents).
+func finishWorktree(cfg config.Config, repoRoot, repo, task, wt string) {
 	if data, err := os.ReadFile(filepath.Join(repoRoot, ".env.local")); err == nil {
 		os.WriteFile(filepath.Join(wt, ".env.local"), data, 0o600)
-		fmt.Fprintln(os.Stderr, "Copied .env.local")
+		fmt.Fprintln(Log, "Copied .env.local")
 	}
-
 	hooks.RunRepoHook(cfg.HooksConfig, repo, wt)
 	WriteClaudeProfile(cfg.ClaudePersonalDirs, repoRoot, wt)
 	TouchAccess(repo, task)
-	return wt, nil
 }
 
 // WriteClaudeProfile marks the worktree "personal" or "work" by whether
