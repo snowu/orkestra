@@ -280,20 +280,3 @@ func lastLines(s string, n int) string {
 	}
 	return strings.Join(lines, "\n")
 }
-
-func existingBranches(repoRoot string) []string {
-	if repoRoot == "" {
-		return nil
-	}
-	out, err := exec.Command("git", "-C", repoRoot, "branch", "--format=%(refname:short)").Output()
-	if err != nil {
-		return nil
-	}
-	var branches []string
-	for _, l := range strings.Split(string(out), "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			branches = append(branches, l)
-		}
-	}
-	return branches
-}
