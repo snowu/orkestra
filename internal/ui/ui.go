@@ -223,6 +223,12 @@ type Model struct {
 	stealConflict *worktree.Conflict // pending "checked out elsewhere" prompt
 	stealBranch   string             // branch the prompt is about
 
+	// ctrl-f scan flow
+	scanCands  []worktree.BranchCand
+	scanFilter string
+	scanCursor int
+	scanning   bool // candidates still loading
+
 	width, height int
 	result        Result
 	reloadCh      <-chan struct{}
@@ -234,6 +240,7 @@ type Model struct {
 }
 
 type rowsMsg []worktree.Row
+type scanMsg []worktree.BranchCand
 type stateChangedMsg struct{}
 type tickMsg time.Time
 type spawnDoneMsg struct{ err error }
@@ -346,6 +353,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateRepoColors(m.rows)
 		m.updateTaskColors(m.rows)
 		return m, m.previewCmd()
+	case scanMsg:
+		m.scanCands, m.scanning = msg, false
+		return m, nil
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())
 	case spawnDoneMsg:
