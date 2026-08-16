@@ -96,7 +96,13 @@ func ensureLoginProxy(cfg config.Config) {
 	if mux.HasSession("ork-login-proxy") {
 		mux.KillSession("ork-login-proxy")
 	}
-	mux.NewDetached("ork-login-proxy", "exec ork login-proxy")
+	// A failed spawn will never bind the port, so waiting on it is pure
+	// startup latency — the full 3s below on every single launch (the
+	// multiplexer server being down hits this every time).
+	if err := mux.NewDetached("ork-login-proxy", "exec ork login-proxy"); err != nil {
+		fmt.Fprintln(os.Stderr, "ork: login proxy not started: "+err.Error())
+		return
+	}
 
 	// Session creation -> process exec -> http.ListenAndServe takes real
 	// wall-clock time. Block until it's actually accepting connections (or

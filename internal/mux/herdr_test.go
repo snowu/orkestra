@@ -2,6 +2,8 @@ package mux
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -12,6 +14,51 @@ func decode(t *testing.T, s string) any {
 		t.Fatal(err)
 	}
 	return v
+}
+
+// herdr exits 0 while reporting an error in the body, so the envelope is
+// the only failure signal — swallowing it made every failure surface as an
+// opaque "workspace create X failed".
+func TestHerdrResultEnvelope(t *testing.T) {
+	_, err := herdrResult([]byte(`{"id":"cli:workspace:list","error":{"code":"server_not_running","message":"no herdr server is running at /x/herdr.sock"}}`))
+	if err == nil {
+		t.Fatal("error envelope must produce an error")
+	}
+	if got := err.Error(); got != "no herdr server is running at /x/herdr.sock (server_not_running)" {
+		t.Errorf("message should carry herdr's own text and code, got %q", got)
+	}
+
+	v, err := herdrResult([]byte(`{"id":"cli:workspace:create","result":{"workspace":{"workspace_id":"w1"}}}`))
+	if err != nil {
+		t.Fatalf("success envelope: %v", err)
+	}
+	if jStr(jSub(v.(map[string]any), "workspace"), "workspace_id", "id") != "w1" {
+		t.Errorf("result should be unwrapped, got %+v", v)
+	}
+
+	// Unenveloped payloads (bare arrays) still pass through.
+	if v, err := herdrResult([]byte(`[{"pane_id":"p1"}]`)); err != nil || len(jList(v, "panes")) != 1 {
+		t.Errorf("bare array: %+v %v", v, err)
+	}
+
+	if _, err := herdrResult([]byte("herdr: command not found")); err == nil {
+		t.Error("non-JSON output must error")
+	}
+}
+
+// The autostart path keys off the code surviving herdrRun's wrapping.
+func TestIsServerDown(t *testing.T) {
+	_, err := herdrResult([]byte(`{"error":{"code":"server_not_running","message":"no server"}}`))
+	if !isServerDown(err) {
+		t.Error("bare envelope error should be recognized")
+	}
+	if !isServerDown(fmt.Errorf("herdr workspace create x: %w", err)) {
+		t.Error("code must survive %w wrapping")
+	}
+	_, other := herdrResult([]byte(`{"error":{"code":"not_found","message":"no such workspace"}}`))
+	if isServerDown(other) || isServerDown(errors.New("plain")) {
+		t.Error("only server_not_running triggers autostart")
+	}
 }
 
 func TestJListShapes(t *testing.T) {

@@ -6,33 +6,142 @@ package mux
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 )
 
 type herdrBackend struct{}
 
 func (herdrBackend) Binary() string { return "herdr" }
 
-// herdrJSON runs a herdr CLI command (responses are JSON by default) and
-// returns the decoded payload, unwrapped from the {"id":..,"result":..}
-// envelope. Any exec/parse failure returns nil — callers degrade to the
-// same "no session/pane" behavior the tmux backend has on a dead server.
-func herdrJSON(args ...string) any {
-	out, err := exec.Command("herdr", args...).Output()
-	if err != nil {
-		return nil
-	}
+// herdrResult unwraps a herdr CLI response body: {"id":..,"result":..} on
+// success, {"id":..,"error":{"code":..,"message":..}} on failure.
+//
+// The error envelope is why this is not just a json.Unmarshal: herdr exits
+// 0 even when it reports an error (a dead server answers
+// `workspace list` with exit 0 and error.code=server_not_running), so
+// exec's error is not a reliable failure signal and an unchecked envelope
+// gets mistaken for a result — the caller then sees an empty payload and
+// can only report "failed" with no cause.
+func herdrResult(out []byte) (any, error) {
 	var v any
-	if json.Unmarshal(out, &v) != nil {
-		return nil
+	if err := json.Unmarshal(out, &v); err != nil {
+		return nil, fmt.Errorf("unparseable output: %s", truncate(strings.TrimSpace(string(out)), 200))
 	}
 	if m, ok := v.(map[string]any); ok {
-		if r, ok := m["result"]; ok {
-			return r
+		if e := jSub(m, "error"); e != nil {
+			return nil, herdrAPIErr{Code: jStr(e, "code"), Message: jStr(e, "message")}
 		}
+		if r, ok := m["result"]; ok {
+			return r, nil
+		}
+	}
+	return v, nil
+}
+
+// herdrAPIErr is a decoded error envelope. The code is kept structured
+// (not folded into the message) so callers can react to specific ones —
+// server_not_running is the code that triggers the autostart retry.
+type herdrAPIErr struct{ Code, Message string }
+
+func (e herdrAPIErr) Error() string {
+	if e.Code == "" {
+		return e.Message
+	}
+	return e.Message + " (" + e.Code + ")"
+}
+
+func isServerDown(err error) bool {
+	var ae herdrAPIErr
+	return errors.As(err, &ae) && ae.Code == "server_not_running"
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// herdrRun runs a herdr CLI command once and returns the unwrapped result,
+// or an error naming both the command and herdr's own message (%w keeps
+// herdrAPIErr's code inspectable through the wrapping).
+func herdrRun(args ...string) (any, error) {
+	out, err := exec.Command("herdr", args...).CombinedOutput()
+	v, perr := herdrResult(out)
+	if perr != nil {
+		return nil, fmt.Errorf("herdr %s: %w", strings.Join(args, " "), perr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("herdr %s: %w", strings.Join(args, " "), err)
+	}
+	return v, nil
+}
+
+// serverStarting guards the autostart so a burst of failing calls (a
+// refresh fans out one process-info per pane) spawns one server, not one
+// per call.
+var serverStarting sync.Mutex
+
+// startHerdrServer launches the headless server and waits for the API
+// socket to answer. Unlike tmux — where any command autostarts the server —
+// herdr's socket must already exist, so without this every ork command
+// fails until the user manually runs `herdr`. The saved session.json is
+// restored by the server itself, so previous workspaces come back.
+func startHerdrServer() error {
+	serverStarting.Lock()
+	defer serverStarting.Unlock()
+
+	// Another goroutine may have started it while we waited on the lock.
+	if _, err := herdrRun("workspace", "list"); err == nil {
+		return nil
+	}
+	// Detached: `herdr server` runs in the foreground until stopped, so it
+	// must outlive this process rather than be waited on.
+	c := exec.Command("herdr", "server")
+	c.Stdin, c.Stdout, c.Stderr = nil, nil, nil
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := c.Start(); err != nil {
+		return err
+	}
+	go c.Wait() // reap; the process is expected to outlive us
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := herdrRun("workspace", "list"); err == nil {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return errors.New("herdr server did not come up within 5s")
+}
+
+// herdrCall is herdrRun plus a one-shot autostart: a dead server is a
+// recoverable condition, not a user-facing failure.
+func herdrCall(args ...string) (any, error) {
+	v, err := herdrRun(args...)
+	if err == nil || !isServerDown(err) {
+		return v, err
+	}
+	if serr := startHerdrServer(); serr != nil {
+		return nil, fmt.Errorf("%w; autostart failed: %v", err, serr)
+	}
+	return herdrRun(args...)
+}
+
+// herdrJSON is herdrCall for the read paths (workspace/tab/pane listing),
+// which degrade to nil on failure exactly like the tmux backend does
+// against a dead server.
+func herdrJSON(args ...string) any {
+	v, err := herdrCall(args...)
+	if err != nil {
+		return nil
 	}
 	return v
 }
@@ -157,19 +266,27 @@ func (herdrBackend) KillSession(name string) {
 
 // createWorkspace makes a labeled workspace rooted at dir and returns its
 // workspace id and root pane id (creation returns both in one response).
-func createWorkspace(name, dir string) (wsID, paneID string) {
+// herdr's own message is propagated — "workspace create X failed" alone
+// hides the causes users actually hit (no server running, dir gone).
+func createWorkspace(name, dir string) (wsID, paneID string, err error) {
 	args := []string{"workspace", "create", "--label", name}
 	if dir != "" {
 		args = append(args, "--cwd", dir)
 	}
-	v := herdrJSON(args...)
+	v, err := herdrCall(args...)
+	if err != nil {
+		return "", "", err
+	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return "", ""
+		return "", "", fmt.Errorf("herdr workspace create %s: unexpected response shape", name)
 	}
 	wsID = jStr(jSub(m, "workspace"), "workspace_id", "id")
 	paneID = jStr(jSub(m, "root_pane"), "pane_id", "id")
-	return wsID, paneID
+	if wsID == "" {
+		return "", "", fmt.Errorf("herdr workspace create %s: no workspace id in response", name)
+	}
+	return wsID, paneID, nil
 }
 
 // NewDetached: herdr workspaces are server-side, so "detached" is the
@@ -179,22 +296,24 @@ func createWorkspace(name, dir string) (wsID, paneID string) {
 // polls HasSession to know cleanup finished), so the workspace closes
 // itself after cmd via the HERDR_WORKSPACE_ID herdr sets in the pane.
 func (herdrBackend) NewDetached(name, cmd string) error {
-	_, paneID := createWorkspace(name, "")
+	_, paneID, err := createWorkspace(name, "")
+	if err != nil {
+		return err
+	}
 	if paneID == "" {
-		return errHerdr("workspace create " + name)
+		return fmt.Errorf("herdr workspace create %s: no root pane in response", name)
 	}
 	cmd += `; herdr workspace close "$HERDR_WORKSPACE_ID"`
-	return exec.Command("herdr", "pane", "run", paneID, cmd).Run()
+	_, err = herdrCall("pane", "run", paneID, cmd)
+	return err
 }
 
 func (h herdrBackend) EnsureSession(name, dir string) error {
 	if h.HasSession(name) {
 		return nil
 	}
-	if ws, _ := createWorkspace(name, dir); ws == "" {
-		return errHerdr("workspace create " + name)
-	}
-	return nil
+	_, _, err := createWorkspace(name, dir)
+	return err
 }
 
 // EnsureWindow: tab labeled window inside the workspace, running cmd via
@@ -210,10 +329,13 @@ func (h herdrBackend) EnsureWindow(session, window, dir, cmd string) error {
 			return nil
 		}
 	}
-	v := herdrJSON("tab", "create", "--workspace", wsID, "--cwd", dir, "--label", window)
+	v, err := herdrCall("tab", "create", "--workspace", wsID, "--cwd", dir, "--label", window)
+	if err != nil {
+		return err
+	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return errHerdr("tab create " + window)
+		return fmt.Errorf("herdr tab create %s: unexpected response shape", window)
 	}
 	paneID := jStr(jSub(m, "root_pane"), "pane_id", "id")
 	if paneID == "" {
@@ -354,9 +476,15 @@ func (herdrBackend) EvacuateWindow(windowID, dst string) error {
 func (h herdrBackend) NewOrAttach(name, dir string) error {
 	wsID := workspaceID(name)
 	if wsID == "" {
-		var paneID string
-		if wsID, paneID = createWorkspace(name, dir); wsID == "" || paneID == "" {
-			return errHerdr("workspace create " + name)
+		var (
+			paneID string
+			err    error
+		)
+		if wsID, paneID, err = createWorkspace(name, dir); err != nil {
+			return err
+		}
+		if paneID == "" {
+			return fmt.Errorf("herdr workspace create %s: no root pane in response", name)
 		}
 	} else {
 		cdWorkspace(wsID, dir)
