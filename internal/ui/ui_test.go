@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -209,5 +210,46 @@ func TestStealConfirmSetsForce(t *testing.T) {
 	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.result.Action != ActionUseBranch || !m.result.Force {
 		t.Errorf("enter should confirm with Force, got %+v", m.result)
+	}
+}
+
+func scanModel(t *testing.T) *Model {
+	t.Helper()
+	m := testModel()
+	m.mode = modeScan
+	m.repoPaths = map[string]string{"repoA": "/nowhere/repoA", "repoB": "/nowhere/repoB"}
+	m.scanCands = []worktree.BranchCand{
+		{Repo: "repoA", Name: "feat/one", Tip: time.Now().Add(-2 * time.Hour)},
+		{Repo: "repoB", Name: "fix-two", Tip: time.Now().Add(-30 * time.Hour)},
+	}
+	return m
+}
+
+func TestScanFilterAndSelect(t *testing.T) {
+	m := scanModel(t)
+	m.scanFilter = "fix"
+	if got := m.filteredScan(); len(got) != 1 || got[0].Name != "fix-two" {
+		t.Fatalf("filtered = %+v", got)
+	}
+
+	m.scanFilter = ""
+	m.scanCursor = 1 // fix-two
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.result.Action != ActionUseBranch {
+		t.Fatalf("action = %v, want ActionUseBranch", m.result.Action)
+	}
+	if m.result.Branch != "fix-two" || m.result.Task != "fix-two" {
+		t.Errorf("result = %+v", m.result)
+	}
+	if m.result.Repo != "repoB" || m.result.RepoRoot != "/nowhere/repoB" {
+		t.Errorf("scan must carry the row's OWN repo, got %+v", m.result)
+	}
+}
+
+func TestScanEscReturnsToList(t *testing.T) {
+	m := scanModel(t)
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != modeList {
+		t.Errorf("mode = %v, want modeList", m.mode)
 	}
 }

@@ -42,6 +42,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTaskNameKey(msg)
 	case modeConfirmSteal:
 		return m.handleConfirmStealKey(msg)
+	case modeScan:
+		return m.handleScanKey(msg)
 	}
 	return m.handleListKey(msg)
 }
@@ -131,6 +133,9 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+n":
 		m.startPickRepo()
 		return m, nil
+
+	case "ctrl+f":
+		return m, m.openScan()
 
 	case "tab":
 		// Cycle: info -> git status -> off -> info. (From the ctrl-s split
@@ -420,6 +425,82 @@ func (m *Model) useBranch(b worktree.BranchCand, force bool) (tea.Model, tea.Cmd
 		RepoRoot2: m.repoPaths[m.pickedRepo2],
 	}
 	return m, tea.Quit
+}
+
+// scanMaxAge: branches whose tip is older than this are assumed handled —
+// the screen exists to resurface recent work, not to list every branch.
+const scanMaxAge = 48 * time.Hour
+
+// openScan loads candidates in a tea.Cmd, never inline: one
+// for-each-ref plus a worktree list PER REPO adds up, and the TUI must
+// keep drawing while it runs.
+func (m *Model) openScan() tea.Cmd {
+	m.mode = modeScan
+	m.scanFilter, m.scanCursor = "", 0
+	m.scanCands, m.scanning = nil, true
+	repoPaths := m.repoPaths
+	cfg := m.cfg
+	return func() tea.Msg {
+		var out []worktree.BranchCand
+		for _, dir := range worktree.AllRepoDirs(homeDir(), cfg.ScanMaxDepth, repoCachePath(), 60*time.Second) {
+			out = append(out, worktree.BranchCandidates(dir, scanMaxAge)...)
+			if repoPaths[filepath.Base(dir)] == "" {
+				repoPaths[filepath.Base(dir)] = dir
+			}
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Tip.After(out[j].Tip) })
+		return scanMsg(out)
+	}
+}
+
+func (m *Model) filteredScan() []worktree.BranchCand {
+	if m.scanFilter == "" {
+		return m.scanCands
+	}
+	labels := make([]string, len(m.scanCands))
+	for i, c := range m.scanCands {
+		labels[i] = c.Repo + "/" + c.Name
+	}
+	var out []worktree.BranchCand
+	for _, match := range fuzzy.Find(m.scanFilter, labels) {
+		out = append(out, m.scanCands[match.Index])
+	}
+	return out
+}
+
+func (m *Model) handleScanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	cands := m.filteredScan()
+	switch msg.String() {
+	case "ctrl+c", "esc":
+		m.mode = modeList
+	case "up", "ctrl+p":
+		if m.scanCursor > 0 {
+			m.scanCursor--
+		}
+	case "down", "ctrl+j":
+		if m.scanCursor < len(cands)-1 {
+			m.scanCursor++
+		}
+	case "enter":
+		if m.scanCursor < len(cands) {
+			c := cands[m.scanCursor]
+			// Scan rows span repos, so the row carries the repo — unlike the
+			// task-name screen, where it was picked beforehand.
+			m.pickedRepo, m.pickedRepo2 = c.Repo, ""
+			return m.useBranch(c, false)
+		}
+	case "backspace":
+		if len(m.scanFilter) > 0 {
+			m.scanFilter = m.scanFilter[:len(m.scanFilter)-1]
+			m.scanCursor = 0
+		}
+	default:
+		if msg.Type == tea.KeyRunes && !msg.Alt {
+			m.scanFilter += string(msg.Runes)
+			m.scanCursor = 0
+		}
+	}
+	return m, nil
 }
 
 func (m *Model) handleTaskNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
