@@ -32,6 +32,7 @@ const (
 	ActionCD
 	ActionNewTask
 	ActionOpenAll // ctrl+a: attach base session with fe/be windows ensured
+	ActionUseBranch
 )
 
 type Result struct {
@@ -45,6 +46,12 @@ type Result struct {
 	// task in, right after Repo's worktree.
 	Repo2     string
 	RepoRoot2 string
+	// Set for ActionUseBranch: the existing branch to build the worktree
+	// on. Force is the user's answer to the "already checked out
+	// elsewhere" prompt, resolved in the TUI because bubbletea exits as
+	// soon as a Result is returned.
+	Branch string
+	Force  bool
 }
 
 // Styles must bind to a stderr renderer: the ork() shell wrapper captures
