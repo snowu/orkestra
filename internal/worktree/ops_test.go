@@ -243,6 +243,8 @@ func TestAddExistingConflictIsReportedNotForced(t *testing.T) {
 	repoRoot, _ := gitRepo(t)
 	cfg, _ := addExistingCfg(t, repoRoot)
 
+	before := gitOut(repoRoot, "worktree", "list")
+
 	// "main" is held by the primary checkout
 	wt, c, err := AddExisting(cfg, repoRoot, "main", false)
 	if err != nil {
@@ -257,6 +259,9 @@ func TestAddExistingConflictIsReportedNotForced(t *testing.T) {
 	// repo untouched
 	if GitBranch(repoRoot) != "main" {
 		t.Errorf("main checkout was disturbed: on %q", GitBranch(repoRoot))
+	}
+	if after := gitOut(repoRoot, "worktree", "list"); after != before {
+		t.Errorf("worktree list changed: before=%q after=%q", before, after)
 	}
 }
 
@@ -332,7 +337,16 @@ func TestAddExistingRefusesExistingPath(t *testing.T) {
 	existing := filepath.Join(wtRoot, filepath.Base(repoRoot), "dup")
 	os.MkdirAll(existing, 0o755)
 
-	if _, _, err := AddExisting(cfg, repoRoot, "dup", false); err == nil {
+	before := gitOut(repoRoot, "worktree", "list")
+
+	_, _, err := AddExisting(cfg, repoRoot, "dup", false)
+	if err == nil {
 		t.Fatal("existing target path must error")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("err = %q, want it to contain %q", err.Error(), "already exists")
+	}
+	if after := gitOut(repoRoot, "worktree", "list"); after != before {
+		t.Errorf("worktree list changed: before=%q after=%q", before, after)
 	}
 }
