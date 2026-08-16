@@ -222,6 +222,8 @@ type Model struct {
 	branchCursor  int                // 0 = the typed-text row, 1..n = branches
 	stealConflict *worktree.Conflict // pending "checked out elsewhere" prompt
 	stealBranch   string             // branch the prompt is about
+	stealRoot     string             // repo root the prompt is about
+	stealReturn   mode               // mode to restore if the steal prompt is cancelled
 
 	// ctrl-f scan flow
 	scanCands  []worktree.BranchCand
@@ -242,7 +244,10 @@ type Model struct {
 }
 
 type rowsMsg []worktree.Row
-type scanMsg []worktree.BranchCand
+type scanMsg struct {
+	cands []worktree.BranchCand
+	paths map[string]string
+}
 type stateChangedMsg struct{}
 type tickMsg time.Time
 type spawnDoneMsg struct{ err error }
@@ -368,7 +373,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateTaskColors(m.rows)
 		return m, m.previewCmd()
 	case scanMsg:
-		m.scanCands, m.scanning = msg, false
+		if m.repoPaths == nil {
+			m.repoPaths = map[string]string{}
+		}
+		for k, v := range msg.paths {
+			if m.repoPaths[k] == "" {
+				m.repoPaths[k] = v
+			}
+		}
+		m.scanCands, m.scanning = msg.cands, false
 		return m, nil
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())

@@ -123,7 +123,8 @@ func WorktreeOrDefault(roots []string, repo, task string) string {
 
 // BranchCand is a branch that could get a worktree: it has none yet.
 type BranchCand struct {
-	Repo string
+	Repo string // basename, for display
+	Root string // absolute repo root, authoritative for resolving the repo
 	Name string
 	Tip  time.Time
 }
@@ -160,7 +161,7 @@ func BranchCandidates(repoRoot string, maxAge time.Duration) []BranchCand {
 		if checkedOut[name] {
 			continue
 		}
-		cands = append(cands, BranchCand{Repo: repo, Name: name, Tip: tip})
+		cands = append(cands, BranchCand{Repo: repo, Root: repoRoot, Name: name, Tip: tip})
 	}
 	return cands
 }

@@ -196,6 +196,7 @@ func TestTaskNameEnterOnBranchUsesIt(t *testing.T) {
 func TestStealConfirmSetsForce(t *testing.T) {
 	m := taskNameModel(t)
 	m.mode = modeConfirmSteal
+	m.stealReturn = modeTaskName
 	m.stealBranch = "feat/alpha"
 	m.stealConflict = &worktree.Conflict{Branch: "feat/alpha", Path: "/code/repoA", IsMain: true}
 	m.pickedRepo = "repoA"
@@ -219,8 +220,8 @@ func scanModel(t *testing.T) *Model {
 	m.mode = modeScan
 	m.repoPaths = map[string]string{"repoA": "/nowhere/repoA", "repoB": "/nowhere/repoB"}
 	m.scanCands = []worktree.BranchCand{
-		{Repo: "repoA", Name: "feat/one", Tip: time.Now().Add(-2 * time.Hour)},
-		{Repo: "repoB", Name: "fix-two", Tip: time.Now().Add(-30 * time.Hour)},
+		{Repo: "repoA", Root: "/nowhere/repoA", Name: "feat/one", Tip: time.Now().Add(-2 * time.Hour)},
+		{Repo: "repoB", Root: "/nowhere/repoB", Name: "fix-two", Tip: time.Now().Add(-30 * time.Hour)},
 	}
 	return m
 }
@@ -251,5 +252,60 @@ func TestScanEscReturnsToList(t *testing.T) {
 	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.mode != modeList {
 		t.Errorf("mode = %v, want modeList", m.mode)
+	}
+}
+
+// TestOpenScanFreshModelNoPanic guards bug 1: ork scan (or ctrl+f before any
+// ctrl+n) starts from a model whose repoPaths is nil. openScan's Cmd must not
+// touch m.repoPaths directly (nil-map write panics), and the returned msg
+// must leave repoPaths allocated once routed through Update.
+func TestOpenScanFreshModelNoPanic(t *testing.T) {
+	m := New(config.Config{WorktreeRoots: []string{"/nowhere"}})
+	if m.repoPaths != nil {
+		t.Fatal("test assumption broken: repoPaths already allocated")
+	}
+	cmd := m.openScan()
+	if cmd == nil {
+		t.Fatal("openScan returned nil Cmd")
+	}
+	msg := cmd() // runs the Cmd's closure, as bubbletea would in a goroutine
+	m.Update(msg)
+	if m.repoPaths == nil {
+		t.Error("repoPaths still nil after scanMsg processed")
+	}
+}
+
+// TestScanStealCancelReturnsToScan guards bug 3: cancelling a steal prompt
+// reached from the scan screen must land back on modeScan, not modeTaskName.
+func TestScanStealCancelReturnsToScan(t *testing.T) {
+	m := scanModel(t)
+	m.scanCursor = 0
+	m.stealReturn = modeScan
+	m.mode = modeConfirmSteal
+	m.stealBranch = "feat/one"
+	m.stealConflict = &worktree.Conflict{Branch: "feat/one", Path: "/code/repoA", IsMain: true}
+	m.pickedRepo = "repoA"
+
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != modeScan {
+		t.Errorf("mode = %v, want modeScan", m.mode)
+	}
+}
+
+// TestUseBranchPrefersCandidateRoot guards bug 2: a scan row must resolve to
+// its OWN repo root (BranchCand.Root), not the basename lookup in
+// m.repoPaths, which is deduped by basename and can point at a different
+// repo sharing the same base name.
+func TestUseBranchPrefersCandidateRoot(t *testing.T) {
+	m := scanModel(t)
+	// Seed repoPaths with a DIFFERENT path for the same basename as the
+	// candidate's Repo — simulates a basename collision across repos.
+	m.repoPaths["repoA"] = "/wrong/other-repoA"
+	m.pickedRepo = "repoA"
+
+	b := worktree.BranchCand{Repo: "repoA", Root: "/correct/repoA", Name: "feat/one"}
+	m.useBranch(b, true) // force: skip the conflict check
+	if m.result.RepoRoot != "/correct/repoA" {
+		t.Errorf("RepoRoot = %q, want candidate's Root /correct/repoA", m.result.RepoRoot)
 	}
 }
