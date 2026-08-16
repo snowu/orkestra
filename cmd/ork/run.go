@@ -67,6 +67,28 @@ func runTUI() {
 			}
 		}
 		attach(cfg, res.Repo, res.Task, wt)
+	case ui.ActionUseBranch:
+		wt, conflict, err := worktree.AddExisting(cfg, res.RepoRoot, res.Branch, res.Force)
+		if err != nil {
+			fatal("worktree for " + res.Branch + " failed: " + err.Error())
+		}
+		if conflict != nil {
+			// The TUI already resolved conflicts before returning; reaching
+			// here means the checkout changed in between.
+			fatal(res.Branch + " is now checked out in " + conflict.Path + " — try again")
+		}
+		// The sibling repo may not have the same branch; fall back to a new
+		// one, matching how ActionNewTask treats asymmetric pairs.
+		if res.RepoRoot2 != "" {
+			if worktree.HasBranch(res.RepoRoot2, res.Branch) {
+				if _, _, err := worktree.AddExisting(cfg, res.RepoRoot2, res.Branch, res.Force); err != nil {
+					fmt.Fprintln(os.Stderr, "ork: sibling worktree failed: "+err.Error())
+				}
+			} else if _, err := worktree.NewTask(cfg, res.RepoRoot2, res.Task); err != nil {
+				fmt.Fprintln(os.Stderr, "ork: sibling worktree failed: "+err.Error())
+			}
+		}
+		attach(cfg, res.Repo, res.Task, wt)
 	case ui.ActionOpenAll:
 		if err := worktree.EnsureFEBEWindows(cfg, res.Repo, res.Task, res.WtPath); err != nil {
 			fatal("ensure fe/be windows failed: " + err.Error())

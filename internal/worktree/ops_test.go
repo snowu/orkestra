@@ -364,6 +364,17 @@ func TestAddExistingForceDetachesLinkedWorktree(t *testing.T) {
 	}
 }
 
+func TestHasBranch(t *testing.T) {
+	repoRoot, run := gitRepo(t)
+	run("branch", "exists")
+	if !HasBranch(repoRoot, "exists") {
+		t.Error("existing branch not found")
+	}
+	if HasBranch(repoRoot, "nope") {
+		t.Error("missing branch reported as present")
+	}
+}
+
 func TestAddExistingRefusesExistingPath(t *testing.T) {
 	repoRoot, run := gitRepo(t)
 	run("branch", "dup")
