@@ -409,10 +409,14 @@ func (m *Model) filteredBranches() []worktree.BranchCand {
 // because returning a Result quits the TUI — there would be nothing left
 // to prompt with.
 func (m *Model) useBranch(b worktree.BranchCand, force bool) (tea.Model, tea.Cmd) {
-	repoRoot := m.repoPaths[m.pickedRepo]
+	repoRoot := b.Root
+	if repoRoot == "" {
+		repoRoot = m.repoPaths[m.pickedRepo]
+	}
 	if !force {
 		if c := worktree.BranchCheckout(repoRoot, b.Name); c != nil {
-			m.stealConflict, m.stealBranch = c, b.Name
+			m.stealConflict, m.stealBranch, m.stealRoot = c, b.Name, repoRoot
+			m.stealReturn = m.mode
 			m.mode = modeConfirmSteal
 			return m, nil
 		}
@@ -438,18 +442,18 @@ func (m *Model) openScan() tea.Cmd {
 	m.mode = modeScan
 	m.scanFilter, m.scanCursor = "", 0
 	m.scanCands, m.scanning = nil, true
-	repoPaths := m.repoPaths
 	cfg := m.cfg
 	return func() tea.Msg {
 		var out []worktree.BranchCand
+		paths := map[string]string{}
 		for _, dir := range worktree.AllRepoDirs(homeDir(), cfg.ScanMaxDepth, repoCachePath(), 60*time.Second) {
 			out = append(out, worktree.BranchCandidates(dir, scanMaxAge)...)
-			if repoPaths[filepath.Base(dir)] == "" {
-				repoPaths[filepath.Base(dir)] = dir
+			if paths[filepath.Base(dir)] == "" {
+				paths[filepath.Base(dir)] = dir
 			}
 		}
 		sort.SliceStable(out, func(i, j int) bool { return out[i].Tip.After(out[j].Tip) })
-		return scanMsg(out)
+		return scanMsg{cands: out, paths: paths}
 	}
 }
 
@@ -548,12 +552,12 @@ func (m *Model) handleTaskNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) handleConfirmStealKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter", "y":
-		b := worktree.BranchCand{Repo: m.pickedRepo, Name: m.stealBranch}
+		b := worktree.BranchCand{Repo: m.pickedRepo, Root: m.stealRoot, Name: m.stealBranch}
 		m.stealConflict = nil
 		return m.useBranch(b, true)
 	default: // esc, ctrl+c, n, anything else — cancel is the safe default
 		m.stealConflict = nil
-		m.mode = modeTaskName
+		m.mode = m.stealReturn
 	}
 	return m, nil
 }
