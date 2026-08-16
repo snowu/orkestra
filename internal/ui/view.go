@@ -356,7 +356,7 @@ func (m *Model) viewTaskName() string {
 		if i >= max(3, m.height-8) {
 			break
 		}
-		b.WriteString(styleDim.Render("  "+br) + "\n")
+		b.WriteString(styleDim.Render("  "+br.Name) + "\n")
 	}
 	return b.String()
 }

@@ -372,7 +372,8 @@ func (m *Model) pickRepoEntry(name string) {
 func (m *Model) startTaskName(repo, repo2 string) {
 	m.pickedRepo, m.pickedRepo2 = repo, repo2
 	m.taskInput = ""
-	m.branches = existingBranches(m.repoPaths[repo])
+	m.branches = worktree.BranchCandidates(m.repoPaths[repo], 0)
+	m.branchCursor = 0
 	m.mode = modeTaskName
 }
 

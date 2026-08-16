@@ -183,6 +183,8 @@ const (
 	modeConfirmKill
 	modePickRepo
 	modeTaskName
+	modeConfirmSteal
+	modeScan
 )
 
 type previewKind int
@@ -216,7 +218,10 @@ type Model struct {
 	pickedRepo  string
 	pickedRepo2 string // sibling repo when a pair entry was picked
 	taskInput   string
-	branches    []string
+	branches      []worktree.BranchCand
+	branchCursor  int                 // 0 = the typed-text row, 1..n = branches
+	stealConflict *worktree.Conflict  // pending "checked out elsewhere" prompt
+	stealBranch   string              // branch the prompt is about
 
 	width, height int
 	result        Result
