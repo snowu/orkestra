@@ -34,6 +34,8 @@ func main() {
 			task = args[1]
 		}
 		runEndTask(task)
+	case "scan":
+		runScan()
 	case "login-proxy":
 		runLoginProxy(parseListenArg(args))
 	case "_end-task":
@@ -45,7 +47,7 @@ func main() {
 		}
 		runEndTaskDirect(args[1], args[2])
 	default:
-		fatal("usage: ork [new-task <name> | end-task [name] | login-proxy [port] | --version]")
+		fatal("usage: ork [new-task <name> | end-task [name] | scan | login-proxy [port] | --version]")
 	}
 }
 

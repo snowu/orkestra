@@ -229,6 +229,8 @@ type Model struct {
 	scanCursor int
 	scanning   bool // candidates still loading
 
+	startInScan bool
+
 	width, height int
 	result        Result
 	reloadCh      <-chan struct{}
@@ -266,8 +268,16 @@ func New(cfg config.Config) *Model {
 }
 
 // Run blocks until the user picks something; returns what main should do.
-func Run(cfg config.Config) (Result, error) {
+// startInScan opens straight on the scan screen (`ork scan`), reusing the
+// whole model so conflict prompting is identical from both entry points.
+func Run(cfg config.Config) (Result, error) { return run(cfg, false) }
+
+// RunScan is Run, opened on the scan screen.
+func RunScan(cfg config.Config) (Result, error) { return run(cfg, true) }
+
+func run(cfg config.Config, startInScan bool) (Result, error) {
 	m := New(cfg)
+	m.startInScan = startInScan
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if ch, err := agentstate.Watch(ctx, agentstate.Dir()); err == nil {
@@ -288,7 +298,11 @@ func Run(cfg config.Config) (Result, error) {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.reloadCmd(), m.watchCmd(), tick())
+	cmds := []tea.Cmd{m.reloadCmd(), m.watchCmd(), tick()}
+	if m.startInScan {
+		cmds = append(cmds, m.openScan())
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) reloadCmd() tea.Cmd {

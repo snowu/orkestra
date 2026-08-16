@@ -56,6 +56,8 @@ func (m *Model) View() string {
 		return m.viewTaskName()
 	case modeConfirmSteal:
 		return m.viewConfirmSteal()
+	case modeScan:
+		return m.viewScan()
 	}
 
 	var b strings.Builder
@@ -400,6 +402,32 @@ func (m *Model) viewConfirmSteal() string {
 	b.WriteString(fmt.Sprintf("move it to a new worktree for %s?\n\n", worktree.TaskNameFor(c.Branch)))
 	b.WriteString("  " + fix + "   [enter]\n")
 	b.WriteString("  " + styleDim.Render("cancel                          [esc]") + "\n")
+	return b.String()
+}
+
+func (m *Model) viewScan() string {
+	var b strings.Builder
+	b.WriteString(styleBold.Render("branches from the last 48h without a worktree (esc = back)") + "\n")
+	b.WriteString(fmt.Sprintf("filter> %s█\n\n", m.scanFilter))
+	if m.scanning {
+		b.WriteString(styleDim.Render("  scanning repos…") + "\n")
+		return b.String()
+	}
+	cands := m.filteredScan()
+	if len(cands) == 0 {
+		b.WriteString(styleDim.Render("  (nothing recent without a worktree)") + "\n")
+		return b.String()
+	}
+	for i, c := range cands {
+		if i >= max(3, m.height-8) {
+			break
+		}
+		row := fmt.Sprintf("  %-20s %-40s %s", c.Repo, c.Name, humanAge(c.Tip))
+		if i == m.scanCursor {
+			row = styleSel.Render(row)
+		}
+		b.WriteString(row + "\n")
+	}
 	return b.String()
 }
 
