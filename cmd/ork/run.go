@@ -44,7 +44,23 @@ func runTUI() {
 	if err != nil {
 		fatal(err.Error())
 	}
+	dispatch(cfg, res)
+}
 
+// runScan: `ork scan` — the TUI opened straight on the scan screen. The
+// result is dispatched through the same switch as the TUI's own, so a
+// branch picked here behaves exactly as one picked with ctrl+f.
+func runScan() {
+	cfg := loadConfig()
+	requireTools(cfg)
+	res, err := ui.RunScan(cfg)
+	if err != nil {
+		fatal(err.Error())
+	}
+	dispatch(cfg, res)
+}
+
+func dispatch(cfg config.Config, res ui.Result) {
 	switch res.Action {
 	case ui.ActionQuit:
 		return
