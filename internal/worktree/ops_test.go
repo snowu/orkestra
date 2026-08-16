@@ -123,3 +123,17 @@ func TestNewTaskRealGit(t *testing.T) {
 		t.Errorf("branch still exists: %s", out)
 	}
 }
+
+func TestTaskNameFor(t *testing.T) {
+	cases := map[string]string{
+		"feat/x":         "feat-x",
+		"plain":          "plain",
+		"a/b/c":          "a-b-c",
+		"UND-329-rating": "UND-329-rating",
+	}
+	for in, want := range cases {
+		if got := TaskNameFor(in); got != want {
+			t.Errorf("TaskNameFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
