@@ -297,13 +297,13 @@ func NewTask(cfg config.Config, repoRoot, task string) (string, error) {
 func AddExisting(cfg config.Config, repoRoot, branch string, force bool) (string, *Conflict, error) {
 	repo := filepath.Base(repoRoot)
 	task := TaskNameFor(branch)
-	git(repoRoot, "worktree", "prune")
 
 	wt := filepath.Join(cfg.WorktreeRoots[0], repo, task)
 	if _, err := os.Stat(wt); err == nil {
 		return "", nil, fmt.Errorf("%s already exists", wt)
 	}
 
+	var resolved string // describes a force-resolved conflict, for error context below
 	if c := BranchCheckout(repoRoot, branch); c != nil {
 		if !force {
 			return "", c, nil
@@ -321,15 +321,26 @@ func AddExisting(cfg config.Config, repoRoot, branch string, force bool) (string
 			if err := git(c.Path, "checkout", base); err != nil {
 				return "", nil, fmt.Errorf("couldn't switch %s to %s: %w", c.Path, base, err)
 			}
+			resolved = fmt.Sprintf("%s was already switched to %s", c.Path, base)
 		} else if err := git(c.Path, "checkout", "--detach"); err != nil {
 			return "", nil, fmt.Errorf("couldn't detach %s: %w", c.Path, err)
+		} else {
+			resolved = fmt.Sprintf("%s was already detached", c.Path)
 		}
 	}
+
+	// Every mutating path from here on reaches this prune; no early return
+	// does, so the non-forced path never mutates anything (git self-heals
+	// worktree list for missing paths, so nothing depends on an early prune).
+	git(repoRoot, "worktree", "prune")
 
 	if err := os.MkdirAll(filepath.Dir(wt), 0o755); err != nil {
 		return "", nil, err
 	}
 	if err := git(repoRoot, "worktree", "add", wt, branch); err != nil {
+		if resolved != "" {
+			return "", nil, fmt.Errorf("couldn't create %s: %w; note: %s", wt, err, resolved)
+		}
 		return "", nil, fmt.Errorf("git worktree add failed for %s: %w", wt, err)
 	}
 	finishWorktree(cfg, repoRoot, repo, task, wt)
