@@ -72,6 +72,50 @@ func TestAllRepoDirsUsesCache(t *testing.T) {
 	}
 }
 
+func TestBranchCandidates(t *testing.T) {
+	repoRoot, run := gitRepo(t) // helper from ops_test.go, same package
+
+	run("branch", "recent-one")
+	run("branch", "recent-two")
+	linked := filepath.Join(t.TempDir(), "linked")
+	run("worktree", "add", linked, "-b", "has-worktree")
+
+	got := BranchCandidates(repoRoot, 0)
+	names := map[string]BranchCand{}
+	for _, c := range got {
+		names[c.Name] = c
+	}
+	if _, ok := names["recent-one"]; !ok {
+		t.Error("free branch missing from candidates")
+	}
+	if _, ok := names["has-worktree"]; ok {
+		t.Error("branch with a worktree must be excluded")
+	}
+	if _, ok := names["main"]; ok {
+		t.Error("branch held by the primary checkout must be excluded")
+	}
+	if c := names["recent-one"]; c.Repo != filepath.Base(repoRoot) {
+		t.Errorf("Repo = %q, want %q", c.Repo, filepath.Base(repoRoot))
+	}
+	if c := names["recent-one"]; c.Tip.IsZero() {
+		t.Error("Tip time not populated")
+	}
+
+	// newest first
+	if len(got) >= 2 && got[0].Tip.Before(got[1].Tip) {
+		t.Error("candidates must be sorted newest tip first")
+	}
+
+	// an age filter that excludes everything (all commits are "now")
+	if c := BranchCandidates(repoRoot, -time.Hour); len(c) != 0 {
+		t.Errorf("negative maxAge should exclude everything, got %d", len(c))
+	}
+	// a generous filter keeps them
+	if c := BranchCandidates(repoRoot, 48*time.Hour); len(c) == 0 {
+		t.Error("48h filter should keep just-created branches")
+	}
+}
+
 func TestFindRepoRootAndWorktree(t *testing.T) {
 	if FindRepoRoot([]string{"/a/foo", "/b/bar"}, "bar") != "/b/bar" {
 		t.Error("FindRepoRoot by basename failed")
