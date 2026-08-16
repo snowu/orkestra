@@ -43,6 +43,44 @@ func gitOut(dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// Conflict describes a branch that is already checked out somewhere.
+// Resolving it is destructive, so it is reported to the caller rather
+// than silently forced.
+type Conflict struct {
+	Branch string
+	Path   string // the checkout currently holding the branch
+	IsMain bool   // Path is the primary checkout, not a linked worktree
+}
+
+// BranchCheckout reports where branch is checked out, or nil if it is
+// free. Read-only — the caller decides whether to disturb anything.
+//
+// `git worktree list --porcelain` emits records separated by blank lines,
+// each starting with a "worktree <path>" line; the FIRST record is always
+// the primary checkout, which is how IsMain is determined without a
+// separate rev-parse.
+func BranchCheckout(repoRoot, branch string) *Conflict {
+	out := gitOut(repoRoot, "worktree", "list", "--porcelain")
+	if out == "" {
+		return nil
+	}
+	want := "branch refs/heads/" + branch
+	path, first := "", true
+	isMain := false
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			path = strings.TrimPrefix(line, "worktree ")
+			isMain = first
+			first = false
+		case line == want:
+			return &Conflict{Branch: branch, Path: path, IsMain: isMain}
+		}
+	}
+	return nil
+}
+
 // BaseBranch: origin/HEAD's symbolic ref is git's own record of the
 // remote's default branch (a hardcoded "master" broke on main-default
 // repos); falls back to the currently checked-out branch for local-only
