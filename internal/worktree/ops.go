@@ -43,6 +43,11 @@ func gitOut(dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// HasBranch reports whether repoRoot has a local branch by that name.
+func HasBranch(repoRoot, branch string) bool {
+	return git(repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch) == nil
+}
+
 // Conflict describes a branch that is already checked out somewhere.
 // Resolving it is destructive, so it is reported to the caller rather
 // than silently forced.
