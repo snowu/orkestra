@@ -203,6 +203,29 @@ func TestBranchCheckout(t *testing.T) {
 	}
 }
 
+func TestCheckedOutBranches(t *testing.T) {
+	repoRoot, run := gitRepo(t)
+
+	other := filepath.Join(t.TempDir(), "linked")
+	run("worktree", "add", other, "-b", "held")
+
+	// a detached-HEAD worktree has no "branch" line and must contribute
+	// nothing to the set
+	detached := filepath.Join(t.TempDir(), "detached")
+	run("worktree", "add", "--detach", detached)
+
+	set := checkedOutBranches(repoRoot)
+	if !set["main"] {
+		t.Error("primary checkout branch missing from set")
+	}
+	if !set["held"] {
+		t.Error("linked worktree branch missing from set")
+	}
+	if len(set) != 2 {
+		t.Errorf("set = %v, want exactly {main, held}", set)
+	}
+}
+
 func addExistingCfg(t *testing.T, repoRoot string) (config.Config, string) {
 	t.Helper()
 	wtRoot := t.TempDir()
