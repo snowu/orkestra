@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"syscall"
 	"time"
 
 	"orkestra/internal/config"
@@ -120,39 +122,37 @@ func dispatch(cfg config.Config, res ui.Result) {
 	}
 }
 
-// ensureLoginProxy keeps `ork login-proxy` alive in a detached tmux
-// session whenever fe/be pairs are configured — so the auth flow works out
-// of the box, no manual step. Skipped when port 3000 is already taken
-// (someone running a real dev server there deliberately) or the session
-// already exists. Best-effort by design: the TUI must come up regardless.
+// ensureLoginProxy keeps `ork login-proxy` alive as a detached child
+// process whenever fe/be pairs are configured — so the auth flow works out
+// of the box, no manual step. The proxy is a plain http.ListenAndServe: it
+// needs no terminal and no multiplexer session, so it runs as a setsid'd
+// child rather than cluttering the user's tmux/herdr session list. Skipped
+// when port 3000 is already taken (someone running a real dev server there
+// deliberately, or our own proxy already up). Best-effort by design: the
+// TUI must come up regardless.
 func ensureLoginProxy(cfg config.Config) {
 	if len(cfg.Pairs) == 0 {
 		return
 	}
-	if portListening("127.0.0.1:3000") {
-		return // something (our proxy, presumably) already answers — leave it
-	}
-	// Port's dead. If a stale ork-login-proxy tmux session is still around
-	// (the process inside exited or was killed but the window/shell lingers,
-	// e.g. after a crash or manual ctrl-c), HasSession alone would wrongly
-	// treat that as "already running" and never respawn — this is the case
-	// that left the proxy silently down indefinitely. Clear it so the fresh
-	// session below can bind the port.
+	// One-time migration: a user upgrading from a version that babysat the
+	// proxy in a detached mux session still has "ork-login-proxy" running.
+	// That old session holds port 3000 forever, so the new child could never
+	// bind — kill it once so the child below gets the port.
 	if mux.HasSession("ork-login-proxy") {
 		mux.KillSession("ork-login-proxy")
 	}
-	// A failed spawn will never bind the port, so waiting on it is pure
-	// startup latency — the full 3s below on every single launch (the
-	// multiplexer server being down hits this every time).
-	if err := mux.NewDetached("ork-login-proxy", "exec ork login-proxy"); err != nil {
+	if portListening("127.0.0.1:3000") {
+		return // something (our proxy, presumably) already answers — leave it
+	}
+	if err := spawnLoginProxy(); err != nil {
 		fmt.Fprintln(os.Stderr, "ork: login proxy not started: "+err.Error())
 		return
 	}
 
-	// Session creation -> process exec -> http.ListenAndServe takes real
-	// wall-clock time. Block until it's actually accepting connections (or
-	// give up after a bounded wait; best-effort by design still holds) so a
-	// login attempted right after launch doesn't hit a not-yet-bound :3000.
+	// Process spawn -> http.ListenAndServe takes real wall-clock time. Block
+	// until it's actually accepting connections (or give up after a bounded
+	// wait; best-effort by design still holds) so a login attempted right
+	// after launch doesn't hit a not-yet-bound :3000.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if portListening("127.0.0.1:3000") {
@@ -160,6 +160,45 @@ func ensureLoginProxy(cfg config.Config) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// spawnLoginProxy launches `ork login-proxy` as a detached child: setsid so
+// it survives ork exiting and has no controlling terminal, output redirected
+// to a log file (never to ork's own stdout — the ONLY stdout write in the
+// whole program is the cd target for the ork.sh wrapper, and a child writing
+// there would corrupt it). Left running after ork exits — start on demand,
+// no refcounting, no kill on exit.
+func spawnLoginProxy() error {
+	bin, err := os.Executable()
+	if err != nil {
+		bin, err = exec.LookPath("ork")
+		if err != nil {
+			return err
+		}
+	}
+	cacheDir := filepath.Join(homeDirMust(), ".cache", "ork")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(filepath.Join(cacheDir, "login-proxy.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+
+	c := exec.Command(bin, "login-proxy")
+	c.Stdin = nil
+	c.Stdout = logFile
+	c.Stderr = logFile
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := c.Start(); err != nil {
+		return err
+	}
+	go c.Wait() // reap; the process is expected to outlive us
+
+	pidFile := filepath.Join(cacheDir, "login-proxy.pid")
+	_ = os.WriteFile(pidFile, []byte(strconv.Itoa(c.Process.Pid)), 0o644)
+	return nil
 }
 
 func portListening(addr string) bool {

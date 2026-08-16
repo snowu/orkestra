@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"orkestra/internal/config"
 	"orkestra/internal/worktree"
@@ -20,6 +21,55 @@ func testModel() *Model {
 	}
 	m.applyFilter()
 	return m
+}
+
+func testModelWithPairs() *Model {
+	m := New(config.Config{WorktreeRoots: []string{"/nowhere"}, Pairs: []config.Pair{{FERepo: "fe", BERepo: "be"}}})
+	m.width, m.height = 120, 40
+	m.rows = []worktree.Row{
+		{Repo: "repoA", Task: "task-one", Branch: "task-one", Path: "/w/repoA/task-one"},
+	}
+	m.applyFilter()
+	return m
+}
+
+func TestProxyIndicatorShownOnlyWithPairs(t *testing.T) {
+	v := testModel().View()
+	if strings.Contains(v, "proxy :3000") {
+		t.Error("proxy indicator shown with no configured pairs")
+	}
+
+	mp := testModelWithPairs()
+	v = mp.View()
+	if !strings.Contains(v, "proxy :3000") {
+		t.Error("proxy indicator missing with pairs configured")
+	}
+}
+
+func TestProxyIndicatorReflectsUpDown(t *testing.T) {
+	m := testModelWithPairs()
+	m.proxyUp = false
+	if !strings.Contains(m.View(), "proxy :3000 down") {
+		t.Error("expected 'down' status when proxyUp is false")
+	}
+
+	m.proxyUp = true
+	if !strings.Contains(m.View(), "proxy :3000 up") {
+		t.Error("expected 'up' status when proxyUp is true")
+	}
+}
+
+func TestProxyStatusMsgUpdatesModel(t *testing.T) {
+	m := testModelWithPairs()
+	m.proxyUp = false
+	updated, _ := m.Update(proxyStatusMsg(true))
+	if !updated.(*Model).proxyUp {
+		t.Error("proxyStatusMsg(true) did not set proxyUp")
+	}
+	updated, _ = updated.(*Model).Update(proxyStatusMsg(false))
+	if updated.(*Model).proxyUp {
+		t.Error("proxyStatusMsg(false) did not clear proxyUp")
+	}
 }
 
 func TestViewRendersRows(t *testing.T) {
@@ -307,6 +357,88 @@ func TestScanStealCancelReturnsToScan(t *testing.T) {
 // its OWN repo root (BranchCand.Root), not the basename lookup in
 // m.repoPaths, which is deduped by basename and can point at a different
 // repo sharing the same base name.
+func TestQuestionMarkOpensHelp(t *testing.T) {
+	m := testModel()
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	if m.mode != modeHelp {
+		t.Fatalf("mode = %v, want modeHelp", m.mode)
+	}
+}
+
+func TestHelpKeysReturnToList(t *testing.T) {
+	m := testModel()
+	m.mode = modeHelp
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != modeList {
+		t.Errorf("esc from help: mode = %v, want modeList", m.mode)
+	}
+	m.mode = modeHelp
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if m.mode != modeList {
+		t.Errorf("q from help: mode = %v, want modeList", m.mode)
+	}
+}
+
+func TestHelpViewShowsBindings(t *testing.T) {
+	m := testModel()
+	m.preview = previewOff
+	m.mode = modeHelp
+	v := m.View()
+	for _, want := range []string{"ctrl-f", "ctrl-n"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("help view missing %q", want)
+		}
+	}
+}
+
+// TestHelpOverlayShowsBackgroundAndHelp proves the help screen is a true
+// overlay: the worktree rows from testModel() must still be present in the
+// rendered output, alongside the help content, in modeHelp.
+func TestHelpOverlayShowsBackgroundAndHelp(t *testing.T) {
+	m := testModel()
+	m.mode = modeHelp
+	v := m.View()
+	for _, want := range []string{"repoA", "task-one", "ork help", "ctrl-n"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("help overlay missing %q", want)
+		}
+	}
+}
+
+// TestHelpOverlayNoLineExceedsWidth guards against the shearing bug: ANSI
+// escapes in the background frame must never be sliced naively, or spliced
+// lines can end up visually wider than m.width.
+func TestHelpOverlayNoLineExceedsWidth(t *testing.T) {
+	m := testModel()
+	m.mode = modeHelp
+	v := m.View()
+	for i, line := range strings.Split(v, "\n") {
+		if w := ansi.StringWidth(line); w > m.width {
+			t.Errorf("line %d width = %d, want <= %d: %q", i, w, m.width, line)
+		}
+	}
+}
+
+func TestHelpLineKeys(t *testing.T) {
+	if !strings.Contains(helpLine, "ctrl-g") {
+		t.Error("helpLine missing ctrl-g")
+	}
+	if !strings.Contains(helpLine, "ctrl-k") {
+		t.Error("helpLine missing ctrl-k")
+	}
+	if strings.Contains(helpLine, "ctrl-f") {
+		t.Error("helpLine should not contain ctrl-f")
+	}
+}
+
+func TestQuestionMarkDoesNotFilter(t *testing.T) {
+	m := testModel()
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	if m.filter != "" {
+		t.Errorf("filter = %q, want empty — ? must not fall through to the rune-filter branch", m.filter)
+	}
+}
+
 func TestUseBranchPrefersCandidateRoot(t *testing.T) {
 	m := scanModel(t)
 	// Seed repoPaths with a DIFFERENT path for the same basename as the
