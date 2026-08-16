@@ -257,21 +257,32 @@ func TestScanEscReturnsToList(t *testing.T) {
 
 // TestOpenScanFreshModelNoPanic guards bug 1: ork scan (or ctrl+f before any
 // ctrl+n) starts from a model whose repoPaths is nil. openScan's Cmd must not
-// touch m.repoPaths directly (nil-map write panics), and the returned msg
-// must leave repoPaths allocated once routed through Update.
+// touch m.repoPaths directly (nil-map write panics), and Update's scanMsg
+// case must allocate repoPaths before merging into it.
+//
+// This feeds a scanMsg with a NON-EMPTY paths map directly into Update — the
+// merge loop's map write is exactly the crash site (`m.repoPaths[k] = v`
+// against a nil map). Deliberately not routed through openScan()'s real Cmd:
+// that Cmd calls worktree.AllRepoDirs against the real filesystem, which in
+// a sandboxed/CI environment may legitimately discover zero repos, making
+// msg.paths empty and the merge loop never execute — a false pass that
+// exercises nothing. Constructing the message directly makes the crash site
+// deterministic regardless of environment.
 func TestOpenScanFreshModelNoPanic(t *testing.T) {
 	m := New(config.Config{WorktreeRoots: []string{"/nowhere"}})
 	if m.repoPaths != nil {
 		t.Fatal("test assumption broken: repoPaths already allocated")
 	}
-	cmd := m.openScan()
-	if cmd == nil {
-		t.Fatal("openScan returned nil Cmd")
+	msg := scanMsg{
+		cands: []worktree.BranchCand{{Repo: "repoA", Root: "/nowhere/repoA", Name: "feat/x"}},
+		paths: map[string]string{"repoA": "/nowhere/repoA"},
 	}
-	msg := cmd() // runs the Cmd's closure, as bubbletea would in a goroutine
-	m.Update(msg)
+	m.Update(msg) // must not panic: assignment to entry in nil map
 	if m.repoPaths == nil {
-		t.Error("repoPaths still nil after scanMsg processed")
+		t.Fatal("repoPaths still nil after scanMsg processed")
+	}
+	if m.repoPaths["repoA"] != "/nowhere/repoA" {
+		t.Errorf("repoPaths[repoA] = %q, want /nowhere/repoA", m.repoPaths["repoA"])
 	}
 }
 
