@@ -18,6 +18,56 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DEST="$HOME/.local/bin"
 SCRIPTS_DEST="$HOME/scripts"
 
+# Resolves a python that actually RUNS, not merely one that's named on $PATH.
+# `command -v python3` is not enough: version managers (asdf, pyenv, mise)
+# install shims that exist unconditionally and fail at exec time when no
+# version is pinned ("No version is set for command python3"). Such a shim
+# passes a name check and then aborts the install under `set -e`. Trying
+# each candidate settles it on any machine, with or without a version
+# manager. PY is empty when nothing works; callers must handle that.
+PY=""
+for _py in python3 python; do
+  if command -v "$_py" >/dev/null 2>&1 && "$_py" -c '' >/dev/null 2>&1; then
+    PY="$_py"
+    break
+  fi
+done
+
+# Sets KEY=value in a conf file: replaces the existing line if the key is
+# present, appends it otherwise. Used for both ORK_WORKTREES_ROOTS and
+# ORK_MULTIPLEXER. Falls back to grep/sed when no python is available so
+# config still gets written on a machine without one — these edits are
+# plain key=value lines, unlike the JSON hook wiring, which genuinely
+# needs a parser.
+# Usage: set_conf_key <conf_path> <key> <full_line>
+set_conf_key() {
+  local conf_path="$1" key="$2" line="$3"
+  if [[ -n "$PY" ]]; then
+    "$PY" - "$conf_path" "$key" "$line" <<'PYEOF'
+import re, sys
+conf_path, key, line = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(conf_path).read()
+pattern = r'^' + re.escape(key) + r'=.*$'
+if re.search(pattern, text, flags=re.M):
+    # Escapes backslashes so a value containing them survives re.sub's
+    # handling of the replacement string.
+    text = re.sub(pattern, line.replace('\\', '\\\\'), text, count=1, flags=re.M)
+else:
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += line + "\n"
+open(conf_path, "w").write(text)
+PYEOF
+  elif grep -q "^$key=" "$conf_path" 2>/dev/null; then
+    # Uses a control char as the sed delimiter: the value holds paths with
+    # slashes, and can hold the usual punctuation alternatives too.
+    sed -i "s"$'\001'"^$key=.*"$'\001'"$line"$'\001' "$conf_path"
+  else
+    [[ -s "$conf_path" && -n "$(tail -c1 "$conf_path")" ]] && echo "" >> "$conf_path"
+    echo "$line" >> "$conf_path"
+  fi
+}
+
 # Same palette as ork-helper.sh, so the install experience matches the
 # picker's own look. Disabled automatically when stdout isn't a terminal
 # (piped install, CI) so logs don't fill up with escape codes.
@@ -76,9 +126,11 @@ fi
 (cd "$DIR" && go build -o bin/ork ./cmd/ork)
 
 mkdir -p "$BIN_DEST" "$SCRIPTS_DEST"
-cp "$DIR/bin/ork" "$BIN_DEST/ork"
+# `install` (not plain cp): cp writes into the existing inode and fails with
+# "Text file busy" while an ork instance is running; install unlinks the
+# target first, which works even mid-run.
+install -m755 "$DIR/bin/ork" "$BIN_DEST/ork"
 cp "$DIR/orc.cow" "$BIN_DEST/orc.cow"
-chmod +x "$BIN_DEST/ork"
 # Stale from bash-era installs — the Go binary has no helper script.
 rm -f "$BIN_DEST/ork-helper.sh"
 
@@ -131,9 +183,9 @@ if command -v claude >/dev/null 2>&1 || [[ -d "$HOME/.claude" ]]; then
     rm -f "$CLAUDE_HOOKS_DIR/orch-agent-state.sh" && \
     note "Removed stale $CLAUDE_HOOKS_DIR/orch-agent-state.sh from a pre-rename install."
 
-  if command -v python3 >/dev/null 2>&1; then
+  if [[ -n "$PY" ]]; then
     [[ -f "$CLAUDE_SETTINGS" ]] || echo '{}' > "$CLAUDE_SETTINGS"
-    python3 - "$CLAUDE_SETTINGS" "$CLAUDE_HOOKS_DIR/ork-agent-state.sh" <<'PYEOF'
+    "$PY" - "$CLAUDE_SETTINGS" "$CLAUDE_HOOKS_DIR/ork-agent-state.sh" <<'PYEOF'
 import json, sys
 
 settings_path, hook_path = sys.argv[1], sys.argv[2]
@@ -179,7 +231,7 @@ with open(settings_path, "w") as f:
 PYEOF
     ok "Wired hook into $CLAUDE_SETTINGS (UserPromptSubmit/PreToolUse/PostToolUse->running, Stop->waiting, Notification/PermissionRequest->input)"
   else
-    note "python3 not found — couldn't wire $CLAUDE_SETTINGS automatically."
+    note "No working python3 found — couldn't wire $CLAUDE_SETTINGS automatically."
     note "Add these hook entries yourself (see README): UserPromptSubmit/PreToolUse/PostToolUse -> \"$CLAUDE_HOOKS_DIR/ork-agent-state.sh running\", Stop -> \"...waiting\", Notification/PermissionRequest -> \"...input\"."
   fi
 else
@@ -332,19 +384,7 @@ if [[ "$reconfigure_roots" -eq 1 && -t 0 ]]; then
   # has the key, e.g. from a previous run of this same prompt); otherwise
   # appends it — covers a pre-existing ~/.ork.conf from before this
   # feature existed, which has neither key yet.
-  python3 - "$CONF" "$wt_line" <<'PYEOF'
-import re, sys
-conf_path, wt_line = sys.argv[1], sys.argv[2]
-text = open(conf_path).read()
-pattern = r'^ORK_WORKTREES_ROOTS=.*$'
-if re.search(pattern, text, flags=re.M):
-    text = re.sub(pattern, wt_line, text, count=1, flags=re.M)
-else:
-    if not text.endswith("\n"):
-        text += "\n"
-    text += wt_line + "\n"
-open(conf_path, "w").write(text)
-PYEOF
+  set_conf_key "$CONF" ORK_WORKTREES_ROOTS "$wt_line"
 
   mkdir -p "${wt_roots[@]}" 2>/dev/null || true
 
@@ -399,19 +439,7 @@ if { [[ "$ORK_MUX" == tmux && "$HAVE_TMUX" -eq 0 ]]; } || { [[ "$ORK_MUX" == her
 fi
 
 # Same substitute-or-append mechanism as ORK_WORKTREES_ROOTS above.
-python3 - "$CONF" "ORK_MULTIPLEXER=$ORK_MUX" <<'PYEOF'
-import re, sys
-conf_path, line = sys.argv[1], sys.argv[2]
-text = open(conf_path).read()
-pattern = r'^ORK_MULTIPLEXER=.*$'
-if re.search(pattern, text, flags=re.M):
-    text = re.sub(pattern, line, text, count=1, flags=re.M)
-else:
-    if not text.endswith("\n"):
-        text += "\n"
-    text += line + "\n"
-open(conf_path, "w").write(text)
-PYEOF
+set_conf_key "$CONF" ORK_MULTIPLEXER "ORK_MULTIPLEXER=$ORK_MUX"
 ok "Wrote to $CONF: ORK_MULTIPLEXER=$ORK_MUX"
 
 # ── 4. Keybinds ─────────────────────────────────────────────────────────
