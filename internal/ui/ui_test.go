@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -23,8 +24,10 @@ func testModel() *Model {
 	return m
 }
 
-func testModelWithPairs() *Model {
-	m := New(config.Config{WorktreeRoots: []string{"/nowhere"}, Pairs: []config.Pair{{FERepo: "fe", BERepo: "be"}}})
+func testModelWithGroups() *Model {
+	m := New(config.Config{WorktreeRoots: []string{"/nowhere"}, Groups: []config.Group{
+		{Name: "g", Processes: []config.Process{{Label: "fe", Repo: "fe"}, {Label: "be", Repo: "be"}}},
+	}})
 	m.width, m.height = 120, 40
 	m.rows = []worktree.Row{
 		{Repo: "repoA", Task: "task-one", Branch: "task-one", Path: "/w/repoA/task-one"},
@@ -33,21 +36,21 @@ func testModelWithPairs() *Model {
 	return m
 }
 
-func TestProxyIndicatorShownOnlyWithPairs(t *testing.T) {
+func TestProxyIndicatorShownOnlyWithGroups(t *testing.T) {
 	v := testModel().View()
 	if strings.Contains(v, "proxy :3000") {
-		t.Error("proxy indicator shown with no configured pairs")
+		t.Error("proxy indicator shown with no configured groups")
 	}
 
-	mp := testModelWithPairs()
+	mp := testModelWithGroups()
 	v = mp.View()
 	if !strings.Contains(v, "proxy :3000") {
-		t.Error("proxy indicator missing with pairs configured")
+		t.Error("proxy indicator missing with groups configured")
 	}
 }
 
 func TestProxyIndicatorReflectsUpDown(t *testing.T) {
-	m := testModelWithPairs()
+	m := testModelWithGroups()
 	m.proxyUp = false
 	if !strings.Contains(m.View(), "proxy :3000 down") {
 		t.Error("expected 'down' status when proxyUp is false")
@@ -60,7 +63,7 @@ func TestProxyIndicatorReflectsUpDown(t *testing.T) {
 }
 
 func TestProxyStatusMsgUpdatesModel(t *testing.T) {
-	m := testModelWithPairs()
+	m := testModelWithGroups()
 	m.proxyUp = false
 	updated, _ := m.Update(proxyStatusMsg(true))
 	if !updated.(*Model).proxyUp {
@@ -82,6 +85,20 @@ func TestViewRendersRows(t *testing.T) {
 	// branch == task renders as "="
 	if !strings.Contains(v, "=") {
 		t.Error("branch shorthand '=' missing")
+	}
+}
+
+func TestGroupCountColumn(t *testing.T) {
+	m := New(config.Config{WorktreeRoots: []string{"/nowhere"}})
+	m.width, m.height = 120, 40
+	m.rows = []worktree.Row{
+		{Repo: "shell-repo", Task: "task-one", Branch: "task-one", Path: "/w/shell-repo/task-one", GroupLive: 2, GroupSize: 3},
+		{Repo: "repoB", Task: "other", Branch: "fix", Path: "/w/repoB/other"},
+	}
+	m.applyFilter()
+	v := m.View()
+	if !strings.Contains(v, "2/3") {
+		t.Error("expected group live count '2/3' in view")
 	}
 }
 
@@ -118,25 +135,6 @@ func TestConfirmDefaultsToNo(t *testing.T) {
 	}
 }
 
-func TestPickRepoEntryPair(t *testing.T) {
-	m := &Model{
-		repoPaths: map[string]string{
-			"cr-frontend": "/x/cr-frontend", "cr-managament": "/x/cr-managament",
-		},
-		pairEntries: map[string][2]string{
-			"cr-frontend + cr-managament": {"cr-frontend", "cr-managament"},
-		},
-	}
-	m.pickRepoEntry("cr-frontend + cr-managament")
-	if m.pickedRepo != "cr-frontend" || m.pickedRepo2 != "cr-managament" || m.mode != modeTaskName {
-		t.Fatalf("pair pick: repo=%q repo2=%q mode=%v", m.pickedRepo, m.pickedRepo2, m.mode)
-	}
-	m.pickRepoEntry("cr-frontend")
-	if m.pickedRepo != "cr-frontend" || m.pickedRepo2 != "" {
-		t.Fatalf("plain pick should clear repo2, got %q", m.pickedRepo2)
-	}
-}
-
 func TestStickyColors(t *testing.T) {
 	pal := []int{1, 2, 3, 4}
 	first := updateColors(nil, []string{"alpha", "beta"}, pal)
@@ -158,11 +156,13 @@ func TestStickyColors(t *testing.T) {
 func TestPairColoredWithoutSession(t *testing.T) {
 	m := New(config.Config{
 		WorktreeRoots: []string{"/nowhere"},
-		Pairs:         []config.Pair{{FERepo: "fe-r", BERepo: "be-r"}},
+		Groups: []config.Group{{Name: "g", Processes: []config.Process{
+			{Label: "fe", Repo: "fe-r"}, {Label: "be", Repo: "be-r"},
+		}}},
 	})
 	rows := []worktree.Row{
-		{Repo: "fe-r", Task: "tsk"},
-		{Repo: "be-r", Task: "tsk"},
+		{Repo: "fe-r", Task: "tsk", GroupName: "g"},
+		{Repo: "be-r", Task: "tsk", GroupName: "g"},
 		{Repo: "solo", Task: "lonely"},
 	}
 	m.updateTaskColors(rows)
@@ -450,5 +450,214 @@ func TestUseBranchPrefersCandidateRoot(t *testing.T) {
 	m.useBranch(b, true) // force: skip the conflict check
 	if m.result.RepoRoot != "/correct/repoA" {
 		t.Errorf("RepoRoot = %q, want candidate's Root /correct/repoA", m.result.RepoRoot)
+	}
+}
+
+func TestSpawnDoneMsgNotesReachStatus(t *testing.T) {
+	m := testModel()
+	updated, _ := m.Update(spawnDoneMsg{notes: []string{"be: no cr-managament/mytask worktree — skipped", "remote: port 4023 already in use — skipped"}})
+	nm := updated.(*Model)
+	if !strings.Contains(nm.err, "already in use") || !strings.Contains(nm.err, "no cr-managament/mytask worktree") {
+		t.Errorf("err = %q, want it to contain both notes joined", nm.err)
+	}
+}
+
+func TestSpawnDoneMsgErrTakesPrecedenceOverNotes(t *testing.T) {
+	m := testModel()
+	testErr := errors.New("boom")
+	updated, _ := m.Update(spawnDoneMsg{err: testErr, notes: []string{"some note"}})
+	nm := updated.(*Model)
+	if nm.err != testErr.Error() {
+		t.Errorf("err = %q, want %q", nm.err, testErr.Error())
+	}
+}
+
+func ambiguousGroupCands() []config.Group {
+	return []config.Group{
+		{Name: "credit-risk-mfe", Processes: []config.Process{
+			{Label: "remote", Repo: "ops-web-credit-risk"},
+			{Label: "host", Repo: "ops-web-core"},
+			{Label: "be", Repo: "cr-managament"},
+		}},
+		{Name: "cr", Processes: []config.Process{
+			{Label: "fe", Repo: "cr-frontend"},
+			{Label: "be", Repo: "cr-managament"},
+		}},
+	}
+}
+
+func TestSpawnDoneMsgAmbiguousEntersGroupPick(t *testing.T) {
+	m := testModel()
+	cands := ambiguousGroupCands()
+	updated, _ := m.Update(spawnDoneMsg{
+		err:       &worktree.AmbiguousGroupError{Repo: "cr-managament", Task: "mytask", Candidates: cands},
+		ambiguous: cands, pickRepo: "cr-managament", pickTask: "mytask", pickWt: "/w/cr-managament/mytask",
+	})
+	nm := updated.(*Model)
+	if nm.mode != modeGroupPick {
+		t.Fatalf("mode = %v, want modeGroupPick", nm.mode)
+	}
+	if len(nm.groupCands) != 2 {
+		t.Fatalf("groupCands len = %d, want 2", len(nm.groupCands))
+	}
+	if nm.groupRepo != "cr-managament" || nm.groupTask != "mytask" || nm.groupWt != "/w/cr-managament/mytask" {
+		t.Errorf("pending spawn identity not carried over: %+v", nm)
+	}
+}
+
+func TestGroupPickCursorClamps(t *testing.T) {
+	m := testModel()
+	m.mode = modeGroupPick
+	m.groupCands = ambiguousGroupCands()
+	m.groupCursor = 0
+
+	m.handleGroupPickKey(tea.KeyMsg{Type: tea.KeyUp})
+	if m.groupCursor != 0 {
+		t.Errorf("cursor went above 0: %d", m.groupCursor)
+	}
+
+	m.groupCursor = len(m.groupCands) - 1
+	m.handleGroupPickKey(tea.KeyMsg{Type: tea.KeyDown})
+	if m.groupCursor != len(m.groupCands)-1 {
+		t.Errorf("cursor went past last candidate: %d", m.groupCursor)
+	}
+}
+
+func TestGroupPickEscReturnsToListWithoutResult(t *testing.T) {
+	m := testModel()
+	m.mode = modeGroupPick
+	m.groupCands = ambiguousGroupCands()
+
+	updated, _ := m.handleGroupPickKey(tea.KeyMsg{Type: tea.KeyEsc})
+	nm := updated.(*Model)
+	if nm.mode != modeList {
+		t.Errorf("mode = %v, want modeList", nm.mode)
+	}
+	if nm.result.Action != ActionQuit || nm.result.Repo != "" || nm.result.RepoRoot != "" {
+		t.Errorf("result set on cancel: %+v", nm.result)
+	}
+}
+
+func TestViewGroupPickRendersCandidates(t *testing.T) {
+	m := testModel()
+	m.mode = modeGroupPick
+	m.groupCands = ambiguousGroupCands()
+	m.groupRepo, m.groupTask = "cr-managament", "mytask"
+
+	v := m.View()
+	if !strings.Contains(v, "credit-risk-mfe") || !strings.Contains(v, "cr") {
+		t.Errorf("view missing candidate names: %q", v)
+	}
+	if !strings.Contains(v, "remote(ops-web-credit-risk)") || !strings.Contains(v, "host(ops-web-core)") || !strings.Contains(v, "be(cr-managament)") {
+		t.Errorf("view missing process labels/repos: %q", v)
+	}
+	if !strings.Contains(v, "fe(cr-frontend)") {
+		t.Errorf("view missing second candidate's processes: %q", v)
+	}
+}
+
+// --- ctrl-n group rows in the repo picker ---
+
+func groupPickerModel() *Model {
+	m := New(config.Config{WorktreeRoots: []string{"/nowhere"}, Groups: []config.Group{
+		{Name: "credit-risk-mfe", Processes: []config.Process{
+			{Label: "remote", Repo: "remote-repo"},
+			{Label: "host", Repo: "host-repo"},
+			{Label: "be", Repo: "be-repo"},
+		}},
+		{Name: "missing-member", Processes: []config.Process{
+			{Label: "fe", Repo: "fe-repo"},
+			{Label: "ghost", Repo: "no-such-repo"},
+		}},
+	}})
+	m.width, m.height = 120, 40
+	m.repoPaths = map[string]string{
+		"remote-repo": "/w/remote-repo",
+		"host-repo":   "/w/host-repo",
+		"be-repo":     "/w/be-repo",
+		"fe-repo":     "/w/fe-repo",
+		"other-repo":  "/w/other-repo",
+	}
+	groupRows := m.resolvedGroupRows()
+	m.repos = append(groupRows, "other-repo", "fe-repo")
+	m.repoFilter, m.repoCursor = "", 0
+	m.mode = modePickRepo
+	return m
+}
+
+func TestPickRepoIncludesResolvedGroupOnly(t *testing.T) {
+	m := groupPickerModel()
+	found := false
+	for _, r := range m.repos {
+		if strings.HasPrefix(r, "credit-risk-mfe ") {
+			found = true
+		}
+		if strings.HasPrefix(r, "missing-member ") {
+			t.Errorf("group with unresolvable member included: %q", r)
+		}
+	}
+	if !found {
+		t.Error("resolved group row missing from repo list")
+	}
+}
+
+func TestPickRepoGroupRowIsFirst(t *testing.T) {
+	m := groupPickerModel()
+	if len(m.repos) == 0 || !strings.HasPrefix(m.repos[0], "credit-risk-mfe") {
+		t.Errorf("group row not first: %v", m.repos)
+	}
+}
+
+func TestSelectingGroupRowPopulatesExtraRepoRoots(t *testing.T) {
+	m := groupPickerModel()
+	row := m.repos[0] // "credit-risk-mfe (remote+host+be)"
+	m.pickRepoEntry(row)
+
+	// primary is the group's first process repo
+	if m.pickedRepo != "remote-repo" {
+		t.Fatalf("pickedRepo = %q, want remote-repo", m.pickedRepo)
+	}
+
+	m.taskInput = "my-task"
+	updated, _ := m.handleTaskNameKey(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := updated.(*Model)
+
+	if nm.result.Action != ActionNewTask {
+		t.Fatalf("Action = %v, want ActionNewTask", nm.result.Action)
+	}
+	if nm.result.RepoRoot != "/w/remote-repo" {
+		t.Errorf("RepoRoot = %q, want /w/remote-repo (primary)", nm.result.RepoRoot)
+	}
+	want := map[string]bool{"/w/host-repo": true, "/w/be-repo": true}
+	if len(nm.result.ExtraRepoRoots) != 2 {
+		t.Fatalf("ExtraRepoRoots = %v, want 2 entries", nm.result.ExtraRepoRoots)
+	}
+	for _, r := range nm.result.ExtraRepoRoots {
+		if !want[r] {
+			t.Errorf("unexpected extra root %q", r)
+		}
+		if r == nm.result.RepoRoot {
+			t.Errorf("extra root %q duplicates primary RepoRoot", r)
+		}
+	}
+}
+
+func TestGroupRowFuzzyFilterMatchesByName(t *testing.T) {
+	m := groupPickerModel()
+	m.repoFilter = "credit-risk"
+	repos := m.filteredRepos()
+	if len(repos) != 1 || !strings.HasPrefix(repos[0], "credit-risk-mfe") {
+		t.Errorf("fuzzy filter did not match group row: %v", repos)
+	}
+}
+
+func TestTaskNameScreenShowsGroupNameAndCount(t *testing.T) {
+	m := groupPickerModel()
+	row := m.repos[0]
+	m.pickRepoEntry(row)
+
+	v := m.viewTaskName()
+	if !strings.Contains(v, "credit-risk-mfe (3 repos)") {
+		t.Errorf("task-name view missing group label: %q", v)
 	}
 }

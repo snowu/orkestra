@@ -46,41 +46,56 @@ ORK_FAVORITES=()
 # Uncomment to point at a different path:
 # ORK_HOOKS_CONFIG="$HOME/.config/ork/hooks.json"
 
-# ── FE/BE pairing (ctrl-g spawn, ctrl-a open-all) ──────────────────────────
-# Sibling repos (not subdirs) that share task names — ctrl-g spawns detached
-# fe/be windows running the pair's commands in each side's worktree; ctrl-a
-# attaches the base session with fe/be as extra windows.
+# ── Process groups (ctrl-g spawn, ctrl-a open-all) ─────────────────────────
+# A group is a named set of sibling repos (not subdirs) that share task
+# names, each running one process — ctrl-g spawns detached windows running
+# every process's command in its own repo's worktree for the task; ctrl-a
+# attaches the base session with those windows included.
 #
-# One pair can be declared right here with the ORK_FE_*/ORK_BE_* keys below;
-# additional pairs live in a JSON file (same no-code-execution rationale as
-# hooks.json): ~/.config/ork/pairs.json, or wherever ORK_PAIRS_CONFIG points.
+# Groups live in a JSON file (same no-code-execution rationale as
+# hooks.json): ~/.config/ork/groups.json, or wherever ORK_GROUPS_CONFIG
+# points. There is no shell-conf equivalent — every group, including a
+# simple two-process fe/be pair, goes in this file.
 #
-# Example ~/.config/ork/pairs.json:
+# Example ~/.config/ork/groups.json:
 #   [
-#     {
-#       "fe": "my-frontend", "be": "my-backend",
-#       "fe_cmd": "bun run dev -- --port {port}",
-#       "be_cmd": "uv run fastapi dev src/app.py --port {port}",
-#       "fe_env_var": "NEXT_PUBLIC_MY_SERVICE_ENDPOINT",
-#       "fe_env_path": "/public/operations",
-#       "fe_url_env_vars": ["NEXTAUTH_URL"]
-#     }
+#     {"name": "my-app", "processes": [
+#       {"label": "fe", "repo": "my-frontend",
+#        "cmd": "bun run dev -- --port {port}", "port_range": "fe",
+#        "env_var": "NEXT_PUBLIC_MY_SERVICE_ENDPOINT",
+#        "env_path": "/public/operations",
+#        "url_env_vars": ["NEXTAUTH_URL"]},
+#       {"label": "be", "repo": "my-backend",
+#        "cmd": "uv run fastapi dev src/app.py --port {port}", "port_range": "be"}
+#     ]}
 #   ]
 #
-# {port} gets a stable per-task port (FE 3000-3999, BE 8000-8999) so
-# concurrent tasks' dev servers don't collide. fe_env_var, if set, is the
-# .env.local key ork rewrites in the fe worktree to point at the task's
-# backend port; fe_env_path is an optional URL path appended after the port.
-# fe_url_env_vars are keys rewritten to the task's OWN fe url — for apps
-# that hardcode their origin (NEXTAUTH_URL=http://localhost:3000) and would
-# otherwise redirect auth flows to port 3000 instead of the task's port.
+# Each process has a "label" (names its tmux/herdr window), a "repo", and a
+# "cmd". {port} in cmd is substituted with the task's stable port (FE
+# 3000-3999, BE 8000-8999) when "port_range" ("fe" or "be") is set, so
+# concurrent tasks' dev servers don't collide. Omit "port_range" when the
+# port is hardcoded in the repo's own config instead (e.g. a federated MFE
+# remote pinned in that repo's own config file); then "fixed_port" declares
+# it ONLY so ork can warn when it's already in use — ork never parses the
+# repo's own config files. A process without "port_range" can't be isolated
+# per task, so only one task at a time can run it.
 #
-# ORK_FE_REPO=my-frontend
-# ORK_BE_REPO=my-backend
-# ORK_FE_CMD="bun run dev -- --port {port}"
-# ORK_BE_CMD="uv run fastapi dev src/app.py --port {port}"
-# ORK_FE_ENV_VAR=NEXT_PUBLIC_MY_SERVICE_ENDPOINT
-# ORK_PAIRS_CONFIG="$HOME/.config/ork/pairs.json"
+# "env_var", if set, is the .env.local key ork rewrites in that process's
+# worktree to point at the task's backend port; "env_path" is an optional
+# URL path appended after the port. "url_env_vars" are keys rewritten to the
+# task's OWN fe url — for apps that hardcode their origin
+# (NEXTAUTH_URL=http://localhost:3000) and would otherwise redirect auth
+# flows to port 3000 instead of the task's port.
+#
+# A repo can belong to several groups (e.g. a backend shared between a
+# 2-process pair and a bigger federated group with different siblings) —
+# ork resolves which group applies to a given task by which member repos
+# actually have worktrees for it, and prompts you to choose when that's
+# genuinely ambiguous (equally many worktrees materialized for two or more
+# candidate groups).
+#
+# Uncomment to point at a different path:
+# ORK_GROUPS_CONFIG="$HOME/.config/ork/groups.json"
 
 # ── Tmux session naming ────────────────────────────────────────────────────
 # ENTER opens a tmux session named after the task (shared across repos by

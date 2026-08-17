@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -42,11 +43,9 @@ type Result struct {
 	Task     string
 	WtPath   string
 	RepoRoot string // set for ActionNewTask
-	// Set for ActionNewTask when the user picked a fe/be pair entry (or
-	// hit ctrl-b on a paired repo): the sibling repo to create the same
-	// task in, right after Repo's worktree.
-	Repo2     string
-	RepoRoot2 string
+	// ExtraRepoRoots are additional repos to create the same task in
+	// (a process group's other members). Empty for a single-repo task.
+	ExtraRepoRoots []string
 	// Set for ActionUseBranch: the existing branch to build the worktree
 	// on. Force is the user's answer to the "already checked out
 	// elsewhere" prompt, resolved in the TUI because bubbletea exits as
@@ -134,16 +133,19 @@ func (m *Model) updateRepoColors(rows []worktree.Row) {
 }
 
 // updateTaskColors colors tasks that span 2+ rows — either a live session
-// shared across worktrees, or both sides of a configured fe/be pair (which
-// deserve the link color even before any session exists).
+// shared across worktrees, or 2+ members of a configured process group under
+// the same task (which deserve the link color even before any session
+// exists).
 func (m *Model) updateTaskColors(rows []worktree.Row) {
 	sessionRows := map[string]int{}
-	repoTask := map[string]bool{}
+	groupTaskRows := map[string]int{} // groupName/task -> row count
 	for _, r := range rows {
 		if r.Session != "" {
 			sessionRows[r.Session]++
 		}
-		repoTask[r.Repo+"/"+r.Task] = true
+		if r.GroupName != "" {
+			groupTaskRows[r.GroupName+"/"+r.Task]++
+		}
 	}
 	distinct := map[string]bool{}
 	var names []string
@@ -158,8 +160,7 @@ func (m *Model) updateTaskColors(rows []worktree.Row) {
 			add(r.Task)
 			continue
 		}
-		if p, ok := m.cfg.PairFor(r.Repo); ok &&
-			repoTask[p.FERepo+"/"+r.Task] && repoTask[p.BERepo+"/"+r.Task] {
+		if r.GroupName != "" && groupTaskRows[r.GroupName+"/"+r.Task] > 1 {
 			add(r.Task)
 		}
 	}
@@ -187,6 +188,7 @@ const (
 	modeConfirmSteal
 	modeScan
 	modeHelp
+	modeGroupPick
 )
 
 type previewKind int
@@ -212,13 +214,13 @@ type Model struct {
 	endSession  string // temp "ork-end-*" tmux session being tailed in the live pane
 
 	// ctrl-n flow
-	repos         []string // repo basenames, favorites first
+	repos         []string // group rows (first) + repo basenames, favorites first
 	repoPaths     map[string]string
-	pairEntries   map[string][2]string // pair display line -> {feRepo, beRepo}
+	repoGroups    map[string]config.Group // row name -> group, for rows in repos that are group entries
 	repoFilter    string
 	repoCursor    int
 	pickedRepo    string
-	pickedRepo2   string // sibling repo when a pair entry was picked
+	pickedGroup   *config.Group // set when the task-name screen was entered from a group row
 	taskInput     string
 	branches      []worktree.BranchCand
 	branchCursor  int                // 0 = the typed-text row, 1..n = branches
@@ -232,6 +234,13 @@ type Model struct {
 	scanFilter string
 	scanCursor int
 	scanning   bool // candidates still loading
+
+	// ctrl-g ambiguous-group picker
+	groupCands  []config.Group
+	groupCursor int
+	groupRepo   string
+	groupTask   string
+	groupWt     string
 
 	startInScan bool
 
@@ -254,7 +263,18 @@ type scanMsg struct {
 type stateChangedMsg struct{}
 type tickMsg time.Time
 type proxyStatusMsg bool
-type spawnDoneMsg struct{ err error }
+type spawnDoneMsg struct {
+	err     error
+	notes   []string
+	spawned []string
+	// ambiguous carries the pending spawn's identity when err is an
+	// *AmbiguousGroupError, so Update can seed modeGroupPick without
+	// re-deriving repo/task/wt from anywhere else.
+	ambiguous []config.Group
+	pickRepo  string
+	pickTask  string
+	pickWt    string
+}
 type endDoneMsg struct{} // the temp end-task session has exited
 type previewMsg struct {
 	forPath string // selection the text was computed for
@@ -308,7 +328,7 @@ func run(cfg config.Config, startInScan bool) (Result, error) {
 
 func (m *Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{m.reloadCmd(), m.watchCmd(), tick()}
-	if len(m.cfg.Pairs) > 0 {
+	if len(m.cfg.Groups) > 0 {
 		cmds = append(cmds, proxyProbeCmd())
 	}
 	if m.startInScan {
@@ -419,10 +439,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())
 	case spawnDoneMsg:
 		if msg.err != nil {
+			if msg.ambiguous != nil {
+				m.groupCands = msg.ambiguous
+				m.groupCursor = 0
+				m.groupRepo, m.groupTask, m.groupWt = msg.pickRepo, msg.pickTask, msg.pickWt
+				m.mode = modeGroupPick
+				return m, nil
+			}
 			m.err = msg.err.Error()
 			return m, nil
 		}
-		m.err = ""
+		if len(msg.notes) > 0 {
+			m.err = strings.Join(msg.notes, " · ")
+		} else {
+			m.err = ""
+		}
 		return m, m.reloadCmd()
 	case endDoneMsg:
 		m.endSession = ""
