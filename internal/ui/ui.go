@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"net"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,6 +34,7 @@ const (
 	ActionCD
 	ActionNewTask
 	ActionOpenAll // ctrl+a: attach base session with fe/be windows ensured
+	ActionUseBranch
 )
 
 type Result struct {
@@ -40,11 +43,15 @@ type Result struct {
 	Task     string
 	WtPath   string
 	RepoRoot string // set for ActionNewTask
-	// Set for ActionNewTask when the user picked a fe/be pair entry (or
-	// hit ctrl-b on a paired repo): the sibling repo to create the same
-	// task in, right after Repo's worktree.
-	Repo2     string
-	RepoRoot2 string
+	// ExtraRepoRoots are additional repos to create the same task in
+	// (a process group's other members). Empty for a single-repo task.
+	ExtraRepoRoots []string
+	// Set for ActionUseBranch: the existing branch to build the worktree
+	// on. Force is the user's answer to the "already checked out
+	// elsewhere" prompt, resolved in the TUI because bubbletea exits as
+	// soon as a Result is returned.
+	Branch string
+	Force  bool
 }
 
 // Styles must bind to a stderr renderer: the ork() shell wrapper captures
@@ -126,16 +133,19 @@ func (m *Model) updateRepoColors(rows []worktree.Row) {
 }
 
 // updateTaskColors colors tasks that span 2+ rows — either a live session
-// shared across worktrees, or both sides of a configured fe/be pair (which
-// deserve the link color even before any session exists).
+// shared across worktrees, or 2+ members of a configured process group under
+// the same task (which deserve the link color even before any session
+// exists).
 func (m *Model) updateTaskColors(rows []worktree.Row) {
 	sessionRows := map[string]int{}
-	repoTask := map[string]bool{}
+	groupTaskRows := map[string]int{} // groupName/task -> row count
 	for _, r := range rows {
 		if r.Session != "" {
 			sessionRows[r.Session]++
 		}
-		repoTask[r.Repo+"/"+r.Task] = true
+		if r.GroupName != "" {
+			groupTaskRows[r.GroupName+"/"+r.Task]++
+		}
 	}
 	distinct := map[string]bool{}
 	var names []string
@@ -150,8 +160,7 @@ func (m *Model) updateTaskColors(rows []worktree.Row) {
 			add(r.Task)
 			continue
 		}
-		if p, ok := m.cfg.PairFor(r.Repo); ok &&
-			repoTask[p.FERepo+"/"+r.Task] && repoTask[p.BERepo+"/"+r.Task] {
+		if r.GroupName != "" && groupTaskRows[r.GroupName+"/"+r.Task] > 1 {
 			add(r.Task)
 		}
 	}
@@ -176,6 +185,10 @@ const (
 	modeConfirmKill
 	modePickRepo
 	modeTaskName
+	modeConfirmSteal
+	modeScan
+	modeHelp
+	modeGroupPick
 )
 
 type previewKind int
@@ -201,15 +214,35 @@ type Model struct {
 	endSession  string // temp "ork-end-*" tmux session being tailed in the live pane
 
 	// ctrl-n flow
-	repos       []string // repo basenames, favorites first
-	repoPaths   map[string]string
-	pairEntries map[string][2]string // pair display line -> {feRepo, beRepo}
-	repoFilter  string
-	repoCursor  int
-	pickedRepo  string
-	pickedRepo2 string // sibling repo when a pair entry was picked
-	taskInput   string
-	branches    []string
+	repos         []string // group rows (first) + repo basenames, favorites first
+	repoPaths     map[string]string
+	repoGroups    map[string]config.Group // row name -> group, for rows in repos that are group entries
+	repoFilter    string
+	repoCursor    int
+	pickedRepo    string
+	pickedGroup   *config.Group // set when the task-name screen was entered from a group row
+	taskInput     string
+	branches      []worktree.BranchCand
+	branchCursor  int                // 0 = the typed-text row, 1..n = branches
+	stealConflict *worktree.Conflict // pending "checked out elsewhere" prompt
+	stealBranch   string             // branch the prompt is about
+	stealRoot     string             // repo root the prompt is about
+	stealReturn   mode               // mode to restore if the steal prompt is cancelled
+
+	// ctrl-f scan flow
+	scanCands  []worktree.BranchCand
+	scanFilter string
+	scanCursor int
+	scanning   bool // candidates still loading
+
+	// ctrl-g ambiguous-group picker
+	groupCands  []config.Group
+	groupCursor int
+	groupRepo   string
+	groupTask   string
+	groupWt     string
+
+	startInScan bool
 
 	width, height int
 	result        Result
@@ -219,12 +252,29 @@ type Model struct {
 	cow           []string // fortune/cowsay sidebar lines, refreshed per reload
 	repoColors    map[string]lipgloss.Color
 	taskColors    map[string]lipgloss.Color
+	proxyUp       bool // login proxy (:3000) reachability, probed off the render path
 }
 
 type rowsMsg []worktree.Row
+type scanMsg struct {
+	cands []worktree.BranchCand
+	paths map[string]string
+}
 type stateChangedMsg struct{}
 type tickMsg time.Time
-type spawnDoneMsg struct{ err error }
+type proxyStatusMsg bool
+type spawnDoneMsg struct {
+	err     error
+	notes   []string
+	spawned []string
+	// ambiguous carries the pending spawn's identity when err is an
+	// *AmbiguousGroupError, so Update can seed modeGroupPick without
+	// re-deriving repo/task/wt from anywhere else.
+	ambiguous []config.Group
+	pickRepo  string
+	pickTask  string
+	pickWt    string
+}
 type endDoneMsg struct{} // the temp end-task session has exited
 type previewMsg struct {
 	forPath string // selection the text was computed for
@@ -247,8 +297,16 @@ func New(cfg config.Config) *Model {
 }
 
 // Run blocks until the user picks something; returns what main should do.
-func Run(cfg config.Config) (Result, error) {
+// startInScan opens straight on the scan screen (`ork scan`), reusing the
+// whole model so conflict prompting is identical from both entry points.
+func Run(cfg config.Config) (Result, error) { return run(cfg, false) }
+
+// RunScan is Run, opened on the scan screen.
+func RunScan(cfg config.Config) (Result, error) { return run(cfg, true) }
+
+func run(cfg config.Config, startInScan bool) (Result, error) {
 	m := New(cfg)
+	m.startInScan = startInScan
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if ch, err := agentstate.Watch(ctx, agentstate.Dir()); err == nil {
@@ -269,7 +327,14 @@ func Run(cfg config.Config) (Result, error) {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.reloadCmd(), m.watchCmd(), tick())
+	cmds := []tea.Cmd{m.reloadCmd(), m.watchCmd(), tick()}
+	if len(m.cfg.Groups) > 0 {
+		cmds = append(cmds, proxyProbeCmd())
+	}
+	if m.startInScan {
+		cmds = append(cmds, m.openScan())
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) reloadCmd() tea.Cmd {
@@ -290,6 +355,28 @@ func (m *Model) watchCmd() tea.Cmd {
 
 func tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// proxyProbeCmd checks whether the login proxy (:3000) is up, off the
+// render path — View() runs on every keystroke/tick and must never dial a
+// socket. Runs on its own 5s cadence (much lower than the 1s UI tick) since
+// a TCP dial, even with a short timeout, is real latency View() can't pay.
+func proxyProbeCmd() tea.Cmd {
+	return tea.Tick(5*time.Second, func(time.Time) tea.Msg {
+		return proxyStatusMsg(portListening("127.0.0.1:3000"))
+	})
+}
+
+// portListening is a short-timeout TCP probe, mirroring cmd/ork/run.go's
+// helper of the same name — kept separate since internal/ui must not import
+// cmd.
+func portListening(addr string) bool {
+	c, err := net.DialTimeout("tcp", addr, 150*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
 }
 
 func (m *Model) applyFilter() {
@@ -334,14 +421,39 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateRepoColors(m.rows)
 		m.updateTaskColors(m.rows)
 		return m, m.previewCmd()
+	case scanMsg:
+		if m.repoPaths == nil {
+			m.repoPaths = map[string]string{}
+		}
+		for k, v := range msg.paths {
+			if m.repoPaths[k] == "" {
+				m.repoPaths[k] = v
+			}
+		}
+		m.scanCands, m.scanning = msg.cands, false
+		return m, nil
+	case proxyStatusMsg:
+		m.proxyUp = bool(msg)
+		return m, proxyProbeCmd()
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())
 	case spawnDoneMsg:
 		if msg.err != nil {
+			if msg.ambiguous != nil {
+				m.groupCands = msg.ambiguous
+				m.groupCursor = 0
+				m.groupRepo, m.groupTask, m.groupWt = msg.pickRepo, msg.pickTask, msg.pickWt
+				m.mode = modeGroupPick
+				return m, nil
+			}
 			m.err = msg.err.Error()
 			return m, nil
 		}
-		m.err = ""
+		if len(msg.notes) > 0 {
+			m.err = strings.Join(msg.notes, " · ")
+		} else {
+			m.err = ""
+		}
 		return m, m.reloadCmd()
 	case endDoneMsg:
 		m.endSession = ""

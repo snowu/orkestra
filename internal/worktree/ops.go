@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"orkestra/internal/config"
 	"orkestra/internal/hooks"
@@ -21,6 +23,13 @@ import (
 // use; the TUI swaps in io.Discard — raw git output on stderr while
 // bubbletea is drawing there shears the whole layout.
 var Log io.Writer = os.Stderr
+
+// Window creation is indirected so tests can capture spawns without a live
+// multiplexer server, the same way TmuxOps does for session killing.
+var (
+	ensureSession = mux.EnsureSession
+	ensureWindow  = mux.EnsureWindow
+)
 
 func git(dir string, args ...string) error {
 	var buf bytes.Buffer
@@ -41,6 +50,87 @@ func gitOut(dir string, args ...string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// HasBranch reports whether repoRoot has a local branch by that name.
+func HasBranch(repoRoot, branch string) bool {
+	return git(repoRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch) == nil
+}
+
+// Conflict describes a branch that is already checked out somewhere.
+// Resolving it is destructive, so it is reported to the caller rather
+// than silently forced.
+type Conflict struct {
+	Branch string
+	Path   string // the checkout currently holding the branch
+	IsMain bool   // Path is the primary checkout, not a linked worktree
+}
+
+// BranchCheckout reports where branch is checked out, or nil if it is
+// free. Read-only — the caller decides whether to disturb anything.
+//
+// `git worktree list --porcelain` emits records separated by blank lines,
+// each starting with a "worktree <path>" line; the FIRST record is always
+// the primary checkout, which is how IsMain is determined without a
+// separate rev-parse.
+func BranchCheckout(repoRoot, branch string) *Conflict {
+	out := gitOut(repoRoot, "worktree", "list", "--porcelain")
+	if out == "" {
+		return nil
+	}
+	want := "branch refs/heads/" + branch
+	path, first := "", true
+	isMain := false
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			path = strings.TrimPrefix(line, "worktree ")
+			isMain = first
+			first = false
+		case line == want:
+			return &Conflict{Branch: branch, Path: path, IsMain: isMain}
+		}
+	}
+	return nil
+}
+
+// checkedOutBranches returns the local branch short names checked out
+// anywhere in repoRoot, split by WHERE: linked holds branches held by a
+// linked worktree (offering one as a candidate would be nonsense — it
+// already has a worktree); main holds the branch (if any) held by the
+// primary checkout (no worktree yet — a legitimate candidate, picking it
+// just means the main checkout gets switched to its base branch first).
+// Parsed from a single `git worktree list --porcelain` call, using the same
+// "first record is the primary checkout" rule as BranchCheckout. A worktree
+// record with no "branch" line (detached HEAD) contributes nothing to
+// either set.
+//
+// Separate from BranchCheckout rather than sharing its loop: BranchCheckout
+// also tracks the record's path, which this doesn't need. Threading that
+// through here would make BranchCheckout more convoluted, not less.
+func checkedOutBranches(repoRoot string) (linked map[string]bool, main map[string]bool) {
+	out := gitOut(repoRoot, "worktree", "list", "--porcelain")
+	linked = map[string]bool{}
+	main = map[string]bool{}
+	isMain, first := false, true
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			isMain = first
+			first = false
+		default:
+			if b, ok := strings.CutPrefix(line, "branch refs/heads/"); ok {
+				if isMain {
+					main[b] = true
+				} else {
+					linked[b] = true
+				}
+			}
+		}
+	}
+	return linked, main
 }
 
 // BaseBranch: origin/HEAD's symbolic ref is git's own record of the
@@ -66,31 +156,12 @@ func SessionName(cfg config.Config, repo, task string) string {
 	return task
 }
 
-// feBEDirs finds the fe/be sibling worktrees for task — separate repos
-// (ORK_FE_REPO/ORK_BE_REPO), not subdirs, that share task names. Row's own
-// repo/path is reused directly when it matches one side, so pressing the
-// key from either the fe or the be row works without a second filesystem
-// lookup.
-func feBEDirs(cfg config.Config, pair config.Pair, repo, task, wt string) (feDir, beDir string, err error) {
-	switch repo {
-	case pair.FERepo:
-		feDir = wt
-	default:
-		feDir = FindWorktree(cfg.WorktreeRoots, pair.FERepo, task)
-	}
-	switch repo {
-	case pair.BERepo:
-		beDir = wt
-	default:
-		beDir = FindWorktree(cfg.WorktreeRoots, pair.BERepo, task)
-	}
-	if feDir == "" {
-		return "", "", fmt.Errorf("no %s/%s worktree found", pair.FERepo, task)
-	}
-	if beDir == "" {
-		return "", "", fmt.Errorf("no %s/%s worktree found", pair.BERepo, task)
-	}
-	return feDir, beDir, nil
+// TaskNameFor maps a branch name to an ork task name. A task is both a
+// directory name and a multiplexer session name, so slashes cannot
+// survive; Row.Branch still shows the real branch, keeping the mapping
+// visible in the picker.
+func TaskNameFor(branch string) string {
+	return strings.ReplaceAll(branch, "/", "-")
 }
 
 // TaskPorts derives stable ports per task name — FE in 3000-3999, BE in
@@ -155,67 +226,122 @@ func subPort(cmd string, port int) string {
 	return strings.ReplaceAll(cmd, "{port}", strconv.Itoa(port))
 }
 
-// prepFEBE resolves fe/be dirs, derives the task's ports ({port} in FECmd
-// gets the fe port, in BECmd the be port), and patches the fe env var (if
-// configured) to point at the be port — the setup shared before actually
-// starting either process.
-func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, feCmd, beCmd string, err error) {
-	// Only rows belonging to a configured pair get fe/be windows —
-	// an unrelated repo whose task name happens to exist in both sibling
-	// repos must not spawn dev servers for them.
-	pair, ok := cfg.PairFor(repo)
-	if !ok {
-		if len(cfg.Pairs) == 0 {
-			return "", "", "", "", fmt.Errorf("no fe/be pairs configured (~/.ork.conf or ~/.config/ork/pairs.json)")
-		}
-		return "", "", "", "", fmt.Errorf("%s is not part of any configured fe/be pair", repo)
-	}
-	feDir, beDir, err = feBEDirs(cfg, pair, repo, task, wt)
-	if err != nil {
-		return "", "", "", "", err
-	}
-	fePort, bePort := TaskPorts(task)
-	if pair.FEEnvVar != "" {
-		if err := patchFEEnvVar(feDir, pair.FEEnvVar, pair.FEEnvPath, bePort); err != nil {
-			return "", "", "", "", err
-		}
-	}
-	// Task name exposed to the fe app so it can label itself (e.g. browser
-	// tab title "[task] app") — otherwise every task's tab reads identically
-	// and only the port distinguishes them. Best-effort: the fe may ignore it.
-	if err := patchEnvVar(feDir, "NEXT_PUBLIC_ORK_TASK", task); err != nil {
-		return "", "", "", "", err
-	}
-	// Apps that hardcode their own origin (NEXTAUTH_URL etc.) must learn
-	// the task's real fe port, or auth redirects land on localhost:3000.
-	for _, v := range pair.FEURLEnvVars {
-		if err := patchEnvVar(feDir, v, fmt.Sprintf("http://localhost:%d", fePort)); err != nil {
-			return "", "", "", "", err
-		}
-	}
-	return feDir, beDir, subPort(pair.FECmd, fePort), subPort(pair.BECmd, bePort), nil
+// AmbiguousGroupError is returned by EnsureGroupWindows when repo/task
+// resolves to two or more groups with an equal claim (same count of
+// present member worktrees) — this is the highest-stakes call site for
+// group resolution (it launches processes), so it must never guess.
+// Candidates carries every tied group so the caller can name them in a
+// message, or eventually offer a picker.
+type AmbiguousGroupError struct {
+	Repo, Task string
+	Candidates []config.Group
 }
 
-// EnsureFEBEWindows makes sure the base session for repo/task exists and has
-// fe/be windows running the configured commands, creating whatever's
-// missing. Used both for ctrl-g (spawn in background, no attach after) and
-// ctrl-a (attach once this returns) — fe/be always live as windows in the
-// SAME session as the base one, never separate sessions, so switching
-// windows (ctrl-b 1/2/3) or attaching shows all three together and killing
-// the base session takes fe/be down with it.
-func EnsureFEBEWindows(cfg config.Config, repo, task, wt string) error {
-	feDir, beDir, fe, be, err := prepFEBE(cfg, repo, task, wt)
-	if err != nil {
-		return err
+func (e *AmbiguousGroupError) Error() string {
+	names := make([]string, len(e.Candidates))
+	for i, g := range e.Candidates {
+		names[i] = g.Name
 	}
+	return fmt.Sprintf("%s/%s matches groups %s — ambiguous", e.Repo, e.Task, strings.Join(names, ", "))
+}
+
+// EnsureGroupWindows makes sure the base session for repo/task exists and
+// has one window per process in the resolved group, each running its
+// command in its OWN repo's worktree for that task.
+//
+// Returns the labels actually spawned and human-readable notes about what
+// was skipped and why. Skips are deliberately NOT errors: a group may span
+// repos that a given task does not touch, and one absent worktree must not
+// stop the rest of the group from starting. When repo/task resolves
+// ambiguously (see ResolveGroup), err is an *AmbiguousGroupError instead of
+// guessing which group to launch.
+func EnsureGroupWindows(cfg config.Config, repo, task, wt string) (spawned []string, notes []string, err error) {
+	g, ambiguous, ok := ResolveGroup(cfg, cfg.WorktreeRoots, repo, task)
+	if !ok {
+		if len(cfg.Groups) == 0 {
+			return nil, nil, fmt.Errorf("no process groups configured")
+		}
+		return nil, nil, fmt.Errorf("%s is not part of any group", repo)
+	}
+	if ambiguous != nil {
+		return nil, nil, &AmbiguousGroupError{Repo: repo, Task: task, Candidates: ambiguous}
+	}
+	return EnsureGroupWindowsFor(cfg, g, repo, task, wt)
+}
+
+// EnsureGroupWindowsFor is EnsureGroupWindows without the resolution step —
+// the caller (e.g. the ambiguity picker, once the user has chosen among
+// AmbiguousGroupError's Candidates) already knows exactly which group to
+// spawn. EnsureGroupWindows resolves and delegates here so the actual spawn
+// logic lives in exactly one place.
+func EnsureGroupWindowsFor(cfg config.Config, g config.Group, repo, task, wt string) (spawned []string, notes []string, err error) {
+	fePort, bePort := TaskPorts(task)
 	name := SessionName(cfg, repo, task)
-	if err := mux.EnsureSession(name, wt); err != nil {
-		return err
+	if err := ensureSession(name, wt); err != nil {
+		return nil, nil, err
 	}
-	if err := mux.EnsureWindow(name, "fe", feDir, fe); err != nil {
-		return err
+
+	for _, p := range g.Processes {
+		dir := wt
+		if p.Repo != repo {
+			dir = FindWorktree(cfg.WorktreeRoots, p.Repo, task)
+		}
+		if dir == "" {
+			notes = append(notes, p.Label+": no "+p.Repo+"/"+task+" worktree — skipped")
+			continue
+		}
+		// A fixed-port process cannot be isolated per task, so a port
+		// already in use means another task's copy is running. Report it
+		// instead of letting the bind fail confusingly (or worse, letting
+		// a federation host load the wrong task's remote).
+		if p.FixedPort != 0 && portInUse(p.FixedPort) {
+			notes = append(notes, fmt.Sprintf("%s: port %d already in use — skipped", p.Label, p.FixedPort))
+			continue
+		}
+
+		port := 0
+		switch p.PortRange {
+		case "fe":
+			port = fePort
+		case "be":
+			port = bePort
+		}
+		if p.EnvVar != "" {
+			if err := patchFEEnvVar(dir, p.EnvVar, p.EnvPath, bePort); err != nil {
+				return spawned, notes, err
+			}
+		}
+		if err := patchEnvVar(dir, "NEXT_PUBLIC_ORK_TASK", task); err != nil {
+			return spawned, notes, err
+		}
+		for _, v := range p.URLEnvVars {
+			if err := patchEnvVar(dir, v, fmt.Sprintf("http://localhost:%d", fePort)); err != nil {
+				return spawned, notes, err
+			}
+		}
+		if err := ensureWindow(name, p.Label, dir, subPort(p.Cmd, port)); err != nil {
+			return spawned, notes, err
+		}
+		spawned = append(spawned, p.Label)
 	}
-	return mux.EnsureWindow(name, "be", beDir, be)
+	return spawned, notes, nil
+}
+
+// portInUse reports whether something is already listening locally.
+func portInUse(port int) bool {
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 150*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
+}
+
+// EnsureFEBEWindows is the pre-groups entry point, kept for callers that
+// do not surface notes.
+func EnsureFEBEWindows(cfg config.Config, repo, task, wt string) error {
+	_, _, err := EnsureGroupWindows(cfg, repo, task, wt)
+	return err
 }
 
 // NewTask creates <firstRoot>/<repo>/<task> as a worktree on a new branch
@@ -237,16 +363,82 @@ func NewTask(cfg config.Config, repoRoot, task string) (string, error) {
 	if err := git(repoRoot, "worktree", "add", wt, "-b", task, base); err != nil {
 		return "", fmt.Errorf("git worktree add failed for %s", wt)
 	}
+	finishWorktree(cfg, repoRoot, repo, task, wt)
+	return wt, nil
+}
 
-	if data, err := os.ReadFile(filepath.Join(repoRoot, ".env.local")); err == nil {
-		os.WriteFile(filepath.Join(wt, ".env.local"), data, 0o600)
-		fmt.Fprintln(os.Stderr, "Copied .env.local")
+// AddExisting creates <firstRoot>/<repo>/<TaskNameFor(branch)> as a
+// worktree on an EXISTING branch.
+//
+// When the branch is already checked out somewhere, the conflict is
+// RETURNED and nothing is mutated — resolving it disturbs another
+// checkout, which is the user's call. The caller confirms, then calls
+// again with force=true.
+func AddExisting(cfg config.Config, repoRoot, branch string, force bool) (string, *Conflict, error) {
+	repo := filepath.Base(repoRoot)
+	task := TaskNameFor(branch)
+
+	wt := filepath.Join(cfg.WorktreeRoots[0], repo, task)
+	if _, err := os.Stat(wt); err == nil {
+		return "", nil, fmt.Errorf("%s already exists", wt)
 	}
 
+	var resolved string // describes a force-resolved conflict, for error context below
+	if c := BranchCheckout(repoRoot, branch); c != nil {
+		if !force {
+			return "", c, nil
+		}
+		if c.IsMain {
+			// Leave the primary checkout on a real branch rather than
+			// detached: later commits there would otherwise be orphan-prone.
+			base := BaseBranch(repoRoot)
+			if base == "" {
+				return "", nil, fmt.Errorf("couldn't determine a base branch for %s", repoRoot)
+			}
+			if base == branch {
+				return "", nil, fmt.Errorf("%s is %s's base branch — it must stay checked out there", branch, repo)
+			}
+			if err := git(c.Path, "checkout", base); err != nil {
+				return "", nil, fmt.Errorf("couldn't switch %s to %s: %w", c.Path, base, err)
+			}
+			resolved = fmt.Sprintf("%s was already switched to %s", c.Path, base)
+		} else if err := git(c.Path, "checkout", "--detach"); err != nil {
+			return "", nil, fmt.Errorf("couldn't detach %s: %w", c.Path, err)
+		} else {
+			resolved = fmt.Sprintf("%s was already detached", c.Path)
+		}
+	}
+
+	// Every mutating path from here on reaches this prune; no early return
+	// does, so the non-forced path never mutates anything (git self-heals
+	// worktree list for missing paths, so nothing depends on an early prune).
+	git(repoRoot, "worktree", "prune")
+
+	if err := os.MkdirAll(filepath.Dir(wt), 0o755); err != nil {
+		return "", nil, err
+	}
+	if err := git(repoRoot, "worktree", "add", wt, branch); err != nil {
+		if resolved != "" {
+			return "", nil, fmt.Errorf("couldn't create %s: %w; note: %s", wt, err, resolved)
+		}
+		return "", nil, fmt.Errorf("git worktree add failed for %s: %w", wt, err)
+	}
+	finishWorktree(cfg, repoRoot, repo, task, wt)
+	return wt, nil, nil
+}
+
+// finishWorktree is the shared post-creation tail of NewTask and
+// AddExisting: seed config, run the repo's setup hook, mark the profile,
+// and count the worktree as used (a fresh task that sorted to the bottom
+// of the picker was the bug this last line prevents).
+func finishWorktree(cfg config.Config, repoRoot, repo, task, wt string) {
+	if data, err := os.ReadFile(filepath.Join(repoRoot, ".env.local")); err == nil {
+		os.WriteFile(filepath.Join(wt, ".env.local"), data, 0o600)
+		fmt.Fprintln(Log, "Copied .env.local")
+	}
 	hooks.RunRepoHook(cfg.HooksConfig, repo, wt)
 	WriteClaudeProfile(cfg.ClaudePersonalDirs, repoRoot, wt)
 	TouchAccess(repo, task)
-	return wt, nil
 }
 
 // WriteClaudeProfile marks the worktree "personal" or "work" by whether

@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sahilm/fuzzy"
 
+	"orkestra/internal/config"
 	"orkestra/internal/mux"
 	"orkestra/internal/worktree"
 )
@@ -40,6 +41,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePickRepoKey(msg)
 	case modeTaskName:
 		return m.handleTaskNameKey(msg)
+	case modeConfirmSteal:
+		return m.handleConfirmStealKey(msg)
+	case modeScan:
+		return m.handleScanKey(msg)
+	case modeHelp:
+		return m.handleHelpKey(msg)
+	case modeGroupPick:
+		return m.handleGroupPickKey(msg)
 	}
 	return m.handleListKey(msg)
 }
@@ -94,7 +103,11 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if sel, ok := m.selected(); ok {
 			cfg, repo, task, wt := m.cfg, sel.Repo, sel.Task, sel.Path
 			return m, func() tea.Msg {
-				return spawnDoneMsg{err: worktree.EnsureFEBEWindows(cfg, repo, task, wt)}
+				spawned, notes, err := worktree.EnsureGroupWindows(cfg, repo, task, wt)
+				if amb, ok := err.(*worktree.AmbiguousGroupError); ok {
+					return spawnDoneMsg{err: err, ambiguous: amb.Candidates, pickRepo: repo, pickTask: task, pickWt: wt}
+				}
+				return spawnDoneMsg{err: err, notes: notes, spawned: spawned}
 			}
 		}
 	case "ctrl+a":
@@ -128,6 +141,13 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+n":
 		m.startPickRepo()
+		return m, nil
+
+	case "ctrl+f":
+		return m, m.openScan()
+
+	case "?":
+		m.mode = modeHelp
 		return m, nil
 
 	case "tab":
@@ -176,6 +196,14 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filter += s
 			m.applyFilter()
 		}
+	}
+	return m, nil
+}
+
+func (m *Model) handleHelpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "?", "esc", "q", "enter":
+		m.mode = modeList
 	}
 	return m, nil
 }
@@ -281,28 +309,49 @@ func (m *Model) startPickRepo() {
 		}
 	}
 	sort.Strings(rest)
-	m.repos = append(append([]string{}, m.cfg.Favorites...), rest...)
 
-	// Configured fe/be pairs get a combined entry at the top — one enter
-	// creates the same task in both siblings. The display line contains
-	// both names, so fuzzy-searching either repo surfaces it too.
-	m.pairEntries = map[string][2]string{}
-	var pairLines []string
-	for _, p := range m.cfg.Pairs {
-		if m.repoPaths[p.FERepo] == "" || m.repoPaths[p.BERepo] == "" {
-			continue
-		}
-		line := p.FERepo + " + " + p.BERepo
-		if _, dup := m.pairEntries[line]; !dup {
-			m.pairEntries[line] = [2]string{p.FERepo, p.BERepo}
-			pairLines = append(pairLines, line)
-		}
-	}
-	m.repos = append(pairLines, m.repos...)
+	groupRows := m.resolvedGroupRows()
+	m.repos = append(groupRows, append(append([]string{}, m.cfg.Favorites...), rest...)...)
 
 	m.repoFilter, m.repoCursor = "", 0
-	m.pickedRepo2 = ""
 	m.mode = modePickRepo
+}
+
+// resolvedGroupRows builds the group rows for the repo picker — one per
+// configured group whose member repos ALL resolved in m.repoPaths (a group
+// with an unresolvable repo can't have a worktree created for every
+// member). Populates m.repoGroups as a side effect. Group rows come first —
+// they're the higher-intent choice when a task spans multiple repos.
+// Separated from startPickRepo so it's testable without a filesystem scan.
+func (m *Model) resolvedGroupRows() []string {
+	m.repoGroups = map[string]config.Group{}
+	var groupRows []string
+	for _, g := range m.cfg.Groups {
+		allResolved := true
+		for _, p := range g.Processes {
+			if _, ok := m.repoPaths[p.Repo]; !ok {
+				allResolved = false
+				break
+			}
+		}
+		if !allResolved {
+			continue
+		}
+		row := groupRowName(g)
+		m.repoGroups[row] = g
+		groupRows = append(groupRows, row)
+	}
+	return groupRows
+}
+
+// groupRowName is the picker's display label for a group row, e.g.
+// "credit-risk-mfe (remote+host+be)".
+func groupRowName(g config.Group) string {
+	labels := make([]string, len(g.Processes))
+	for i, p := range g.Processes {
+		labels[i] = p.Label
+	}
+	return fmt.Sprintf("%s (%s)", g.Name, strings.Join(labels, "+"))
 }
 
 func (m *Model) filteredRepos() []string {
@@ -333,18 +382,6 @@ func (m *Model) handlePickRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.repoCursor < len(repos) {
 			m.pickRepoEntry(repos[m.repoCursor])
 		}
-	case "ctrl+b":
-		// Shortcut: from a plain repo row that belongs to a configured
-		// pair, jump straight to creating both siblings.
-		if m.repoCursor < len(repos) {
-			name := repos[m.repoCursor]
-			if pair, ok := m.pairEntries[name]; ok {
-				m.startTaskName(pair[0], pair[1])
-			} else if p, ok := m.cfg.PairFor(name); ok &&
-				m.repoPaths[p.FERepo] != "" && m.repoPaths[p.BERepo] != "" {
-				m.startTaskName(p.FERepo, p.BERepo)
-			}
-		}
 	case "backspace":
 		if len(m.repoFilter) > 0 {
 			m.repoFilter = m.repoFilter[:len(m.repoFilter)-1]
@@ -359,47 +396,253 @@ func (m *Model) handlePickRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// pickRepoEntry routes a picker row to the task-name prompt — pair entries
-// carry both siblings, plain rows just the one repo.
+// pickRepoEntry routes a picker row to the task-name prompt. A group row
+// carries its primary repo (the group's first process) plus the group
+// itself, so startTaskName can offer branch-reuse for the primary while
+// remembering to fan the task out to the other members on submit.
 func (m *Model) pickRepoEntry(name string) {
-	if pair, ok := m.pairEntries[name]; ok {
-		m.startTaskName(pair[0], pair[1])
+	if g, ok := m.repoGroups[name]; ok {
+		m.startTaskName(g.Processes[0].Repo)
+		gCopy := g
+		m.pickedGroup = &gCopy
 		return
 	}
-	m.startTaskName(name, "")
+	m.startTaskName(name)
 }
 
-func (m *Model) startTaskName(repo, repo2 string) {
-	m.pickedRepo, m.pickedRepo2 = repo, repo2
+func (m *Model) startTaskName(repo string) {
+	m.pickedRepo = repo
+	m.pickedGroup = nil
 	m.taskInput = ""
-	m.branches = existingBranches(m.repoPaths[repo])
+	m.branchCursor = 0
+	// maxAge 0: when you are already naming a task, every branch without a
+	// worktree is a candidate — the 48h cut belongs to the scan screen.
+	m.branches = worktree.BranchCandidates(m.repoPaths[repo], 0)
 	m.mode = modeTaskName
 }
 
+// extraGroupRoots returns the repo roots of every OTHER member of the
+// currently picked group (excluding the primary, m.pickedRepo).
+func (m *Model) extraGroupRoots() []string {
+	if m.pickedGroup == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{m.pickedRepo: true}
+	for _, p := range m.pickedGroup.Processes {
+		if seen[p.Repo] {
+			continue
+		}
+		seen[p.Repo] = true
+		if root, ok := m.repoPaths[p.Repo]; ok {
+			out = append(out, root)
+		}
+	}
+	return out
+}
+
+// filteredBranches narrows the branch list by the same text being typed as
+// a possible new branch name — one input, two meanings, disambiguated by
+// branchCursor.
+func (m *Model) filteredBranches() []worktree.BranchCand {
+	if m.taskInput == "" {
+		return m.branches
+	}
+	names := make([]string, len(m.branches))
+	for i, b := range m.branches {
+		names[i] = b.Name
+	}
+	var out []worktree.BranchCand
+	for _, match := range fuzzy.Find(m.taskInput, names) {
+		out = append(out, m.branches[match.Index])
+	}
+	return out
+}
+
+// useBranch returns the ActionUseBranch result, prompting first when the
+// branch is checked out elsewhere. The check happens HERE, not in run.go,
+// because returning a Result quits the TUI — there would be nothing left
+// to prompt with.
+func (m *Model) useBranch(b worktree.BranchCand, force bool) (tea.Model, tea.Cmd) {
+	repoRoot := b.Root
+	if repoRoot == "" {
+		repoRoot = m.repoPaths[m.pickedRepo]
+	}
+	if !force {
+		if c := worktree.BranchCheckout(repoRoot, b.Name); c != nil {
+			m.stealConflict, m.stealBranch, m.stealRoot = c, b.Name, repoRoot
+			m.stealReturn = m.mode
+			m.mode = modeConfirmSteal
+			return m, nil
+		}
+	}
+	m.result = Result{
+		Action: ActionUseBranch, Repo: m.pickedRepo, Task: worktree.TaskNameFor(b.Name),
+		Branch: b.Name, Force: force,
+		RepoRoot:       repoRoot,
+		ExtraRepoRoots: m.extraGroupRoots(),
+	}
+	return m, tea.Quit
+}
+
+// scanMaxAge: branches whose tip is older than this are assumed handled —
+// the screen exists to resurface recent work, not to list every branch.
+const scanMaxAge = 48 * time.Hour
+
+// openScan loads candidates in a tea.Cmd, never inline: one
+// for-each-ref plus a worktree list PER REPO adds up, and the TUI must
+// keep drawing while it runs.
+func (m *Model) openScan() tea.Cmd {
+	m.mode = modeScan
+	m.scanFilter, m.scanCursor = "", 0
+	m.scanCands, m.scanning = nil, true
+	cfg := m.cfg
+	return func() tea.Msg {
+		var out []worktree.BranchCand
+		paths := map[string]string{}
+		for _, dir := range worktree.AllRepoDirs(homeDir(), cfg.ScanMaxDepth, repoCachePath(), 60*time.Second) {
+			out = append(out, worktree.BranchCandidates(dir, scanMaxAge)...)
+			if paths[filepath.Base(dir)] == "" {
+				paths[filepath.Base(dir)] = dir
+			}
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Tip.After(out[j].Tip) })
+		return scanMsg{cands: out, paths: paths}
+	}
+}
+
+func (m *Model) filteredScan() []worktree.BranchCand {
+	if m.scanFilter == "" {
+		return m.scanCands
+	}
+	labels := make([]string, len(m.scanCands))
+	for i, c := range m.scanCands {
+		labels[i] = c.Repo + "/" + c.Name
+	}
+	var out []worktree.BranchCand
+	for _, match := range fuzzy.Find(m.scanFilter, labels) {
+		out = append(out, m.scanCands[match.Index])
+	}
+	return out
+}
+
+func (m *Model) handleScanKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	cands := m.filteredScan()
+	switch msg.String() {
+	case "ctrl+c", "esc":
+		m.mode = modeList
+	case "up", "ctrl+p":
+		if m.scanCursor > 0 {
+			m.scanCursor--
+		}
+	case "down", "ctrl+j":
+		if m.scanCursor < len(cands)-1 {
+			m.scanCursor++
+		}
+	case "enter":
+		if m.scanCursor < len(cands) {
+			c := cands[m.scanCursor]
+			// Scan rows span repos, so the row carries the repo — unlike the
+			// task-name screen, where it was picked beforehand.
+			m.pickedRepo = c.Repo
+			m.pickedGroup = nil
+			return m.useBranch(c, false)
+		}
+	case "backspace":
+		if len(m.scanFilter) > 0 {
+			m.scanFilter = m.scanFilter[:len(m.scanFilter)-1]
+			m.scanCursor = 0
+		}
+	default:
+		if msg.Type == tea.KeyRunes && !msg.Alt {
+			m.scanFilter += string(msg.Runes)
+			m.scanCursor = 0
+		}
+	}
+	return m, nil
+}
+
 func (m *Model) handleTaskNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	branches := m.filteredBranches()
 	switch msg.String() {
 	case "ctrl+c", "esc":
 		m.mode = modePickRepo
+	case "up", "ctrl+p":
+		if m.branchCursor > 0 {
+			m.branchCursor--
+		}
+	case "down", "ctrl+j":
+		if m.branchCursor < len(branches) {
+			m.branchCursor++
+		}
 	case "enter":
+		if m.branchCursor > 0 && m.branchCursor <= len(branches) {
+			return m.useBranch(branches[m.branchCursor-1], false)
+		}
 		task := strings.TrimSpace(m.taskInput)
 		if task == "" {
 			return m, nil
 		}
 		m.result = Result{
 			Action: ActionNewTask, Repo: m.pickedRepo, Task: task,
-			RepoRoot:  m.repoPaths[m.pickedRepo],
-			Repo2:     m.pickedRepo2,
-			RepoRoot2: m.repoPaths[m.pickedRepo2],
+			RepoRoot:       m.repoPaths[m.pickedRepo],
+			ExtraRepoRoots: m.extraGroupRoots(),
 		}
 		return m, tea.Quit
 	case "backspace":
 		if len(m.taskInput) > 0 {
 			m.taskInput = m.taskInput[:len(m.taskInput)-1]
+			m.branchCursor = 0
 		}
 	default:
 		if msg.Type == tea.KeyRunes && !msg.Alt {
 			m.taskInput += string(msg.Runes)
+			m.branchCursor = 0 // typing re-filters; a held cursor would point at a different branch
 		}
+	}
+	return m, nil
+}
+
+// handleGroupPickKey drives the ctrl-g ambiguity picker: repo/task resolved
+// to two or more equally-materialized groups (see AmbiguousGroupError), so
+// the user chooses which one to actually spawn.
+func (m *Model) handleGroupPickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "esc":
+		m.mode = modeList
+		m.groupCands = nil
+	case "up", "ctrl+p":
+		if m.groupCursor > 0 {
+			m.groupCursor--
+		}
+	case "down", "ctrl+j":
+		if m.groupCursor < len(m.groupCands)-1 {
+			m.groupCursor++
+		}
+	case "enter":
+		if m.groupCursor < len(m.groupCands) {
+			g := m.groupCands[m.groupCursor]
+			cfg, repo, task, wt := m.cfg, m.groupRepo, m.groupTask, m.groupWt
+			m.mode = modeList
+			m.groupCands = nil
+			return m, func() tea.Msg {
+				spawned, notes, err := worktree.EnsureGroupWindowsFor(cfg, g, repo, task, wt)
+				return spawnDoneMsg{err: err, notes: notes, spawned: spawned}
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) handleConfirmStealKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "y":
+		b := worktree.BranchCand{Repo: m.pickedRepo, Root: m.stealRoot, Name: m.stealBranch}
+		m.stealConflict = nil
+		return m.useBranch(b, true)
+	default: // esc, ctrl+c, n, anything else — cancel is the safe default
+		m.stealConflict = nil
+		m.mode = m.stealReturn
 	}
 	return m, nil
 }

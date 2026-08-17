@@ -88,59 +88,111 @@ func TestExampleConfParses(t *testing.T) {
 	}
 }
 
-func TestPairsMergeLegacyAndJSON(t *testing.T) {
-	dir := t.TempDir()
-	pairsPath := filepath.Join(dir, "pairs.json")
-	os.WriteFile(pairsPath, []byte(`[
-		{"fe": "lending-frontend", "be": "trade-finance-service",
-		 "fe_cmd": "bun run dev -- --port {port}",
-		 "be_cmd": "uv run fastapi dev src/app.py --port {port}",
-		 "fe_env_var": "NEXT_PUBLIC_TRADE_FINANCE_SERVICE_ENDPOINT",
-		 "fe_env_path": "/public/operations"},
-		{"fe": "incomplete-no-be"}
-	]`), 0o644)
-	p := write(t, `
-ORK_FE_REPO=cr-frontend
-ORK_BE_REPO=cr-managament
-ORK_FE_CMD="bun run dev -- --port {port}"
-ORK_FE_ENV_VAR=NEXT_PUBLIC_CREDIT_RISK_SERVICE_ENDPOINT
-ORK_PAIRS_CONFIG="`+pairsPath+`"
-`)
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Pairs) != 2 {
-		t.Fatalf("pairs = %+v, want legacy + 1 json (incomplete dropped)", cfg.Pairs)
-	}
-	if cfg.Pairs[0].FERepo != "cr-frontend" || cfg.Pairs[0].FEEnvVar != "NEXT_PUBLIC_CREDIT_RISK_SERVICE_ENDPOINT" {
-		t.Errorf("legacy pair first, got %+v", cfg.Pairs[0])
-	}
-	if cfg.Pairs[0].BECmd != "bund" {
-		t.Errorf("legacy pair should keep default BECmd, got %q", cfg.Pairs[0].BECmd)
-	}
-	lend := cfg.Pairs[1]
-	if lend.BERepo != "trade-finance-service" || lend.FEEnvPath != "/public/operations" {
-		t.Errorf("json pair = %+v", lend)
+func TestGroupsForRepo(t *testing.T) {
+	cfg := Config{Groups: []Group{
+		{Name: "a", Processes: []Process{{Label: "x", Repo: "shared"}}},
+		{Name: "b", Processes: []Process{{Label: "y", Repo: "shared"}, {Label: "z", Repo: "other"}}},
+		{Name: "c", Processes: []Process{{Label: "w", Repo: "solo-only"}}},
+	}}
+
+	gs := cfg.GroupsForRepo("shared")
+	if len(gs) != 2 || gs[0].Name != "a" || gs[1].Name != "b" {
+		t.Errorf("shared should resolve to [a b] in file order, got %+v", gs)
 	}
 
-	if p, ok := cfg.PairFor("trade-finance-service"); !ok || p.FERepo != "lending-frontend" {
-		t.Errorf("PairFor(be side) = %+v, %v", p, ok)
+	gs = cfg.GroupsForRepo("solo-only")
+	if len(gs) != 1 || gs[0].Name != "c" {
+		t.Errorf("solo-only should resolve to [c], got %+v", gs)
 	}
-	if _, ok := cfg.PairFor("unrelated-repo"); ok {
-		t.Error("PairFor should miss unrelated repo")
+
+	gs = cfg.GroupsForRepo("nowhere")
+	if len(gs) != 0 {
+		t.Errorf("unknown repo should resolve to no groups, got %+v", gs)
 	}
 }
 
-func TestPairsJSONOnlyDefaultsCmds(t *testing.T) {
-	dir := t.TempDir()
-	pairsPath := filepath.Join(dir, "pairs.json")
-	os.WriteFile(pairsPath, []byte(`[{"fe": "a-fe", "be": "a-be"}]`), 0o644)
-	cfg, err := Load(write(t, `ORK_PAIRS_CONFIG="`+pairsPath+`"`))
-	if err != nil {
-		t.Fatal(err)
+func TestGroupValidate(t *testing.T) {
+	ok := Group{Name: "g", Processes: []Process{
+		{Label: "a", Repo: "r1", Cmd: "x"},
+		{Label: "b", Repo: "r2", Cmd: "y"},
+	}}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("valid group rejected: %v", err)
 	}
-	if len(cfg.Pairs) != 1 || cfg.Pairs[0].FECmd != "rund" || cfg.Pairs[0].BECmd != "bund" {
-		t.Fatalf("pairs = %+v", cfg.Pairs)
+	dup := Group{Name: "g", Processes: []Process{
+		{Label: "a", Repo: "r1", Cmd: "x"},
+		{Label: "a", Repo: "r2", Cmd: "y"},
+	}}
+	if err := dup.Validate(); err == nil {
+		t.Error("duplicate labels must be rejected — they name windows")
+	}
+	empty := Group{Name: "g"}
+	if err := empty.Validate(); err == nil {
+		t.Error("a group with no processes must be rejected")
+	}
+	noLabel := Group{Name: "g", Processes: []Process{{Repo: "r1", Cmd: "x"}}}
+	if err := noLabel.Validate(); err == nil {
+		t.Error("a process with no label must be rejected")
+	}
+}
+
+func TestLoadGroupsAndResolution(t *testing.T) {
+	dir := t.TempDir()
+	groupsPath := filepath.Join(dir, "groups.json")
+	os.WriteFile(groupsPath, []byte(`[
+	  {"name":"mfe","processes":[
+	    {"label":"remote","repo":"web-remote","cmd":"pnpm dev","fixed_port":4023},
+	    {"label":"host","repo":"web-host","cmd":"./go app.dev","fixed_port":4000},
+	    {"label":"be","repo":"shared-be","cmd":"uv run x --port {port}","port_range":"be"}
+	  ]},
+	  {"name":"be-solo","processes":[
+	    {"label":"be","repo":"shared-be","cmd":"uv run x --port {port}","port_range":"be"}
+	  ]}
+	]`), 0o644)
+
+	cfg := Config{GroupsConfig: groupsPath}
+	cfg.loadGroups()
+
+	if len(cfg.Groups) != 2 || len(cfg.Groups[0].Processes) != 3 {
+		t.Fatalf("groups = %+v", cfg.Groups)
+	}
+
+	// A repo only in one group resolves to that single group.
+	gs := cfg.GroupsForRepo("web-remote")
+	if len(gs) != 1 || gs[0].Name != "mfe" {
+		t.Errorf("web-remote resolved to %+v", gs)
+	}
+
+	// A repo in multiple groups: GroupsForRepo returns ALL of them, in
+	// file order — the flaw this replaces was picking just the first.
+	gs = cfg.GroupsForRepo("shared-be")
+	if len(gs) != 2 || gs[0].Name != "mfe" || gs[1].Name != "be-solo" {
+		t.Errorf("shared-be should resolve to both groups in file order, got %+v", gs)
+	}
+
+	// Unknown repo resolves to nothing.
+	if gs := cfg.GroupsForRepo("nope"); len(gs) != 0 {
+		t.Errorf("unknown repo should resolve to no groups, got %+v", gs)
+	}
+}
+
+func TestLoadGroupsMissingFileIsSilent(t *testing.T) {
+	cfg := Config{GroupsConfig: filepath.Join(t.TempDir(), "absent.json")}
+	cfg.loadGroups()
+	if len(cfg.Groups) != 0 {
+		t.Errorf("missing file should yield no groups, got %+v", cfg.Groups)
+	}
+}
+
+func TestLoadGroupsRejectsInvalid(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "groups.json")
+	// Duplicate labels — must be dropped, not loaded half-broken.
+	os.WriteFile(p, []byte(`[{"name":"bad","processes":[
+	  {"label":"x","repo":"r1","cmd":"a"},{"label":"x","repo":"r2","cmd":"b"}]}]`), 0o644)
+	cfg := Config{GroupsConfig: p}
+	cfg.loadGroups()
+	if len(cfg.Groups) != 0 {
+		t.Errorf("invalid group must be dropped, got %+v", cfg.Groups)
 	}
 }

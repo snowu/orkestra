@@ -8,6 +8,7 @@ package config
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,53 +28,97 @@ type Config struct {
 	// other one even when both are installed.
 	Multiplexer string
 
-	// FE/BE pairing: separate sibling repos (not subdirs) that share task
-	// names — e.g. ORK_FE_REPO=cr-frontend, ORK_BE_REPO=cr-managament. From
-	// any row, the paired worktree is <root>/<FERepo|BERepo>/<sameTask>.
-	// These legacy single-pair keys still work; they become Pairs[0].
-	FERepo, BERepo string
-	// FECmd/BECmd run in each sibling worktree. BECmd may contain a {port}
-	// placeholder — ork substitutes a port derived from the task name so
-	// concurrent tasks' backends don't collide. FEEnvVar, if set, is the
-	// .env.local key ork rewrites in the fe worktree to point at that same
-	// port before running FECmd (e.g. NEXT_PUBLIC_CREDIT_RISK_SERVICE_ENDPOINT).
-	FECmd, BECmd string
-	FEEnvVar     string
-
-	// PairsConfig is the JSON file declaring additional FE/BE pairs (same
-	// no-code-execution rationale as HooksConfig). Pairs is the merged
-	// result: the legacy ORK_FE_REPO/ORK_BE_REPO pair first (if set),
-	// then every pair from PairsConfig.
-	PairsConfig string
-	Pairs       []Pair
+	// GroupsConfig is the JSON file declaring N-process groups (same
+	// no-code-execution rationale as HooksConfig). Optional.
+	GroupsConfig string
+	Groups       []Group
 }
 
-// Pair is one FE/BE sibling-repo pairing. JSON tags match the keys in
-// pairs.json. FEEnvPath, if set, is appended after the port in the URL
-// written to the fe env var (e.g. "/public/operations" →
-// http://localhost:8123/public/operations).
-type Pair struct {
-	FERepo    string `json:"fe"`
-	BERepo    string `json:"be"`
-	FECmd     string `json:"fe_cmd"`
-	BECmd     string `json:"be_cmd"`
-	FEEnvVar  string `json:"fe_env_var"`
-	FEEnvPath string `json:"fe_env_path"`
-	// FEURLEnvVars are .env.local keys rewritten to the task's OWN fe url
-	// (http://localhost:<fePort>) — for apps that hardcode their public
-	// origin (e.g. NEXTAUTH_URL=http://localhost:3000) and would otherwise
-	// redirect auth flows to whatever task hashes to port 3000.
-	FEURLEnvVars []string `json:"fe_url_env_vars"`
+// Process is one command in a Group: a repo, what to run in its worktree,
+// and how it gets a port.
+//
+// PortRange is OPTIONAL ("fe" = 3000-3999, "be" = 8000-8999, "" = none).
+// A process whose port is hardcoded in its own repo — a federated MFE
+// remote pinned in ebury-web.config.json, say — leaves it empty and must
+// not use {port} in Cmd. FixedPort is that hardcoded port, declared here
+// only so ork can warn when it is already in use; ork never parses the
+// repo's own config to find it.
+type Process struct {
+	Label      string   `json:"label"`
+	Repo       string   `json:"repo"`
+	Cmd        string   `json:"cmd"`
+	PortRange  string   `json:"port_range"`
+	FixedPort  int      `json:"fixed_port"`
+	EnvVar     string   `json:"env_var"`
+	EnvPath    string   `json:"env_path"`
+	URLEnvVars []string `json:"url_env_vars"`
 }
 
-// PairFor returns the pair repo belongs to (either side), or false.
-func (c Config) PairFor(repo string) (Pair, bool) {
-	for _, p := range c.Pairs {
-		if repo == p.FERepo || repo == p.BERepo {
-			return p, true
+// Group is N processes spawned together for one task.
+type Group struct {
+	Name      string    `json:"name"`
+	Processes []Process `json:"processes"`
+}
+
+// Validate rejects groups that would produce broken windows: labels name
+// the mux windows, so they must exist and be unique within the group.
+func (g Group) Validate() error {
+	if len(g.Processes) == 0 {
+		return fmt.Errorf("group %q has no processes", g.Name)
+	}
+	seen := map[string]bool{}
+	for _, p := range g.Processes {
+		if p.Label == "" {
+			return fmt.Errorf("group %q has a process with no label", g.Name)
+		}
+		if seen[p.Label] {
+			return fmt.Errorf("group %q has duplicate label %q", g.Name, p.Label)
+		}
+		seen[p.Label] = true
+	}
+	return nil
+}
+
+// loadGroups reads GroupsConfig. Invalid groups are dropped with a note on
+// stderr rather than failing startup — a broken groups file must not stop
+// the user reaching their worktrees.
+func (c *Config) loadGroups() {
+	data, err := os.ReadFile(c.GroupsConfig)
+	if err != nil {
+		return
+	}
+	var fromFile []Group
+	if json.Unmarshal(data, &fromFile) != nil {
+		fmt.Fprintln(os.Stderr, "ork: bad "+c.GroupsConfig+" — ignoring")
+		return
+	}
+	for _, g := range fromFile {
+		if err := g.Validate(); err != nil {
+			fmt.Fprintln(os.Stderr, "ork: "+err.Error()+" — ignoring")
+			continue
+		}
+		c.Groups = append(c.Groups, g)
+	}
+}
+
+// GroupsForRepo returns every group repo belongs to, in file order. A repo
+// can be a member of more than one group with different settings (e.g. a
+// backend shared between a classic 2-process group and a larger federated
+// group) — callers that need to pick ONE group must disambiguate using
+// which groups actually have worktrees for the task at hand (see
+// worktree.ResolveGroup); picking blindly here would silently make one of
+// the groups unreachable.
+func (c Config) GroupsForRepo(repo string) []Group {
+	var out []Group
+	for _, g := range c.Groups {
+		for _, proc := range g.Processes {
+			if proc.Repo == repo {
+				out = append(out, g)
+				break
+			}
 		}
 	}
-	return Pair{}, false
+	return out
 }
 
 func defaults() Config {
@@ -83,9 +128,7 @@ func defaults() Config {
 		ScanMaxDepth:  3,
 		HooksConfig:   filepath.Join(home, ".config/ork/hooks.json"),
 		Multiplexer:   "tmux",
-		PairsConfig:   filepath.Join(home, ".config/ork/pairs.json"),
-		FECmd:         "rund",
-		BECmd:         "bund", // override with a {port}-templated command to avoid port collisions across tasks
+		GroupsConfig:  filepath.Join(home, ".config/ork/groups.json"),
 	}
 }
 
@@ -136,67 +179,17 @@ func Load(path string) (Config, error) {
 			if v := expand(unquote(val)); v != "" {
 				cfg.HooksConfig = v
 			}
-		case "ORK_FE_REPO":
-			cfg.FERepo = unquote(val)
-		case "ORK_BE_REPO":
-			cfg.BERepo = unquote(val)
-		case "ORK_FE_CMD":
-			if v := unquote(val); v != "" {
-				cfg.FECmd = v
-			}
-		case "ORK_BE_CMD":
-			if v := unquote(val); v != "" {
-				cfg.BECmd = v
-			}
-		case "ORK_FE_ENV_VAR":
-			cfg.FEEnvVar = unquote(val)
-		case "ORK_PAIRS_CONFIG":
+		case "ORK_GROUPS_CONFIG":
 			if v := expand(unquote(val)); v != "" {
-				cfg.PairsConfig = v
+				cfg.GroupsConfig = v
 			}
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return cfg, err
 	}
-	cfg.Pairs = mergePairs(cfg)
+	cfg.loadGroups()
 	return cfg, nil
-}
-
-// mergePairs builds the pair list: legacy ORK_FE_REPO/ORK_BE_REPO first
-// (so existing setups keep their priority on repo-name collisions), then
-// pairs.json. A missing/unreadable pairs file is not an error — pairing
-// is optional. Cmd defaults mirror the legacy FECmd/BECmd defaults.
-func mergePairs(cfg Config) []Pair {
-	var pairs []Pair
-	if cfg.FERepo != "" && cfg.BERepo != "" {
-		pairs = append(pairs, Pair{
-			FERepo: cfg.FERepo, BERepo: cfg.BERepo,
-			FECmd: cfg.FECmd, BECmd: cfg.BECmd, FEEnvVar: cfg.FEEnvVar,
-		})
-	}
-	data, err := os.ReadFile(cfg.PairsConfig)
-	if err != nil {
-		return pairs
-	}
-	var fromFile []Pair
-	if json.Unmarshal(data, &fromFile) != nil {
-		return pairs
-	}
-	def := defaults()
-	for _, p := range fromFile {
-		if p.FERepo == "" || p.BERepo == "" {
-			continue
-		}
-		if p.FECmd == "" {
-			p.FECmd = def.FECmd
-		}
-		if p.BECmd == "" {
-			p.BECmd = def.BECmd
-		}
-		pairs = append(pairs, p)
-	}
-	return pairs
 }
 
 // parseArray handles bash `(elem "elem" 'elem')` values.
