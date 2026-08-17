@@ -60,6 +60,8 @@ func (m *Model) View() string {
 		return m.viewScan()
 	case modeHelp:
 		return m.viewHelpOverlay()
+	case modeGroupPick:
+		return m.viewGroupPick()
 	}
 	return m.viewList()
 }
@@ -67,7 +69,7 @@ func (m *Model) View() string {
 func (m *Model) viewList() string {
 	var b strings.Builder
 	helpRow := styleDim.Render(helpLine)
-	if len(m.cfg.Pairs) > 0 {
+	if len(m.cfg.Groups) > 0 {
 		status := styleDim.Render("proxy :3000 down")
 		if m.proxyUp {
 			status = styleGreen.Render("proxy :3000 up")
@@ -157,13 +159,13 @@ func (m *Model) viewList() string {
 			cmd = "-"
 		}
 
-		feCh, feStyle := "-", styleDim
-		if r.FELive {
-			feCh, feStyle = "f", styleGreen
-		}
-		beCh, beStyle := "-", styleDim
-		if r.BELive {
-			beCh, beStyle = "b", styleGreen
+		countStr, countStyle := "", styleDim
+		if r.GroupSize > 0 {
+			countStr = fmt.Sprintf("%d/%d", r.GroupLive, r.GroupSize)
+			countStyle = styleDim
+			if r.GroupLive > 0 {
+				countStyle = styleGreen
+			}
 		}
 		// FE port shown only when something is actually running — the
 		// number is meaningless (and noisy) for idle rows. FE over BE:
@@ -193,21 +195,26 @@ func (m *Model) viewList() string {
 			sessStyle = taskStyle
 		}
 
-		febeShown := rs(feStyle, feCh) + rs(plain, "/") + rs(beStyle, beCh) + rs(styleCyan, portStr) +
-			rs(plain, strings.Repeat(" ", max(0, 10-(3+len(portStr)))))
+		febeShown := rs(countStyle, countStr) + rs(styleCyan, portStr) +
+			rs(plain, strings.Repeat(" ", max(0, 10-(len(countStr)+len(portStr)))))
 
 		cmdShown := trunc(cmd, 12)
 		prefix := "  "
 		if selected {
 			prefix = "> "
 		}
-		// Pair-link bracket: fe/be siblings of one task sort adjacent
-		// (see BuildRows), so the top row gets ╭ and the bottom ╰ in the
-		// column left of REPO, colored like the task.
+		// Group-link bracket: the N sibling rows of one group sort adjacent
+		// (see BuildRows), so the first gets ╭, the last ╰, and any rows in
+		// between get │, in the column left of REPO, colored like the task.
 		link, linkStyle := "  ", taskStyle
-		if i+1 < len(m.visible) && worktree.PairSiblings(m.cfg, r, m.rows[m.visible[i+1]]) {
+		nextSib := i+1 < len(m.visible) && worktree.GroupSiblings(m.cfg, r, m.rows[m.visible[i+1]])
+		prevSib := i > 0 && worktree.GroupSiblings(m.cfg, r, m.rows[m.visible[i-1]])
+		switch {
+		case nextSib && prevSib:
+			link = "│ "
+		case nextSib:
 			link = "╭ "
-		} else if i > 0 && worktree.PairSiblings(m.cfg, r, m.rows[m.visible[i-1]]) {
+		case prevSib:
 			link = "╰ "
 		}
 		line := rs(styleSel, prefix) + rs(linkStyle, link) +
@@ -301,7 +308,7 @@ func (m *Model) viewConfirm() string {
 
 func (m *Model) viewPickRepo() string {
 	var b strings.Builder
-	b.WriteString(styleBold.Render("ctrl-n new-task: pick a repo (esc to cancel, ctrl-b = fe+be pair)") + "\n")
+	b.WriteString(styleBold.Render("ctrl-n new-task: pick a repo (esc to cancel)") + "\n")
 	b.WriteString("repo> " + m.repoFilter + "\n\n")
 	repos := m.filteredRepos()
 	fav := map[string]bool{}
@@ -316,12 +323,10 @@ func (m *Model) viewPickRepo() string {
 	for i := start; i < len(repos) && i < start+listH; i++ {
 		name := repos[i]
 		sel := i == m.repoCursor
-		if pair, isPair := m.pairEntries[name]; isPair {
-			b.WriteString(m.renderPairEntry(pair, sel) + "\n")
-			continue
-		}
 		line := name
-		if fav[name] {
+		if _, isGroup := m.repoGroups[name]; isGroup {
+			line = styleCyan.Render(name)
+		} else if fav[name] {
 			line = name + styleDim.Render("  *")
 		}
 		if sel {
@@ -333,38 +338,11 @@ func (m *Model) viewPickRepo() string {
 	return b.String()
 }
 
-// renderPairEntry draws a fe/be pair row as two repo-colored names joined
-// by a link line, so pairs read as one unit instead of a plain string.
-func (m *Model) renderPairEntry(pair [2]string, selected bool) string {
-	feStyle := renderer.NewStyle().Foreground(m.pairSideColor(pair[0], pair[1], 0))
-	beStyle := renderer.NewStyle().Foreground(m.pairSideColor(pair[0], pair[1], 1))
-	link, prefix := styleDim, "  "
-	if selected {
-		feStyle = feStyle.Background(colorSelBg)
-		beStyle = beStyle.Background(colorSelBg)
-		link = link.Background(colorSelBg)
-		prefix = styleSel.Render("> ")
-	}
-	return prefix + feStyle.Render(pair[0]) + link.Render(" ──⇄── ") + beStyle.Render(pair[1])
-}
-
-// pairSideColor reuses the repo's list color when it has rows on screen;
-// otherwise falls back to a stable pair of distinct hues so the two sides
-// are always distinguishable even before any worktree exists.
-func (m *Model) pairSideColor(fe, be string, side int) lipgloss.Color {
-	name := [2]string{fe, be}[side]
-	if c, ok := m.repoColors[name]; ok {
-		return c
-	}
-	fallback := [2]lipgloss.Color{"80", "179"} // cyan fe, amber be
-	return fallback[side]
-}
-
 func (m *Model) viewTaskName() string {
 	var b strings.Builder
 	target := m.pickedRepo
-	if m.pickedRepo2 != "" {
-		target = m.pickedRepo + " + " + m.pickedRepo2
+	if m.pickedGroup != nil {
+		target = fmt.Sprintf("%s (%d repos)", m.pickedGroup.Name, len(m.pickedGroup.Processes))
 	}
 	b.WriteString(styleBold.Render(fmt.Sprintf("new task in %s (esc = back, ↑↓ = reuse a branch)", target)) + "\n")
 
@@ -450,6 +428,29 @@ func (m *Model) viewScan() string {
 	return b.String()
 }
 
+// viewGroupPick renders the ctrl-g ambiguity picker: repo/task matched
+// several configured groups with an equal claim, so the user picks which
+// one to actually spawn. Each candidate is shown with its process labels
+// and repos so the choice is informative — the whole point is knowing what
+// ctrl-g is about to start.
+func (m *Model) viewGroupPick() string {
+	var b strings.Builder
+	b.WriteString(styleBold.Render(fmt.Sprintf("%s/%s matches multiple groups — pick one (esc to cancel)", m.groupRepo, m.groupTask)) + "\n\n")
+	for i, g := range m.groupCands {
+		var procs []string
+		for _, p := range g.Processes {
+			procs = append(procs, fmt.Sprintf("%s(%s)", p.Label, p.Repo))
+		}
+		line := fmt.Sprintf("%-16s %s", g.Name, strings.Join(procs, " "))
+		if i == m.groupCursor {
+			b.WriteString(styleSel.Render("> "+line) + "\n")
+		} else {
+			b.WriteString(styleDim.Render("  "+line) + "\n")
+		}
+	}
+	return b.String()
+}
+
 // helpBinding is one row of the help modal: a key and what it does.
 type helpBinding struct{ key, desc string }
 
@@ -469,7 +470,7 @@ var helpGroups = []helpGroup{
 		{"esc", "clear filter"},
 	}},
 	{"Worktrees", []helpBinding{
-		{"ctrl-n", "new task (pick repo, then name it or reuse a branch)"},
+		{"ctrl-n", "new task (pick repo or group, then name it or reuse a branch)"},
 		{"ctrl-f", "scan: branches from the last 48h with no worktree"},
 		{"ctrl-x", "end task (remove worktree + branch)"},
 	}},
@@ -477,7 +478,7 @@ var helpGroups = []helpGroup{
 		{"enter", "attach session"},
 		{"alt+enter", "cd only (no attach)"},
 		{"ctrl-k", "kill session"},
-		{"ctrl-g", "spawn fe/be dev servers in background"},
+		{"ctrl-g", "spawn fe/be dev servers in background (prompts if ambiguous)"},
 		{"ctrl-a", "open all: attach with fe/be windows"},
 		{"ctrl-o", "open fe in browser"},
 		{"ctrl-r", "refresh"},
@@ -497,6 +498,9 @@ var helpProseLines = []string{
 	"",
 	"New-task: typed text (row 0) creates a NEW branch; arrow down to reuse",
 	"an existing branch instead — typing both filters the list and names it.",
+	"",
+	"Repo picker: group rows (shown first, e.g. \"name (a+b+c)\") create a",
+	"worktree in every member repo for the same task in one go.",
 	"",
 	"Scan (ctrl-f / ork scan): recent branches with no worktree. Rows marked",
 	"\"(in main repo)\" prompt to switch that checkout to its base branch.",

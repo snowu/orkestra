@@ -77,11 +77,9 @@ func dispatch(cfg config.Config, res ui.Result) {
 		if err != nil {
 			fatal("new-task failed for " + res.Repo + "/" + res.Task + ": " + err.Error())
 		}
-		// Pair entry: create the sibling's worktree too, then attach to the
-		// first side — sessions are task-named, so both share one session.
-		if res.Repo2 != "" && res.RepoRoot2 != "" {
-			if _, err := worktree.NewTask(cfg, res.RepoRoot2, res.Task); err != nil {
-				fatal("new-task failed for " + res.Repo2 + "/" + res.Task + ": " + err.Error())
+		for _, root := range res.ExtraRepoRoots {
+			if _, err := worktree.NewTask(cfg, root, res.Task); err != nil {
+				fmt.Fprintln(os.Stderr, "ork: new-task failed for "+root+"/"+res.Task+": "+err.Error())
 			}
 		}
 		attach(cfg, res.Repo, res.Task, wt)
@@ -95,43 +93,49 @@ func dispatch(cfg config.Config, res ui.Result) {
 			// here means the checkout changed in between.
 			fatal(res.Branch + " is now checked out in " + conflict.Path + " — try again")
 		}
-		// The sibling repo may not have the same branch; fall back to a new
-		// one, matching how ActionNewTask treats asymmetric pairs.
-		if res.RepoRoot2 != "" {
-			if worktree.HasBranch(res.RepoRoot2, res.Branch) {
-				// res.Force is the user's answer to a prompt that named the
-				// PRIMARY repo's checkout — it never showed them the
-				// sibling's state, so it carries no consent to disturb the
-				// sibling. Always pass false here; a sibling whose branch is
-				// checked out elsewhere is reported below, not forced.
-				if _, conflict2, err := worktree.AddExisting(cfg, res.RepoRoot2, res.Branch, false); err != nil {
-					fmt.Fprintln(os.Stderr, "ork: sibling worktree failed: "+err.Error())
-				} else if conflict2 != nil {
-					fmt.Fprintln(os.Stderr, "ork: sibling worktree skipped: "+res.Branch+" is checked out in "+conflict2.Path)
+		for _, root := range res.ExtraRepoRoots {
+			// force is deliberately hardcoded false: the user's force
+			// confirmation named only the primary repo's checkout, so it
+			// carries no consent to disturb a different repo.
+			if worktree.HasBranch(root, res.Branch) {
+				_, c, err := worktree.AddExisting(cfg, root, res.Branch, false)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "ork: worktree for "+root+"/"+res.Branch+" failed: "+err.Error())
+					continue
 				}
-			} else if _, err := worktree.NewTask(cfg, res.RepoRoot2, res.Task); err != nil {
-				fmt.Fprintln(os.Stderr, "ork: sibling worktree failed: "+err.Error())
+				if c != nil {
+					fmt.Fprintln(os.Stderr, "ork: "+res.Branch+" is already checked out in "+c.Path+" — skipped "+root)
+				}
+			} else if _, err := worktree.NewTask(cfg, root, res.Task); err != nil {
+				fmt.Fprintln(os.Stderr, "ork: new-task failed for "+root+"/"+res.Task+": "+err.Error())
 			}
 		}
 		attach(cfg, res.Repo, res.Task, wt)
 	case ui.ActionOpenAll:
-		if err := worktree.EnsureFEBEWindows(cfg, res.Repo, res.Task, res.WtPath); err != nil {
-			fatal("ensure fe/be windows failed: " + err.Error())
+		_, notes, err := worktree.EnsureGroupWindows(cfg, res.Repo, res.Task, res.WtPath)
+		if err != nil {
+			if amb, ok := err.(*worktree.AmbiguousGroupError); ok {
+				fatal(amb.Error())
+			}
+			fatal("ensure group windows failed: " + err.Error())
+		}
+		for _, n := range notes {
+			fmt.Fprintln(os.Stderr, "ork: "+n)
 		}
 		attach(cfg, res.Repo, res.Task, res.WtPath)
 	}
 }
 
 // ensureLoginProxy keeps `ork login-proxy` alive as a detached child
-// process whenever fe/be pairs are configured — so the auth flow works out
-// of the box, no manual step. The proxy is a plain http.ListenAndServe: it
-// needs no terminal and no multiplexer session, so it runs as a setsid'd
+// process whenever process groups are configured — so the auth flow works
+// out of the box, no manual step. The proxy is a plain http.ListenAndServe:
+// it needs no terminal and no multiplexer session, so it runs as a setsid'd
 // child rather than cluttering the user's tmux/herdr session list. Skipped
 // when port 3000 is already taken (someone running a real dev server there
 // deliberately, or our own proxy already up). Best-effort by design: the
 // TUI must come up regardless.
 func ensureLoginProxy(cfg config.Config) {
-	if len(cfg.Pairs) == 0 {
+	if len(cfg.Groups) == 0 {
 		return
 	}
 	// One-time migration: a user upgrading from a version that babysat the

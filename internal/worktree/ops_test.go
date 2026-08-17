@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -396,5 +397,93 @@ func TestAddExistingRefusesExistingPath(t *testing.T) {
 	}
 	if after := gitOut(repoRoot, "worktree", "list"); after != before {
 		t.Errorf("worktree list changed: before=%q after=%q", before, after)
+	}
+}
+
+type spawnRec struct{ session, window, dir, cmd string }
+
+// withFakeMux swaps the window-creation seam for the duration of a test.
+func withFakeMux(t *testing.T) *[]spawnRec {
+	t.Helper()
+	var recs []spawnRec
+	origS, origW := ensureSession, ensureWindow
+	ensureSession = func(name, dir string) error { return nil }
+	ensureWindow = func(s, w, dir, cmd string) error {
+		recs = append(recs, spawnRec{s, w, dir, cmd})
+		return nil
+	}
+	t.Cleanup(func() { ensureSession, ensureWindow = origS, origW })
+	return &recs
+}
+
+func TestEnsureGroupWindowsSpawnsAll(t *testing.T) {
+	recs := withFakeMux(t)
+	root := t.TempDir()
+	// three member repos, all with a worktree for this task
+	for _, r := range []string{"remote", "host", "be"} {
+		os.MkdirAll(filepath.Join(root, r, "mytask"), 0o755)
+	}
+	cfg := config.Config{
+		WorktreeRoots: []string{root},
+		Groups: []config.Group{{Name: "mfe", Processes: []config.Process{
+			{Label: "remote", Repo: "remote", Cmd: "pnpm dev"},
+			{Label: "host", Repo: "host", Cmd: "./go app.dev"},
+			{Label: "be", Repo: "be", Cmd: "uv run x --port {port}", PortRange: "be"},
+		}}},
+	}
+	wt := filepath.Join(root, "remote", "mytask")
+	spawned, notes, err := EnsureGroupWindows(cfg, "remote", "mytask", wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spawned) != 3 {
+		t.Errorf("spawned = %v, want 3", spawned)
+	}
+	if len(*recs) != 3 {
+		t.Fatalf("windows created = %+v", *recs)
+	}
+	// Each window gets its OWN repo's worktree as cwd.
+	byLabel := map[string]spawnRec{}
+	for _, r := range *recs {
+		byLabel[r.window] = r
+	}
+	if got := byLabel["host"].dir; got != filepath.Join(root, "host", "mytask") {
+		t.Errorf("host cwd = %s", got)
+	}
+	// {port} substituted only where a range was declared.
+	_, bePort := TaskPorts("mytask")
+	if want := "uv run x --port " + strconv.Itoa(bePort); byLabel["be"].cmd != want {
+		t.Errorf("be cmd = %q, want %q", byLabel["be"].cmd, want)
+	}
+	if byLabel["remote"].cmd != "pnpm dev" {
+		t.Errorf("remote cmd should be untouched, got %q", byLabel["remote"].cmd)
+	}
+	_ = notes
+}
+
+func TestEnsureGroupWindowsSkipsMissingWorktree(t *testing.T) {
+	recs := withFakeMux(t)
+	root := t.TempDir()
+	// only two of three member repos have a worktree
+	os.MkdirAll(filepath.Join(root, "remote", "mytask"), 0o755)
+	os.MkdirAll(filepath.Join(root, "host", "mytask"), 0o755)
+	cfg := config.Config{
+		WorktreeRoots: []string{root},
+		Groups: []config.Group{{Name: "mfe", Processes: []config.Process{
+			{Label: "remote", Repo: "remote", Cmd: "a"},
+			{Label: "host", Repo: "host", Cmd: "b"},
+			{Label: "be", Repo: "be", Cmd: "c"},
+		}}},
+	}
+	wt := filepath.Join(root, "remote", "mytask")
+	spawned, notes, err := EnsureGroupWindows(cfg, "remote", "mytask", wt)
+	if err != nil {
+		t.Fatalf("a missing member worktree must not be fatal: %v", err)
+	}
+	if len(spawned) != 2 || len(*recs) != 2 {
+		t.Errorf("spawned = %v, windows = %+v", spawned, *recs)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "be") {
+		t.Errorf("the skip must be reported, got notes %v", notes)
 	}
 }

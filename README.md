@@ -32,12 +32,8 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
   your favorites listed first), type a new task name, creates the
   worktree/branch off the repo's actual default branch, copies the repo's
   `.env.local` if it has one, runs any repo-specific setup hook you've
-  configured, and lands you straight in its tmux session. Configured fe/be
-  pairs also appear as a combined `fe + be` entry (searching either name
-  finds it) — picking it, or hitting **ctrl-b** on either sibling's row,
-  creates the same-named task in both repos at once (one shared session,
-  since sessions are task-named). On the task-name screen, the picked
-  repo's local branches (any without a worktree already) are listed below
+  configured, and lands you straight in its tmux session. On the task-name
+  screen, the picked repo's local branches (any without a worktree already) are listed below
   what you type — `↓` moves onto one and `enter` creates the worktree on
   that EXISTING branch instead of a new one; typing still filters the list
   even while it doubles as the new-branch name, and `↑` back to the top
@@ -48,10 +44,7 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
   instead of left detached, so it stays usable for whatever you do there
   next; checked out in another linked worktree, that worktree is detached.
   If switching the main checkout would require discarding dirty changes,
-  ork aborts and changes nothing. For fe/be pairs, this prompt only ever
-  covers the primary repo — a sibling whose branch is checked out
-  elsewhere is reported to stderr and skipped rather than forced. Branch
-  names with slashes (`feat/x`) become dashed task names (`feat-x`), since
+  ork aborts and changes nothing. Branch names with slashes (`feat/x`) become dashed task names (`feat-x`), since
   a task name is also a directory and tmux session name; the picker still
   shows the real branch name.
 - **ctrl-f** (or `ork scan` from the shell) — scan: lists branches across
@@ -174,35 +167,51 @@ given repo.
 Key = repo folder basename. Repos without a matching key just skip the hook
 step. Point at a different file with `ORK_HOOKS_CONFIG` in `~/.ork.conf`.
 
-### FE/BE pairs
+### Process groups
 
-Sibling repos that share task names can be declared as pairs — ctrl-g
-spawns fe/be tmux windows running each side's dev command in its worktree,
-with a stable per-task port ({port} placeholder, FE 3000-3999, BE
-8000-8999) and the fe `.env.local` rewritten to point at the task's
-backend. One pair fits in `~/.ork.conf` (`ORK_FE_REPO`/`ORK_BE_REPO`/...);
-any number more go in `~/.config/ork/pairs.json` (path override:
-`ORK_PAIRS_CONFIG`):
+Sibling repos that share task names can be declared as a group — ctrl-g
+spawns one tmux window per process running its command in its own worktree,
+with a stable per-task port ({port} placeholder, FE range 3000-3999, BE
+range 8000-8999) and each process's `.env.local` rewritten as configured.
+Groups live in `~/.config/ork/groups.json` (path override:
+`ORK_GROUPS_CONFIG`) — there is no shell-conf shorthand, every group goes
+in this file. Here's the author's real config, two groups sharing a
+backend:
 
 ```json
 [
-  {
-    "fe": "my-frontend", "be": "my-backend",
-    "fe_cmd": "bun run dev -- --port {port}",
-    "be_cmd": "uv run fastapi dev src/app.py --port {port}",
-    "fe_env_var": "NEXT_PUBLIC_MY_SERVICE_ENDPOINT",
-    "fe_env_path": "/public/operations",
-    "fe_url_env_vars": ["NEXTAUTH_URL"]
-  }
+  {"name":"cr","processes":[
+    {"label":"fe","repo":"cr-frontend","cmd":"bun run dev -- --port {port}","port_range":"fe","env_var":"NEXT_PUBLIC_CREDIT_RISK_SERVICE_ENDPOINT"},
+    {"label":"be","repo":"cr-managament","cmd":"uv run fastapi dev src/app.py --port {port}","port_range":"be"}]},
+  {"name":"credit-risk-mfe","processes":[
+    {"label":"remote","repo":"ops-web-credit-risk","cmd":"pnpm dev","fixed_port":4023},
+    {"label":"host","repo":"ops-web-core","cmd":"./go app.dev","fixed_port":4000},
+    {"label":"be","repo":"cr-managament","cmd":"uv run fastapi dev src/app.py --port {port}","port_range":"be"}]}
 ]
 ```
 
-`fe_env_path` is optional — appended after the port in the URL written to
-`fe_env_var`. `fe_url_env_vars` keys get rewritten to the task's own fe
-origin (`http://localhost:<fePort>`) — for apps that hardcode it, like
-next-auth's `NEXTAUTH_URL`, which would otherwise bounce auth redirects to
-whatever runs on port 3000. `fe_cmd`/`be_cmd` fall back to the built-in
-defaults when omitted. A repo row triggers pairing only if it belongs to a declared pair.
+Each process has a `label` (names its tmux window), a `repo`, and a `cmd`.
+`{port}` in `cmd` is substituted with the task's stable port whenever
+`port_range` ("fe" or "be") is set. Omit `port_range` when the port is
+hardcoded in the repo's own config instead — `remote` and `host` above are
+a federated MFE setup where the ports are pinned in each repo's own config
+file; `fixed_port` there declares the port ONLY so ork can warn when it's
+already in use, since a process without `port_range` can't be isolated per
+task and only one task at a time can run it. `env_var`, if set, is the
+`.env.local` key ork rewrites in that process's worktree to point at the
+task's backend port; `env_path` is an optional URL path appended after the
+port. `url_env_vars` keys get rewritten to the task's own fe origin
+(`http://localhost:<fePort>`) — for apps that hardcode it, like next-auth's
+`NEXTAUTH_URL`, which would otherwise bounce auth redirects to whatever
+runs on port 3000.
+
+`cr-managament` above belongs to both groups — a repo can be a member of
+several groups with different siblings. ork resolves which group a task
+actually means by counting, per candidate group, how many of its member
+repos have worktrees for that task; the group with the most wins. If two
+or more groups tie (including "no worktrees exist yet for either"),
+ctrl-g's spawn is ambiguous and prompts you with a picker listing each
+candidate's name and processes so you can choose which one to start.
 
 ### Login proxy (`ork login-proxy`)
 

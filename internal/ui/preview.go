@@ -76,17 +76,37 @@ func infoPreview(cfg config.Config, r worktree.Row, lines, width int, pathStyle 
 	// Header packed into two lines across the full width instead of one
 	// stacked field per line — the vertical space belongs to the live tail.
 	line1 := styleCyan.Render(" branch:") + " " + styleBold.Render(branch)
-	if cfg.FERepo != "" && cfg.BERepo != "" {
+	if g, ambiguous, ok := worktree.ResolveGroup(cfg, cfg.WorktreeRoots, r.Repo, r.Task); ok {
+		// Name the resolved group before ctrl-g is pressed — the user needs
+		// to know what will actually be launched, especially when the repo
+		// belongs to more than one group.
+		groupLabel := styleCyan.Render("group:") + " " + styleBold.Render(g.Name) +
+			fmt.Sprintf(" %d/%d", r.GroupLive, r.GroupSize)
+		if ambiguous != nil {
+			groupLabel += " " + styleDim.Render("(ambiguous)")
+		}
+		line1 += gap + groupLabel
+
 		fePort, bePort := worktree.TaskPorts(r.Task)
-		feOn, beOn := styleDim.Render("-"), styleDim.Render("-")
-		if r.FELive {
-			feOn = styleGreen.Render("up")
+		windows := mux.SessionWindowNames(worktree.SessionName(cfg, r.Repo, r.Task))
+		live := map[string]bool{}
+		for _, w := range windows {
+			live[w] = true
 		}
-		if r.BELive {
-			beOn = styleGreen.Render("up")
+		for _, p := range g.Processes {
+			on := styleDim.Render("-")
+			if live[p.Label] {
+				on = styleGreen.Render("up")
+			}
+			portStr := ""
+			switch p.PortRange {
+			case "fe":
+				portStr = fmt.Sprintf(" :%d", fePort)
+			case "be":
+				portStr = fmt.Sprintf(" :%d", bePort)
+			}
+			line1 += "  " + styleCyan.Render(p.Label) + portStr + " " + on
 		}
-		line1 += gap + styleCyan.Render("fe") + fmt.Sprintf(" :%d ", fePort) + feOn +
-			"  " + styleCyan.Render("be") + fmt.Sprintf(" :%d ", bePort) + beOn
 	}
 	line1 += gap + strings.TrimRight(windowsLine(cfg, r), "\n")
 
