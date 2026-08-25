@@ -64,6 +64,15 @@ type Pair struct {
 	// origin (e.g. NEXTAUTH_URL=http://localhost:3000) and would otherwise
 	// redirect auth flows to whatever task hashes to port 3000.
 	FEURLEnvVars []string `json:"fe_url_env_vars"`
+	// FEPatchFile/FEPatchKey: for apps whose backend url lives in some
+	// other text file entirely (e.g. a Pkl config template rendered into
+	// public/config.json on every dev-server start — patching the
+	// generated file gets clobbered immediately). FEPatchFile is a path
+	// relative to the fe worktree; ork rewrites the first line matching
+	// `<key> = "http://localhost:<anything>"` (or `<key>: "..."`) to
+	// http://localhost:<bePort>, key/value quoting preserved.
+	FEPatchFile string `json:"fe_patch_file"`
+	FEPatchKey  string `json:"fe_patch_key"`
 }
 
 // PairFor returns the pair repo belongs to (either side), or false.

@@ -28,7 +28,8 @@ Config lives in `~/.config/ork/` (JSON, no code execution) plus `~/.ork.conf` (b
      "be_cmd": "<command run in repo-b's worktree>"
    }
    ```
-   `{port}` in either cmd gets substituted with a stable per-task port. `fe_env_var`/`fe_env_path`/`fe_url_env_vars` are optional — only add if the FE needs its `.env.local` rewritten to point at the task's own BE port.
+   `{port}` in either cmd gets substituted with a stable per-task port. `fe_env_var`/`fe_env_path`/`fe_url_env_vars` are optional — only add if the FE needs its `.env.local` rewritten to point at the task's own BE port. `fe_patch_file`/`fe_patch_key` are for apps whose backend url lives elsewhere — e.g. a Pkl/YAML/JSON template that gets *rendered* into a generated config file on every dev-server start (patching the generated file directly gets clobbered the moment the dev command runs). `fe_patch_file` is a path relative to the fe worktree; ork rewrites the first `key = "http://localhost:PORT"` (or `key: "..."`) line in it to the task's BE port. Find the real source (grep the repo's dev/build task for what generates the file you'd naively patch) — don't patch generated output.
+   - If the repo uses direnv (`.envrc`), the setup hook must also run `direnv allow .` after copying it in, or the dev command fails with "is blocked" on first run in the new worktree.
 4. **Add/update setup hooks** in `~/.config/ork/hooks.json` for each repo in the pair, if not already present — typically copying env files from the canonical checkout plus installing deps. Validate the JSON after editing (trailing commas break the whole file silently — a broken hooks.json falls back to no hooks with no error).
 5. **Validate both JSON files parse** (`python3 -m json.tool <file>` or `jq .`) before finishing.
 6. Do **not** run `./build.sh` or touch Go source for a config-only change — config is read at runtime from these files.
