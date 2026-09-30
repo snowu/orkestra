@@ -71,6 +71,15 @@ type Pair struct {
 	FEEnvFile string `json:"fe_env_file"`
 	// TaskEnvVar defaults to NEXT_PUBLIC_ORK_TASK; an empty string disables it.
 	TaskEnvVar *string `json:"task_env_var,omitempty"`
+	// FEPatchFile/FEPatchKey: for apps whose backend url lives in some
+	// other text file entirely (e.g. a Pkl config template rendered into
+	// public/config.json on every dev-server start — patching the
+	// generated file gets clobbered immediately). FEPatchFile is a path
+	// relative to the fe worktree; ork rewrites the first line matching
+	// `<key> = "http://localhost:<anything>"` (or `<key>: "..."`) to
+	// http://localhost:<bePort>, key/value quoting preserved.
+	FEPatchFile string `json:"fe_patch_file"`
+	FEPatchKey  string `json:"fe_patch_key"`
 }
 
 // PairFor returns the pair repo belongs to (either side), or false.
@@ -255,6 +264,15 @@ func (p Pair) Validate() error {
 	}
 	if p.FERepo == p.BERepo {
 		return fmt.Errorf("fe and be must be different repos")
+	}
+	if (p.FEPatchFile == "") != (p.FEPatchKey == "") {
+		return fmt.Errorf("fe_patch_file and fe_patch_key must be configured together")
+	}
+	if f := p.FEPatchFile; f != "" && (!filepath.IsLocal(f) || strings.ContainsAny(f, "\r\n")) {
+		return fmt.Errorf("fe_patch_file must be a relative path inside the worktree")
+	}
+	if p.FEPatchFile != "" && filepath.Clean(p.FEPatchFile) == filepath.Clean(p.EnvFile()) {
+		return fmt.Errorf("fe_patch_file and fe_env_file must be different files")
 	}
 	if f := p.FEEnvFile; f != "" && (!filepath.IsLocal(f) || strings.ContainsAny(f, "\r\n")) {
 		return fmt.Errorf("fe_env_file must be a relative path inside the worktree")

@@ -130,3 +130,46 @@ func TestPatchEnvRejectsSymlink(t *testing.T) {
 		t.Fatal("outside file changed")
 	}
 }
+
+func TestTemplatePatchPlanAndLaunch(t *testing.T) {
+	root := t.TempDir()
+	fe, be := filepath.Join(root, "web/task"), filepath.Join(root, "api/task")
+	os.MkdirAll(fe, 0o755)
+	os.MkdirAll(be, 0o755)
+	path := filepath.Join(fe, "config.pkl")
+	original := "# keep\n  backend = \"http://localhost:8000/v1\"\nother = \"http://localhost:8000\"\n"
+	os.WriteFile(path, []byte(original), 0o644)
+	cfg := config.Config{WorktreeRoots: []string{root}, Pairs: []config.Pair{{FERepo: "web", BERepo: "api", FEPatchFile: "config.pkl", FEPatchKey: "backend"}}}
+	plan, err := PlanPair(cfg, "web", "task", fe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != original {
+		t.Fatal("planning changed template")
+	}
+	if plan.PatchFile != "config.pkl" || plan.PatchKey != "backend" {
+		t.Fatalf("plan = %+v", plan)
+	}
+	if _, _, _, _, err := prepFEBE(cfg, "api", "task", be); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if string(data) != string(plan.patchData) || strings.Contains(string(data), `backend = "http://localhost:8000/`) || !strings.Contains(string(data), `other = "http://localhost:8000"`) {
+		t.Fatalf("template = %s", data)
+	}
+	st, _ := os.Stat(path)
+	if st.Mode().Perm() != 0o644 {
+		t.Fatalf("mode = %v", st.Mode())
+	}
+	// A bad template fails before any environment updates are applied.
+	os.WriteFile(path, []byte("backend = \"https://example.test\"\n"), 0o644)
+	os.WriteFile(filepath.Join(fe, ".env.local"), []byte("KEEP=1\n"), 0o600)
+	if _, _, _, _, err := prepFEBE(cfg, "web", "task", fe); err == nil {
+		t.Fatal("missing localhost URL accepted")
+	}
+	data, _ = os.ReadFile(filepath.Join(fe, ".env.local"))
+	if string(data) != "KEEP=1\n" {
+		t.Fatal("failed template patch changed environment")
+	}
+}

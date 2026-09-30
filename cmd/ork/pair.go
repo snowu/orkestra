@@ -83,6 +83,9 @@ func runPair(args []string) {
 	for _, key := range keys {
 		fmt.Fprintf(os.Stderr, "  %s: %s=%q\n", plan.EnvFile, key, plan.Env[key])
 	}
+	if plan.PatchFile != "" {
+		fmt.Fprintf(os.Stderr, "  %s: rewrite %s backend URL to port %d\n", plan.PatchFile, plan.PatchKey, plan.BEPort)
+	}
 	if dry {
 		return
 	}

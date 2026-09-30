@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -118,6 +119,9 @@ type PairPlan struct {
 	FEPort, BEPort                             int
 	EnvFile                                    string
 	Env                                        map[string]string
+	PatchFile, PatchKey                        string
+	patchData                                  []byte
+	patchMode                                  os.FileMode
 }
 
 func PlanPair(cfg config.Config, repo, task, wt string) (PairPlan, error) {
@@ -153,6 +157,23 @@ func PlanPair(cfg config.Config, repo, task, wt string) (PairPlan, error) {
 	for _, key := range pair.FEURLEnvVars {
 		plan.Env[key] = fmt.Sprintf("http://localhost:%d", fePort)
 	}
+	if pair.FEPatchFile != "" {
+		plan.PatchFile, plan.PatchKey = pair.FEPatchFile, pair.FEPatchKey
+		path, mode, err := managedFile(feDir, pair.FEPatchFile)
+		if err != nil {
+			return PairPlan{}, err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return PairPlan{}, err
+		}
+		re := regexp.MustCompile(`(?m)^(\s*` + regexp.QuoteMeta(pair.FEPatchKey) + `\s*[:=]\s*")http://localhost:\d+([^"]*")`)
+		if !re.Match(data) {
+			return PairPlan{}, fmt.Errorf("no %q localhost URL found in %s", pair.FEPatchKey, path)
+		}
+		plan.patchData = re.ReplaceAll(data, []byte(`${1}http://localhost:`+strconv.Itoa(bePort)+`${2}`))
+		plan.patchMode = mode
+	}
 	return plan, nil
 }
 
@@ -163,6 +184,11 @@ func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, feCmd, be
 	}
 	if err := patchEnvFile(plan.FEDir, plan.EnvFile, plan.Env); err != nil {
 		return "", "", "", "", err
+	}
+	if plan.PatchFile != "" {
+		if err := atomicWrite(filepath.Join(plan.FEDir, plan.PatchFile), plan.patchData, plan.patchMode); err != nil {
+			return "", "", "", "", err
+		}
 	}
 	return plan.FEDir, plan.BEDir, plan.FECmd, plan.BECmd, nil
 }

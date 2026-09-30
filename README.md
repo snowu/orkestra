@@ -222,6 +222,15 @@ Environment updates preserve other keys and file permissions, collapse
 repeated assignments for managed keys, and replace the file atomically.
 Symlinked environment files are rejected; copy them into the worktree first.
 
+If the backend URL lives in a source template, set `fe_patch_file` and
+`fe_patch_key` together, for example `"fe_patch_file": "config.pkl"` and
+`"fe_patch_key": "backend"`. The launcher updates matching lines such as
+`backend = "http://localhost:8000/v1"` to the task's backend port, preserving
+the URL suffix and other settings. Choose the source template rather than
+its generated output. Dry runs validate the matching key and show the
+proposed port update without writing. Template updates also use atomic
+replacement and preserve permissions.
+
 The default pairs file is loaded even if `~/.ork.conf` does not exist.
 A missing pairs file is optional. Invalid JSON, unknown JSON fields,
 incomplete pairs, invalid environment keys, and duplicate repo membership

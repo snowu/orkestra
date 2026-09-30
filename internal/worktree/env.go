@@ -16,26 +16,8 @@ func patchEnvFile(dir, file string, values map[string]string) error {
 	if len(values) == 0 {
 		return nil
 	}
-	path := filepath.Join(dir, file)
-	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	path, mode, err := managedFile(dir, file)
 	if err != nil {
-		return fmt.Errorf("environment file %s: %w", path, err)
-	}
-	root, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return err
-	}
-	rel, err := filepath.Rel(root, parent)
-	if err != nil || (rel != "." && !filepath.IsLocal(rel)) {
-		return fmt.Errorf("environment file %s escapes worktree", path)
-	}
-	mode := os.FileMode(0o600)
-	if st, err := os.Lstat(path); err == nil {
-		if !st.Mode().IsRegular() {
-			return fmt.Errorf("environment file %s must be a regular file", path)
-		}
-		mode = st.Mode().Perm()
-	} else if !os.IsNotExist(err) {
 		return err
 	}
 	var lines []string
@@ -81,7 +63,38 @@ func patchEnvFile(dir, file string, values map[string]string) error {
 	for _, key := range keys {
 		lines = append(lines, assignment(key, values[key]))
 	}
-	tmp, err := os.CreateTemp(parent, ".ork-env-*")
+	return atomicWrite(path, []byte(strings.Join(lines, "\n")+"\n"), mode)
+}
+
+// managedFile validates the destination shared by dotenv and template updates.
+func managedFile(dir, file string) (string, os.FileMode, error) {
+	path := filepath.Join(dir, file)
+	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return "", 0, fmt.Errorf("environment file %s: %w", path, err)
+	}
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", 0, err
+	}
+	rel, err := filepath.Rel(root, parent)
+	if err != nil || (rel != "." && !filepath.IsLocal(rel)) {
+		return "", 0, fmt.Errorf("environment file %s escapes worktree", path)
+	}
+	mode := os.FileMode(0o600)
+	if st, err := os.Lstat(path); err == nil {
+		if !st.Mode().IsRegular() {
+			return "", 0, fmt.Errorf("environment file %s must be a regular file", path)
+		}
+		mode = st.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return "", 0, err
+	}
+	return path, mode, nil
+}
+
+func atomicWrite(path string, data []byte, mode os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ork-config-*")
 	if err != nil {
 		return err
 	}
@@ -90,7 +103,7 @@ func patchEnvFile(dir, file string, values map[string]string) error {
 		tmp.Close()
 		return err
 	}
-	_, err = tmp.WriteString(strings.Join(lines, "\n") + "\n")
+	_, err = tmp.Write(data)
 	closeErr := tmp.Close()
 	if err != nil {
 		return err

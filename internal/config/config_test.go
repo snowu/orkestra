@@ -154,6 +154,9 @@ func TestPairConfigurationErrors(t *testing.T) {
 		`[{"fe":"a","be":"b","fe_env_var":"BAD-KEY"}]`,
 		`[{"fe":"a","be":"b","fe_env_var":"NEXT_PUBLIC_ORK_TASK"}]`,
 		`[{"fe":"a","be":"b","fe_env_path":"/x\nINJECT=1"}]`,
+		`[{"fe":"a","be":"b","fe_patch_file":"config.pkl"}]`,
+		`[{"fe":"a","be":"b","fe_patch_file":"../config.pkl","fe_patch_key":"backend"}]`,
+		`[{"fe":"a","be":"b","fe_patch_file":".env.local","fe_patch_key":"backend"}]`,
 	} {
 		t.Run(content, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "pairs.json")
