@@ -79,6 +79,9 @@ func AllRepoDirs(home string, maxDepth int, cachePath string, ttl time.Duration)
 			return fs.SkipDir
 		}
 		if depthOf(path) >= maxDepth {
+			if st, err := os.Stat(filepath.Join(path, ".git")); err == nil && st.IsDir() {
+				out = append(out, path)
+			}
 			return fs.SkipDir
 		}
 		return nil
@@ -128,4 +131,13 @@ func splitLines(s string) []string {
 		}
 	}
 	return out
+}
+
+// PathWithin matches a checkout itself or one of its subdirectories.
+func PathWithin(root, path string) bool {
+	if root == "" || path == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	return err == nil && (rel == "." || filepath.IsLocal(rel))
 }

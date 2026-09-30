@@ -216,12 +216,13 @@ type Model struct {
 	reloadCh      <-chan struct{}
 	loadRows      func() []worktree.Row
 	err           string
-	cow           []string // fortune/cowsay sidebar lines, refreshed per reload
+	cow           []string // fortune/cowsay sidebar, loaded once off the UI thread
 	repoColors    map[string]lipgloss.Color
 	taskColors    map[string]lipgloss.Color
 }
 
 type rowsMsg []worktree.Row
+type cowMsg []string
 type stateChangedMsg struct{}
 type tickMsg time.Time
 type spawnDoneMsg struct{ err error }
@@ -269,7 +270,7 @@ func Run(cfg config.Config) (Result, error) {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.reloadCmd(), m.watchCmd(), tick())
+	return tea.Batch(m.reloadCmd(), m.watchCmd(), tick(), func() tea.Msg { return cowMsg(cowSidebar()) })
 }
 
 func (m *Model) reloadCmd() tea.Cmd {
@@ -328,11 +329,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 	case rowsMsg:
+		selected, hadSelection := m.selected()
 		m.rows = msg
 		m.applyFilter()
-		m.cow = cowSidebar()
+		selectionFound := false
+		if hadSelection {
+			for i, index := range m.visible {
+				if m.rows[index].Path == selected.Path {
+					m.cursor = i
+					selectionFound = true
+					break
+				}
+			}
+		}
+		if !selectionFound && (m.mode == modeConfirmEnd || m.mode == modeConfirmKill) {
+			m.mode, m.confirmYes = modeList, false
+		}
 		m.updateRepoColors(m.rows)
 		m.updateTaskColors(m.rows)
+		return m, m.previewCmd()
+	case cowMsg:
+		m.cow = msg
 		return m, m.previewCmd()
 	case stateChangedMsg:
 		return m, tea.Batch(m.reloadCmd(), m.watchCmd())
@@ -425,13 +442,5 @@ func (m *Model) previewCmd() tea.Cmd {
 }
 
 func (m *Model) previewLines() int {
-	// Preview takes the bottom ~60% of the screen. View() spends
-	// help+header+filter (3) + listH (height - height*6/10 - 5) + divider
-	// (1) lines above it, so the space actually left is height*6/10 + 1;
-	// one line is held back for the error/status line.
-	n := m.height*6/10
-	if n < 5 {
-		n = 5
-	}
-	return n
+	return max(0, m.height-5-m.listLines())
 }

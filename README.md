@@ -22,7 +22,9 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
 - Repo names are colored for grouping — distinct repos get maximally
   distinct colors, stable across runs while your set of repos is stable.
 - Type to fuzzy-filter the list. An orc (cowsay + fortune) heckles from the
-  right margin if you have both installed.
+  right margin if you have both installed. Its fortune is generated once per
+  picker session and stays stable across refreshes. The full orc is shown
+  when space permits, with preview space adjusted to fit it.
 - **ENTER** — attach-or-create: lands you in a tmux session for that
   worktree (attaches if the session already exists, creates it otherwise).
 - **alt-ENTER** — cd only, no tmux session: for when you just want to look
@@ -62,7 +64,7 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
   without its binary.
 - `bash` or `zsh`
 - git (worktrees)
-- Go 1.22+ — build-time only (`install.sh` compiles the binary; e.g.
+- Go 1.26.5+ — build-time only (`install.sh` compiles the binary; e.g.
   `mise use -g go@latest`)
 - `fortune` + `cowsay` — optional, for the orc sidebar
 - [Claude Code](https://claude.com/claude-code) — optional; only needed for
@@ -177,7 +179,71 @@ any number more go in `~/.config/ork/pairs.json` (path override:
 origin (`http://localhost:<fePort>`) — for apps that hardcode it, like
 next-auth's `NEXTAUTH_URL`, which would otherwise bounce auth redirects to
 whatever runs on port 3000. `fe_cmd`/`be_cmd` fall back to the built-in
-defaults when omitted. A repo row triggers pairing only if it belongs to a declared pair.
+defaults (or your `ORK_FE_CMD`/`ORK_BE_CMD` overrides) when omitted. A repo row triggers pairing only if it belongs to a declared pair.
+
+## Pairing and configuration from the CLI
+
+Run `ork config check` before opening the picker to validate your settings
+and list the effective pairs. Set `ORK_CONFIG=/path/to/ork.conf` to try a
+separate configuration; the same file is used by all commands. Configuration
+is parsed as data, without executing shell commands. Single-line assignments,
+`export KEY=value`, and trailing comments are supported.
+
+From either repo's main checkout, use `ork pair <task> --dry-run` to inspect
+the resolved worktrees, ports, commands, and proposed environment updates.
+From anywhere inside a task worktree, `ork pair --dry-run` infers the task.
+Remove `--dry-run` to start both dev windows in the task session. Dry runs
+and configuration checks need no multiplexer; normal launches use your
+configured backend. Output goes to stderr so the shell wrapper only changes
+directory when a command explicitly returns a directory on stdout.
+
+For a Vite frontend and Python API, `~/.config/ork/pairs.json` can contain:
+
+```json
+[
+  {
+    "fe": "dashboard",
+    "be": "api",
+    "fe_cmd": "npm run dev -- --port {port}",
+    "be_cmd": "python -m uvicorn app:app --port {port}",
+    "fe_env_file": ".env",
+    "fe_env_var": "VITE_API_URL",
+    "fe_env_path": "/v1",
+    "task_env_var": "VITE_ORK_TASK"
+  }
+]
+```
+
+`fe_env_file` defaults to `.env.local`. Use a relative path within the
+frontend worktree; its parent directory must already exist. `task_env_var`
+defaults to `NEXT_PUBLIC_ORK_TASK`; set it to `""` to disable the task label.
+Commands accept `{port}` for their own port, plus `{fe_port}` and `{be_port}`
+for either service's port. Omitted commands inherit `ORK_FE_CMD` and
+`ORK_BE_CMD`, whose built-in defaults remain `rund` and `bund`.
+Environment updates preserve other keys and file permissions, collapse
+repeated assignments for managed keys, and replace the file atomically.
+Symlinked environment files are rejected; copy them into the worktree first.
+
+If the backend URL lives in a source template, set `fe_patch_file` and
+`fe_patch_key` together, for example `"fe_patch_file": "config.pkl"` and
+`"fe_patch_key": "backend"`. The launcher updates matching lines such as
+`backend = "http://localhost:8000/v1"` to the task's backend port, preserving
+the URL suffix and other settings. Choose the source template rather than
+its generated output. Dry runs validate the matching key and show the
+proposed port update without writing. Template updates also use atomic
+replacement and preserve permissions.
+
+The default pairs file is loaded even if `~/.ork.conf` does not exist.
+A missing pairs file is optional. Invalid JSON, unknown JSON fields,
+incomplete pairs, invalid environment keys, and duplicate repo membership
+now produce errors instead of silently disabling pairing. Define each repo
+in one pair, removing its legacy `ORK_FE_REPO`/`ORK_BE_REPO` declaration if
+you move it into JSON. Unknown shell configuration keys remain allowed.
+
+Ports retain the existing task-name hash, so existing URLs stay stable.
+Different tasks can hash to the same port, and different pairs using the
+same task name share ports; port allocation is not a reservation system.
+The optional login proxy retains its existing Next.js auth behavior.
 
 ### Login proxy (`ork login-proxy`)
 
@@ -201,6 +267,13 @@ session for context continuity). Set `ORK_SCOPE_SESSIONS_TO_REPO=1` in
 `~/.ork.conf` if you'd rather sessions never collide across repos. Ending a
 task only kills the shared task-named session if no other repo's worktree
 under that same task name still exists.
+
+Task names must be valid Git branch names that fit one directory (no `/`),
+matching the worktree discovery layout. Setup-hook failures report the
+created worktree path so you can repair it. Cleanup stops if Git cannot
+remove a worktree, preserving its files, branches, and sessions; locked
+worktrees must be unlocked explicitly before retrying. `end-task` also works
+from subdirectories within a task worktree.
 
 ## Claude Code agent status (optional)
 

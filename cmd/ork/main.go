@@ -21,6 +21,15 @@ func main() {
 		return
 	}
 	switch args[0] {
+	case "--help", "-h":
+		fmt.Fprintln(os.Stderr, usage)
+	case "config":
+		if len(args) != 2 || args[1] != "check" {
+			fatal("usage: ork config check")
+		}
+		runConfigCheck()
+	case "pair":
+		runPair(args[1:])
 	case "--version":
 		fmt.Fprintln(os.Stderr, "ork "+version)
 	case "new-task":
@@ -45,7 +54,7 @@ func main() {
 		}
 		runEndTaskDirect(args[1], args[2])
 	default:
-		fatal("usage: ork [new-task <name> | end-task [name] | login-proxy [port] | --version]")
+		fatal(usage)
 	}
 }
 

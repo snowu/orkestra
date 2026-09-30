@@ -79,7 +79,7 @@ UNKNOWN_KEY=whatever
 
 func TestExampleConfParses(t *testing.T) {
 	// The shipped example must always parse.
-	cfg, err := Load("testdata/ork.conf.example")
+	cfg, err := Load("../../ork.conf.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,8 +96,7 @@ func TestPairsMergeLegacyAndJSON(t *testing.T) {
 		 "fe_cmd": "bun run dev -- --port {port}",
 		 "be_cmd": "uv run fastapi dev src/app.py --port {port}",
 		 "fe_env_var": "NEXT_PUBLIC_TRADE_FINANCE_SERVICE_ENDPOINT",
-		 "fe_env_path": "/public/operations"},
-		{"fe": "incomplete-no-be"}
+		 "fe_env_path": "/public/operations"}
 	]`), 0o644)
 	p := write(t, `
 ORK_FE_REPO=cr-frontend
@@ -111,7 +110,7 @@ ORK_PAIRS_CONFIG="`+pairsPath+`"
 		t.Fatal(err)
 	}
 	if len(cfg.Pairs) != 2 {
-		t.Fatalf("pairs = %+v, want legacy + 1 json (incomplete dropped)", cfg.Pairs)
+		t.Fatalf("pairs = %+v, want legacy + 1 json", cfg.Pairs)
 	}
 	if cfg.Pairs[0].FERepo != "cr-frontend" || cfg.Pairs[0].FEEnvVar != "NEXT_PUBLIC_CREDIT_RISK_SERVICE_ENDPOINT" {
 		t.Errorf("legacy pair first, got %+v", cfg.Pairs[0])
@@ -142,5 +141,65 @@ func TestPairsJSONOnlyDefaultsCmds(t *testing.T) {
 	}
 	if len(cfg.Pairs) != 1 || cfg.Pairs[0].FECmd != "rund" || cfg.Pairs[0].BECmd != "bund" {
 		t.Fatalf("pairs = %+v", cfg.Pairs)
+	}
+}
+
+func TestPairConfigurationErrors(t *testing.T) {
+	for _, content := range []string{
+		`[`, `null`, `[] []`, `[{"fe":"a","be":"b","fe_comand":"typo"}]`,
+		`[{"fe":"a"}]`, `[{"fe":"a","be":"a"}]`,
+		`[{"fe":"../a","be":"b"}]`,
+		`[{"fe":"a","be":"b"},{"fe":"b","be":"c"}]`,
+		`[{"fe":"a","be":"b","fe_env_file":"../.env"}]`,
+		`[{"fe":"a","be":"b","fe_env_var":"BAD-KEY"}]`,
+		`[{"fe":"a","be":"b","fe_env_var":"NEXT_PUBLIC_ORK_TASK"}]`,
+		`[{"fe":"a","be":"b","fe_env_path":"/x\nINJECT=1"}]`,
+		`[{"fe":"a","be":"b","fe_patch_file":"config.pkl"}]`,
+		`[{"fe":"a","be":"b","fe_patch_file":"../config.pkl","fe_patch_key":"backend"}]`,
+		`[{"fe":"a","be":"b","fe_patch_file":".env.local","fe_patch_key":"backend"}]`,
+	} {
+		t.Run(content, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "pairs.json")
+			os.WriteFile(path, []byte(content), 0o600)
+			_, err := Load(write(t, `ORK_PAIRS_CONFIG="`+path+`"`))
+			if err == nil {
+				t.Fatal("invalid pair accepted")
+			}
+		})
+	}
+}
+
+func TestDefaultPairsWithoutShellConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config/ork")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "pairs.json"), []byte(`[{"fe":"web","be":"api","task_env_var":"","fe_env_file":".env"}]`), 0o600)
+	cfg, err := Load(filepath.Join(home, ".ork.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Pairs) != 1 || cfg.Pairs[0].TaskKey() != "" || cfg.Pairs[0].EnvFile() != ".env" {
+		t.Fatalf("pairs = %+v", cfg.Pairs)
+	}
+}
+
+func TestExportCommentsAndCommandDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pairs.json")
+	os.WriteFile(path, []byte(`[{"fe":"a","be":"b"}]`), 0o600)
+	cfg, err := Load(write(t, `export ORK_PAIRS_CONFIG="`+path+`" # pairs
+ORK_FE_CMD="echo '# keep' {port}" # trailing comment
+ORK_BE_CMD='python app.py --port {port}'
+ORK_SCOPE_SESSIONS_TO_REPO=1 # shared config`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Pairs[0].FECmd != "echo '# keep' {port}" || cfg.Pairs[0].BECmd != "python app.py --port {port}" || !cfg.ScopeSessionsToRepo {
+		t.Fatalf("config = %+v", cfg)
+	}
+	for _, line := range []string{"ORK_WORKTREES_ROOTS=()", "ORK_SCAN_MAXDEPTH=oops", "ORK_SCOPE_SESSIONS_TO_REPO=true", "ORK_MULTIPLEXER=unknown", "ORK_FE_REPO=only-one"} {
+		if _, err := Load(write(t, line)); err == nil {
+			t.Errorf("accepted %s", line)
+		}
 	}
 }

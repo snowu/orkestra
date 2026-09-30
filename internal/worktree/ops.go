@@ -1,7 +1,6 @@
 package worktree
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"hash/fnv"
@@ -27,7 +26,9 @@ func git(dir string, args ...string) error {
 	var buf bytes.Buffer
 	c := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	c.Stdout = io.MultiWriter(Log, &buf)
-	c.Stderr = io.MultiWriter(Log, &buf)
+	// Identical writers let os/exec serialize both streams through one
+	// copy goroutine; separate MultiWriters race on the shared buffer.
+	c.Stderr = c.Stdout
 	if err := c.Run(); err != nil {
 		// Log may be io.Discard (TUI) — carry the output in the error so
 		// failures still surface somewhere instead of vanishing.
@@ -111,115 +112,85 @@ func TaskPorts(task string) (fe, be int) {
 	return 3000 + n, 8000 + n
 }
 
-// patchFEEnvVar rewrites (or appends) VAR=http://localhost:<port> in
-// feDir/.env.local — how the fe dev server learns which port the
-// task-specific backend landed on, since fe/be run as separate processes
-// with no shared env.
-func patchFEEnvVar(feDir, varName, urlPath string, port int) error {
-	return patchEnvVar(feDir, varName, fmt.Sprintf("http://localhost:%d%s", port, urlPath))
+// PairPlan is the resolved setup used by both the CLI preview and launcher.
+// Building a plan never writes files or starts processes.
+type PairPlan struct {
+	FERepo, BERepo, FEDir, BEDir, FECmd, BECmd string
+	FEPort, BEPort                             int
+	EnvFile                                    string
+	Env                                        map[string]string
+	PatchFile, PatchKey                        string
+	patchData                                  []byte
+	patchMode                                  os.FileMode
 }
 
-// patchEnvVar rewrites (or appends) VAR=value in dir/.env.local.
-func patchEnvVar(dir, varName, value string) error {
-	path := filepath.Join(dir, ".env.local")
-	line := varName + "=" + value
-
-	f, err := os.Open(path)
-	var lines []string
-	found := false
-	if err == nil {
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			l := sc.Text()
-			if strings.HasPrefix(l, varName+"=") {
-				lines = append(lines, line)
-				found = true
-			} else {
-				lines = append(lines, l)
-			}
-		}
-		f.Close()
-		if err := sc.Err(); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if !found {
-		lines = append(lines, line)
-	}
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
-}
-
-// patchFilePort rewrites the first line matching `key = "http://localhost:PORT"`
-// or `key: "http://localhost:PORT"` in relPath (relative to feDir) to point
-// at port — for backend urls that live in a config template (e.g. a Pkl
-// file rendered into a generated config.json on every dev-server start,
-// where patching the generated file gets immediately clobbered) rather than
-// .env.local.
-func patchFilePort(feDir, relPath, key string, port int) error {
-	path := filepath.Join(feDir, relPath)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	re := regexp.MustCompile(`(?m)^(\s*` + regexp.QuoteMeta(key) + `\s*[:=]\s*")http://localhost:\d+([^"]*")`)
-	out := re.ReplaceAll(data, []byte(`${1}http://localhost:`+strconv.Itoa(port)+`${2}`))
-	if !re.Match(data) {
-		return fmt.Errorf("patchFilePort: no %q key found in %s", key, path)
-	}
-	return os.WriteFile(path, out, 0o600)
-}
-
-// subPort substitutes a {port} placeholder in cmd, if present.
-func subPort(cmd string, port int) string {
-	return strings.ReplaceAll(cmd, "{port}", strconv.Itoa(port))
-}
-
-// prepFEBE resolves fe/be dirs, derives the task's ports ({port} in FECmd
-// gets the fe port, in BECmd the be port), and patches the fe env var (if
-// configured) to point at the be port — the setup shared before actually
-// starting either process.
-func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, feCmd, beCmd string, err error) {
-	// Only rows belonging to a configured pair get fe/be windows —
-	// an unrelated repo whose task name happens to exist in both sibling
-	// repos must not spawn dev servers for them.
+func PlanPair(cfg config.Config, repo, task, wt string) (PairPlan, error) {
 	pair, ok := cfg.PairFor(repo)
 	if !ok {
-		if len(cfg.Pairs) == 0 {
-			return "", "", "", "", fmt.Errorf("no fe/be pairs configured (~/.ork.conf or ~/.config/ork/pairs.json)")
-		}
-		return "", "", "", "", fmt.Errorf("%s is not part of any configured fe/be pair", repo)
+		return PairPlan{}, fmt.Errorf("%s has no configured pair; set ORK_PAIRS_CONFIG (see ork config check)", repo)
 	}
-	feDir, beDir, err = feBEDirs(cfg, pair, repo, task, wt)
+	if err := pair.Validate(); err != nil {
+		return PairPlan{}, err
+	}
+	feDir, beDir, err := feBEDirs(cfg, pair, repo, task, wt)
+	if err != nil {
+		return PairPlan{}, err
+	}
+	for _, dir := range []string{feDir, beDir} {
+		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+			return PairPlan{}, fmt.Errorf("worktree directory unavailable: %s", dir)
+		}
+	}
+	fePort, bePort := TaskPorts(task)
+	replace := func(cmd string, port int) string {
+		return strings.NewReplacer("{port}", strconv.Itoa(port), "{fe_port}", strconv.Itoa(fePort), "{be_port}", strconv.Itoa(bePort)).Replace(cmd)
+	}
+	plan := PairPlan{FERepo: pair.FERepo, BERepo: pair.BERepo, FEDir: feDir, BEDir: beDir,
+		FECmd: replace(pair.FECmd, fePort), BECmd: replace(pair.BECmd, bePort),
+		FEPort: fePort, BEPort: bePort, EnvFile: pair.EnvFile(), Env: map[string]string{}}
+	if pair.FEEnvVar != "" {
+		plan.Env[pair.FEEnvVar] = fmt.Sprintf("http://localhost:%d%s", bePort, pair.FEEnvPath)
+	}
+	if key := pair.TaskKey(); key != "" {
+		plan.Env[key] = task
+	}
+	for _, key := range pair.FEURLEnvVars {
+		plan.Env[key] = fmt.Sprintf("http://localhost:%d", fePort)
+	}
+	if pair.FEPatchFile != "" {
+		plan.PatchFile, plan.PatchKey = pair.FEPatchFile, pair.FEPatchKey
+		path, mode, err := managedFile(feDir, pair.FEPatchFile)
+		if err != nil {
+			return PairPlan{}, err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return PairPlan{}, err
+		}
+		re := regexp.MustCompile(`(?m)^(\s*` + regexp.QuoteMeta(pair.FEPatchKey) + `\s*[:=]\s*")http://localhost:\d+([^"]*")`)
+		if !re.Match(data) {
+			return PairPlan{}, fmt.Errorf("no %q localhost URL found in %s", pair.FEPatchKey, path)
+		}
+		plan.patchData = re.ReplaceAll(data, []byte(`${1}http://localhost:`+strconv.Itoa(bePort)+`${2}`))
+		plan.patchMode = mode
+	}
+	return plan, nil
+}
+
+func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, feCmd, beCmd string, err error) {
+	plan, err := PlanPair(cfg, repo, task, wt)
 	if err != nil {
 		return "", "", "", "", err
 	}
-	fePort, bePort := TaskPorts(task)
-	if pair.FEEnvVar != "" {
-		if err := patchFEEnvVar(feDir, pair.FEEnvVar, pair.FEEnvPath, bePort); err != nil {
-			return "", "", "", "", err
-		}
-	}
-	if pair.FEPatchFile != "" && pair.FEPatchKey != "" {
-		if err := patchFilePort(feDir, pair.FEPatchFile, pair.FEPatchKey, bePort); err != nil {
-			return "", "", "", "", err
-		}
-	}
-	// Task name exposed to the fe app so it can label itself (e.g. browser
-	// tab title "[task] app") — otherwise every task's tab reads identically
-	// and only the port distinguishes them. Best-effort: the fe may ignore it.
-	if err := patchEnvVar(feDir, "NEXT_PUBLIC_ORK_TASK", task); err != nil {
+	if err := patchEnvFile(plan.FEDir, plan.EnvFile, plan.Env); err != nil {
 		return "", "", "", "", err
 	}
-	// Apps that hardcode their own origin (NEXTAUTH_URL etc.) must learn
-	// the task's real fe port, or auth redirects land on localhost:3000.
-	for _, v := range pair.FEURLEnvVars {
-		if err := patchEnvVar(feDir, v, fmt.Sprintf("http://localhost:%d", fePort)); err != nil {
+	if plan.PatchFile != "" {
+		if err := atomicWrite(filepath.Join(plan.FEDir, plan.PatchFile), plan.patchData, plan.patchMode); err != nil {
 			return "", "", "", "", err
 		}
 	}
-	return feDir, beDir, subPort(pair.FECmd, fePort), subPort(pair.BECmd, bePort), nil
+	return plan.FEDir, plan.BEDir, plan.FECmd, plan.BECmd, nil
 }
 
 // EnsureFEBEWindows makes sure the base session for repo/task exists and has
@@ -249,6 +220,12 @@ func EnsureFEBEWindows(cfg config.Config, repo, task, wt string) error {
 // writes .claude-profile, and touches the access marker (a fresh task
 // counts as used — otherwise it'd sort to the bottom next run).
 func NewTask(cfg config.Config, repoRoot, task string) (string, error) {
+	if len(cfg.WorktreeRoots) == 0 {
+		return "", fmt.Errorf("no worktree roots configured")
+	}
+	if err := ValidateTaskName(task); err != nil {
+		return "", err
+	}
 	repo := filepath.Base(repoRoot)
 	git(repoRoot, "worktree", "prune")
 
@@ -261,15 +238,19 @@ func NewTask(cfg config.Config, repoRoot, task string) (string, error) {
 		return "", err
 	}
 	if err := git(repoRoot, "worktree", "add", wt, "-b", task, base); err != nil {
-		return "", fmt.Errorf("git worktree add failed for %s", wt)
+		return "", fmt.Errorf("git worktree add failed for %s: %w", wt, err)
 	}
 
 	if data, err := os.ReadFile(filepath.Join(repoRoot, ".env.local")); err == nil {
-		os.WriteFile(filepath.Join(wt, ".env.local"), data, 0o600)
+		if err := os.WriteFile(filepath.Join(wt, ".env.local"), data, 0o600); err != nil {
+			return "", fmt.Errorf("worktree created at %s, but .env.local copy failed: %w", wt, err)
+		}
 		fmt.Fprintln(os.Stderr, "Copied .env.local")
 	}
 
-	hooks.RunRepoHook(cfg.HooksConfig, repo, wt)
+	if err := hooks.RunRepoHook(cfg.HooksConfig, repo, wt); err != nil {
+		return "", fmt.Errorf("worktree created at %s, but setup hook failed: %w", wt, err)
+	}
 	WriteClaudeProfile(cfg.ClaudePersonalDirs, repoRoot, wt)
 	TouchAccess(repo, task)
 	return wt, nil
@@ -312,35 +293,36 @@ func LiveTmuxOps() TmuxOps {
 // killing it would yank it from a still-active sibling.
 func KillSessionFor(cfg config.Config, t TmuxOps, repo, task string) {
 	wt := WorktreeOrDefault(cfg.WorktreeRoots, repo, task)
-
-	for _, p := range t.Panes() {
-		if p.CWD == wt {
-			t.KillSession(p.Session)
-			break
-		}
-	}
-
-	if repoSess := repo + "__" + task; t.HasSession(repoSess) {
-		t.KillSession(repoSess)
-	}
-
-	if t.HasSession(task) {
-		hasSibling := false
-		for _, root := range cfg.WorktreeRoots {
-			repos, _ := os.ReadDir(root)
-			for _, r := range repos {
-				d := filepath.Join(root, r.Name(), task)
-				if d == wt {
-					continue
-				}
-				if st, err := os.Stat(d); err == nil && st.IsDir() {
+	hasSibling := false
+	for _, root := range cfg.WorktreeRoots {
+		repos, _ := os.ReadDir(root)
+		for _, r := range repos {
+			dir := filepath.Join(root, r.Name(), task)
+			if dir != wt {
+				if st, err := os.Stat(dir); err == nil && st.IsDir() {
 					hasSibling = true
 				}
 			}
 		}
-		if !hasSibling {
-			t.KillSession(task)
+	}
+	killed := map[string]bool{}
+	kill := func(name string) {
+		if name == "" || killed[name] || (name == task && hasSibling) {
+			return
 		}
+		killed[name] = true
+		t.KillSession(name)
+	}
+	for _, pane := range t.Panes() {
+		if PathWithin(wt, pane.CWD) {
+			kill(pane.Session)
+		}
+	}
+	if name := repo + "__" + task; t.HasSession(name) {
+		kill(name)
+	}
+	if !cfg.ScopeSessionsToRepo && t.HasSession(task) {
+		kill(task)
 	}
 }
 
@@ -349,11 +331,18 @@ func KillSessionFor(cfg config.Config, t TmuxOps, repo, task string) {
 // runs inside the session being ended, the kill also kills this process —
 // with the kill first, nothing after it ever ran (branch+folder left
 // behind). Killing last means cleanup is already done if we die here.
-// EndTask is best-effort by design (a branch that was never pushed makes
+// Failed worktree removal stops cleanup, preserving files, branches and sessions.
+// Branch cleanup is best-effort (a branch that was never pushed makes
 // `push origin --delete` fail — that must not abort the rest), so instead
 // of an error it returns a summary of what each step actually did, for the
 // TUI's status line / CLI output.
 func EndTask(cfg config.Config, t TmuxOps, repos []string, repo, task string) string {
+	if len(cfg.WorktreeRoots) == 0 || filepath.Base(repo) != repo || repo == "." || repo == ".." {
+		return "cleanup refused: invalid repo or worktree roots"
+	}
+	if err := ValidateTaskName(task); err != nil {
+		return "cleanup refused: " + err.Error()
+	}
 	wt := WorktreeOrDefault(cfg.WorktreeRoots, repo, task)
 	var steps []string
 	step := func(label string, err error) {
@@ -366,23 +355,29 @@ func EndTask(cfg config.Config, t TmuxOps, repos []string, repo, task string) st
 
 	repoRoot := FindRepoRoot(repos, repo)
 	if repoRoot == "" {
-		home, _ := os.UserHomeDir()
-		repoRoot = filepath.Join(home, "code", repo)
+		return repo + "/" + task + ": repo root not found — cleanup skipped"
 	}
-	if _, err := os.Stat(repoRoot); err == nil {
-		step("worktree removed", git(repoRoot, "worktree", "remove", wt, "--force"))
-		git(repoRoot, "worktree", "prune")
-		step("branch deleted", git(repoRoot, "branch", "-D", task))
-		step("origin branch deleted", git(repoRoot, "push", "origin", "--delete", task))
-	} else {
-		steps = append(steps, "repo root not found ("+repoRoot+") — git cleanup skipped")
+	if err := git(repoRoot, "worktree", "remove", wt, "--force"); err != nil {
+		return repo + "/" + task + ": worktree removal FAILED; branch and session preserved: " + err.Error()
 	}
-	if _, err := os.Stat(wt); err == nil {
-		step("folder removed", os.RemoveAll(wt))
-	}
+	steps = append(steps, "worktree removed")
+	git(repoRoot, "worktree", "prune")
+	step("branch deleted", git(repoRoot, "branch", "-D", task))
+	step("origin branch deleted", git(repoRoot, "push", "origin", "--delete", task))
 	os.Remove(AccessFile(repo, task))
 
 	KillSessionFor(cfg, t, repo, task)
-	steps = append(steps, "session killed")
+	steps = append(steps, "session cleanup complete")
 	return repo + "/" + task + ": " + strings.Join(steps, " · ")
+}
+
+// Task names are Git branch names that also fit the discovery layout's one folder.
+func ValidateTaskName(task string) error {
+	if task == "" || task == "." || task == ".." || strings.ContainsAny(task, `/\\`) || strings.Contains(task, "@{") {
+		return fmt.Errorf("task must be a single folder name")
+	}
+	if err := exec.Command("git", "check-ref-format", "--branch", task).Run(); err != nil {
+		return fmt.Errorf("invalid task branch name %q", task)
+	}
+	return nil
 }

@@ -16,9 +16,13 @@ import (
 
 func loadConfig() config.Config {
 	home, _ := os.UserHomeDir()
-	cfg, err := config.Load(filepath.Join(home, ".ork.conf"))
+	path := os.Getenv("ORK_CONFIG")
+	if path == "" {
+		path = filepath.Join(home, ".ork.conf")
+	}
+	cfg, err := config.Load(path)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ork: bad ~/.ork.conf: "+err.Error())
+		fatal("bad config " + path + ": " + err.Error())
 	}
 	return cfg
 }
@@ -158,26 +162,23 @@ func runEndTask(task string) {
 	cfg := loadConfig()
 	requireTools(cfg)
 	cwd, _ := os.Getwd()
-	if task == "" {
-		for _, root := range cfg.WorktreeRoots {
-			if rel, err := filepath.Rel(root, cwd); err == nil && rel != "." && filepath.IsLocal(rel) {
-				task = filepath.Base(cwd)
-				break
-			}
-		}
-		if task == "" {
-			fatal("usage: ork end-task <task-name> (or run from inside a worktree)")
-		}
-	}
 	out, err := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		fatal("not inside a git repository")
 	}
-	repo := filepath.Base(trimNL(string(out)))
+	repo, task, _ := taskContext(cfg, trimNL(string(out)), task)
+	if task == "" {
+		fatal("usage: ork end-task <task-name> (or run from inside a worktree)")
+	}
 
 	// If we're inside the worktree being removed, land the caller in the
 	// main checkout afterwards (printed for the shim to cd).
 	repos := worktree.AllRepoDirs(homeDirMust(), cfg.ScanMaxDepth, repoCache(), 60*time.Second)
+	// Git knows the canonical checkout even when scanning misses its directory.
+	if common, err := exec.Command("git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir").Output(); err == nil {
+		repos = append([]string{filepath.Dir(trimNL(string(common)))}, repos...)
+	}
+
 	summary := worktree.EndTask(cfg, worktree.LiveTmuxOps(), repos, repo, task)
 	fmt.Fprintln(os.Stderr, summary)
 	if main := worktree.FindRepoRoot(repos, repo); main != "" {

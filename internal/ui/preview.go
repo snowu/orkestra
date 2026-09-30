@@ -30,13 +30,17 @@ func repoCachePath() string {
 func resolvePane(cfg config.Config, r worktree.Row) *mux.Pane {
 	panes := mux.ListPanes()
 	for i, p := range panes {
-		if p.CWD == r.Path {
+		if worktree.PathWithin(r.Path, p.CWD) {
 			return &panes[i]
 		}
 	}
-	if mux.HasSession(r.Task) {
+	name := r.Session
+	if name == "" {
+		name = worktree.SessionName(cfg, r.Repo, r.Task)
+	}
+	if mux.HasSession(name) {
 		for i, p := range panes {
-			if p.Session == r.Task {
+			if p.Session == name {
 				return &panes[i]
 			}
 		}
@@ -76,7 +80,7 @@ func infoPreview(cfg config.Config, r worktree.Row, lines, width int, pathStyle 
 	// Header packed into two lines across the full width instead of one
 	// stacked field per line — the vertical space belongs to the live tail.
 	line1 := styleCyan.Render(" branch:") + " " + styleBold.Render(branch)
-	if cfg.FERepo != "" && cfg.BERepo != "" {
+	if _, paired := cfg.PairFor(r.Repo); paired {
 		fePort, bePort := worktree.TaskPorts(r.Task)
 		feOn, beOn := styleDim.Render("-"), styleDim.Render("-")
 		if r.FELive {
