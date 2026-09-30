@@ -22,7 +22,9 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
 - Repo names are colored for grouping — distinct repos get maximally
   distinct colors, stable across runs while your set of repos is stable.
 - Type to fuzzy-filter the list. An orc (cowsay + fortune) heckles from the
-  right margin if you have both installed.
+  right margin if you have both installed. Its fortune is generated once per
+  picker session and stays stable across refreshes. The full orc is shown
+  when space permits, with preview space adjusted to fit it.
 - **ENTER** — attach-or-create: lands you in a tmux session for that
   worktree (attaches if the session already exists, creates it otherwise).
 - **alt-ENTER** — cd only, no tmux session: for when you just want to look
@@ -62,7 +64,7 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
   without its binary.
 - `bash` or `zsh`
 - git (worktrees)
-- Go 1.22+ — build-time only (`install.sh` compiles the binary; e.g.
+- Go 1.26.5+ — build-time only (`install.sh` compiles the binary; e.g.
   `mise use -g go@latest`)
 - `fortune` + `cowsay` — optional, for the orc sidebar
 - [Claude Code](https://claude.com/claude-code) — optional; only needed for
@@ -265,6 +267,13 @@ session for context continuity). Set `ORK_SCOPE_SESSIONS_TO_REPO=1` in
 `~/.ork.conf` if you'd rather sessions never collide across repos. Ending a
 task only kills the shared task-named session if no other repo's worktree
 under that same task name still exists.
+
+Task names must be valid Git branch names that fit one directory (no `/`),
+matching the worktree discovery layout. Setup-hook failures report the
+created worktree path so you can repair it. Cleanup stops if Git cannot
+remove a worktree, preserving its files, branches, and sessions; locked
+worktrees must be unlocked explicitly before retrying. `end-task` also works
+from subdirectories within a task worktree.
 
 ## Claude Code agent status (optional)
 

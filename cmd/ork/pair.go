@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"orkestra/internal/config"
 	"orkestra/internal/worktree"
 )
 
@@ -41,26 +42,7 @@ func runPair(args []string) {
 		fatal("pair: run from a repo checkout or task worktree")
 	}
 	checkout := trimNL(string(out))
-	repo, wt := filepath.Base(checkout), ""
-	// Worktree layout is <root>/<repo>/<task>; use its repo and task when
-	// invoked from any subdirectory, rather than treating task as a repo.
-	for _, root := range cfg.WorktreeRoots {
-		rel, err := filepath.Rel(root, checkout)
-		if err != nil || !filepath.IsLocal(rel) {
-			continue
-		}
-		parts := strings.Split(rel, string(filepath.Separator))
-		if len(parts) == 2 {
-			repo = parts[0]
-			if task == "" {
-				task = parts[1]
-			}
-			if task == parts[1] {
-				wt = checkout
-			}
-			break
-		}
-	}
+	repo, task, wt := taskContext(cfg, checkout, task)
 	if task == "" {
 		fatal("pair: supply a task name, or run inside its worktree")
 	}
@@ -95,4 +77,28 @@ func runPair(args []string) {
 		fatal(err.Error())
 	}
 	fmt.Fprintln(os.Stderr, "Pair ready in session "+worktree.SessionName(cfg, repo, task))
+}
+
+func taskContext(cfg config.Config, checkout, task string) (repo, resolvedTask, wt string) {
+	repo, wt = filepath.Base(checkout), ""
+	// Worktree layout is <root>/<repo>/<task>; use its repo and task when
+	// invoked from any subdirectory, rather than treating task as a repo.
+	for _, root := range cfg.WorktreeRoots {
+		rel, err := filepath.Rel(root, checkout)
+		if err != nil || !filepath.IsLocal(rel) {
+			continue
+		}
+		parts := strings.Split(rel, string(filepath.Separator))
+		if len(parts) == 2 {
+			repo = parts[0]
+			if task == "" {
+				task = parts[1]
+			}
+			if task == parts[1] {
+				wt = checkout
+			}
+			break
+		}
+	}
+	return repo, task, wt
 }

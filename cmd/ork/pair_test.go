@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"orkestra/internal/config"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,18 @@ func TestCLIProcess(t *testing.T) {
 		}
 	}
 	os.Exit(2)
+}
+
+func TestTaskContextFromNestedWorktree(t *testing.T) {
+	cfg := config.Config{WorktreeRoots: []string{"/worktrees"}}
+	repo, task, wt := taskContext(cfg, "/worktrees/api/feature", "")
+	if repo != "api" || task != "feature" || wt != "/worktrees/api/feature" {
+		t.Fatalf("context=%s %s %s", repo, task, wt)
+	}
+	repo, task, wt = taskContext(cfg, "/worktrees/api/feature", "other")
+	if repo != "api" || task != "other" || wt != "" {
+		t.Fatal("explicit task replaced by cwd task")
+	}
 }
 
 func TestPairCLI(t *testing.T) {
@@ -84,6 +97,27 @@ ORK_PAIRS_CONFIG="`+pairs+`"`), 0o600)
 	}
 	if out, err := run(web, "pair"); err == nil || !strings.Contains(out, "supply a task") {
 		t.Fatalf("missing task: %v %s", err, out)
+	}
+	// Exercise end-task from a nested directory with an isolated multiplexer.
+	bin := filepath.Join(home, "bin")
+	os.MkdirAll(bin, 0o755)
+	os.WriteFile(filepath.Join(bin, "tmux"), []byte("#!/bin/sh\nexit 1\n"), 0o755)
+	c := exec.Command(os.Args[0], "-test.run=^TestCLIProcess$", "--", "end-task")
+	c.Dir = filepath.Join(root, "api/feature/subdir")
+	c.Env = append(os.Environ(), "ORK_CLI_TEST=1", "ORK_CONFIG="+conf, "HOME="+home, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	c.Stdout, c.Stderr = &stdout, &stderr
+	if err := c.Run(); err != nil {
+		t.Fatalf("end-task: %v %s", err, stderr.String())
+	}
+	if stdout.String() != api+"\n" || !strings.Contains(stderr.String(), "worktree removed") {
+		t.Fatalf("end-task output: %q %s", stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "api/feature")); !os.IsNotExist(err) {
+		t.Fatal("nested end-task did not remove intended worktree")
+	}
+	if _, err := os.Stat(filepath.Join(root, "web/feature")); err != nil {
+		t.Fatal("end-task removed sibling")
 	}
 	os.WriteFile(pairs, []byte(`[{"fe":"web"}]`), 0o600)
 	if out, err := run(web, "config", "check"); err == nil || !strings.Contains(out, "pair 1") {

@@ -30,13 +30,17 @@ func repoCachePath() string {
 func resolvePane(cfg config.Config, r worktree.Row) *mux.Pane {
 	panes := mux.ListPanes()
 	for i, p := range panes {
-		if p.CWD == r.Path {
+		if worktree.PathWithin(r.Path, p.CWD) {
 			return &panes[i]
 		}
 	}
-	if mux.HasSession(r.Task) {
+	name := r.Session
+	if name == "" {
+		name = worktree.SessionName(cfg, r.Repo, r.Task)
+	}
+	if mux.HasSession(name) {
 		for i, p := range panes {
-			if p.Session == r.Task {
+			if p.Session == name {
 				return &panes[i]
 			}
 		}

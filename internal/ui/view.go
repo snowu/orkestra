@@ -14,21 +14,51 @@ import (
 const helpLine = "ENTER=attach session   alt-ENTER=cd only   ctrl-n=new-task   ctrl-x=end-task   ctrl-k=kill session   ctrl-r=refresh   tab=cycle info/status   ctrl-s=split   ctrl-g=spawn fe/be   ctrl-a=open all   ctrl-o=browser"
 
 func trunc(s string, w int) string {
-	if len(s) > w {
-		if w <= 3 {
-			return s[:w]
-		}
-		return s[:w-3] + "..."
-	}
-	return s
+	return ansi.Truncate(s, max(0, w), "…")
 }
 
 func pad(s string, w int) string {
-	if len(s) >= w {
-		return s
-	}
-	return s + strings.Repeat(" ", w-len(s))
+	return s + strings.Repeat(" ", max(0, w-ansi.StringWidth(s)))
 }
+
+// fitFrame keeps all modes, headers and status messages inside the terminal.
+func fitFrame(s string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(strings.ReplaceAll(line, "\t", "        "), width, "…")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *Model) listLines() int {
+	if m.preview == previewOff {
+		return max(0, m.height-4)
+	}
+	n := min(max(0, m.height-4), max(1, m.height-5-m.height*6/10))
+	// A complete cow can borrow preview space, but leave five preview lines.
+	if m.cowFitsWidth() && len(m.cow) <= m.height-10 {
+		n = max(n, len(m.cow))
+	}
+	return n
+}
+
+const rowPlainWidth = 2 + 2 + 16 + 1 + 32 + 1 + 14 + 1 + 8 + 1 + 8 + 1 + 10 + 1 + 16 + 1 + 9 + 1 + 12
+
+func (m *Model) cowColumn() int {
+	width := 0
+	for _, line := range m.cow {
+		width = max(width, ansi.StringWidth(line))
+	}
+	return min(rowPlainWidth+25, m.width-width)
+}
+
+func (m *Model) cowFitsWidth() bool { return len(m.cow) > 0 && m.cowColumn() >= rowPlainWidth+6 }
 
 // ago renders "5m ago" style relative times; "-" for never.
 func ago(t time.Time) string {
@@ -48,7 +78,8 @@ func ago(t time.Time) string {
 	}
 }
 
-func (m *Model) View() string {
+func (m *Model) View() (view string) {
+	defer func() { view = fitFrame(view, m.width, m.height) }()
 	switch m.mode {
 	case modePickRepo:
 		return m.viewPickRepo()
@@ -73,33 +104,9 @@ func (m *Model) View() string {
 		b.WriteString("> " + m.filter + styleDim.Render(fmt.Sprintf("   %d/%d", len(m.visible), len(m.rows))) + "\n")
 	}
 
-	listH := m.height - 5
-	if m.preview != previewOff {
-		listH = m.height - m.height*6/10 - 5
-	}
-	if listH < 3 {
-		listH = 3
-	}
-
-	// Visible width of a full row (plain text, before styling): the padded
-	// columns joined by single spaces, plus the 2-char cursor prefix.
-	const rowPlainWidth = 2 + 2 + 16 + 1 + 32 + 1 + 14 + 1 + 8 + 1 + 8 + 1 + 10 + 1 + 16 + 1 + 9 + 1 + 12
-
-	// Cow sidebar sits a comfortable gap right of the table, but never
-	// past the terminal edge — a wide fortune bubble gets pulled left
-	// toward the minimum gap, and hidden entirely if it still can't fit
-	// (otherwise lines wrap and the whole layout shears).
-	cowW := 0
-	for _, l := range m.cow {
-		if len(l) > cowW {
-			cowW = len(l)
-		}
-	}
-	cowCol := rowPlainWidth + 25
-	if cowCol+cowW > m.width {
-		cowCol = m.width - cowW
-	}
-	showCow := len(m.cow) > 0 && cowCol >= rowPlainWidth+6
+	listH := m.listLines()
+	cowCol := m.cowColumn()
+	showCow := m.cowFitsWidth() && len(m.cow) <= listH
 
 	start := 0
 	if m.cursor >= listH {
@@ -206,7 +213,7 @@ func (m *Model) View() string {
 		// Paste the cowsay block beside the table — padding computed on
 		// plain-text width (escape codes are invisible but non-zero-length).
 		if ci := i - start; showCow && ci < len(m.cow) {
-			plainLen := rowPlainWidth - 12 + len(cmdShown)
+			plainLen := ansi.StringWidth(line)
 			padN := cowCol - plainLen
 			if padN < 1 {
 				padN = 1

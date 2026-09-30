@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sahilm/fuzzy"
@@ -155,7 +156,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "backspace":
 		if len(m.filter) > 0 {
-			m.filter = m.filter[:len(m.filter)-1]
+			m.filter = dropLastRune(m.filter)
 			m.applyFilter()
 		}
 	default:
@@ -222,7 +223,7 @@ func (m *Model) confirmAccept() (tea.Model, tea.Cmd) {
 		// preview. Works outside tmux too — detached sessions need no client.
 		repo, task := sel.Repo, sel.Task
 		name := "ork-end-" + endSessionSafe.Replace(repo+"-"+task)
-		cmd := fmt.Sprintf("ork _end-task %q %q 2>&1; echo; echo '[done]'; sleep 3", repo, task)
+		cmd := fmt.Sprintf("ork _end-task %s %s 2>&1; echo; echo '[done]'; sleep 3", quoteShell(repo), quoteShell(task))
 		if err := mux.NewDetached(name, cmd); err != nil {
 			// tmux refused — inline fallback, summary in the status line.
 			repos := worktree.AllRepoDirs(homeDir(), m.cfg.ScanMaxDepth, repoCachePath(), 60*time.Second)
@@ -347,7 +348,7 @@ func (m *Model) handlePickRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "backspace":
 		if len(m.repoFilter) > 0 {
-			m.repoFilter = m.repoFilter[:len(m.repoFilter)-1]
+			m.repoFilter = dropLastRune(m.repoFilter)
 			m.repoCursor = 0
 		}
 	default:
@@ -394,7 +395,7 @@ func (m *Model) handleTaskNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "backspace":
 		if len(m.taskInput) > 0 {
-			m.taskInput = m.taskInput[:len(m.taskInput)-1]
+			m.taskInput = dropLastRune(m.taskInput)
 		}
 	default:
 		if msg.Type == tea.KeyRunes && !msg.Alt {
@@ -403,3 +404,13 @@ func (m *Model) handleTaskNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+func dropLastRune(s string) string {
+	if s == "" {
+		return s
+	}
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-size]
+}
+
+func quoteShell(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

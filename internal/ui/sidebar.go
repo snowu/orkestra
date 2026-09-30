@@ -1,10 +1,14 @@
 package ui
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // cowSidebar reproduces the bash fortune_sidebar: one fortune/cowsay block
@@ -17,17 +21,21 @@ func cowSidebar() []string {
 	if _, err := exec.LookPath("cowsay"); err != nil {
 		return nil
 	}
-	f, err := exec.Command("fortune", "-s").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	f, err := exec.CommandContext(ctx, "fortune", "-s").Output()
 	if err != nil {
 		return nil
 	}
 	folded := foldText(strings.TrimRight(string(f), "\n"), 35)
 
-	args := []string{"-n"}
+	var args []string
 	if cow := orcCowPath(); cow != "" {
 		args = append(args, "-f", cow)
 	}
-	c := exec.Command("cowsay", args...)
+	// Some cowsay versions treat everything after -n as the message.
+	args = append(args, "-n")
+	c := exec.CommandContext(ctx, "cowsay", args...)
 	c.Stdin = strings.NewReader(folded)
 	out, err := c.Output()
 	if err != nil {
@@ -54,7 +62,7 @@ func orcCowPath() string {
 		)
 	}
 	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
+		if st, err := os.Stat(c); err == nil && st.Mode().IsRegular() {
 			return c
 		}
 	}
@@ -63,17 +71,8 @@ func orcCowPath() string {
 
 // foldText wraps at word boundaries like `fold -s -w`.
 func foldText(s string, w int) string {
-	var out []string
-	for _, line := range strings.Split(s, "\n") {
-		for len(line) > w {
-			cut := strings.LastIndex(line[:w+1], " ")
-			if cut <= 0 {
-				cut = w
-			}
-			out = append(out, strings.TrimRight(line[:cut], " "))
-			line = strings.TrimLeft(line[cut:], " ")
-		}
-		out = append(out, line)
+	if w <= 0 {
+		return s
 	}
-	return strings.Join(out, "\n")
+	return ansi.Wrap(s, w, "")
 }

@@ -65,43 +65,48 @@ func GitBranch(wt string) string {
 
 // BuildRows assembles the picker rows.
 //
-// Session resolution runs ONCE PER TASK from a single pane snapshot —
+// Session resolution runs once per configured session scope from a pane snapshot —
 // per-row resolution let two sibling worktrees sharing a task (BE+FE under
 // one task name) resolve to different sessions, the exact "waiting shows
 // in one folder but not the other" bug. Agent state is read in the same
-// per-task pass so siblings can't observe different values within one
+// per-session pass so siblings can't observe different values within one
 // build either.
 func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 	dirs := AllWorktreeDirs(roots)
 
 	type sess struct{ name, cmd, agent string }
 	taskSess := map[string]*sess{}
+	groups := map[string][]string{}
 	for _, wt := range dirs {
-		t := filepath.Base(wt)
-		if _, done := taskSess[t]; done {
-			continue
-		}
+		key := SessionName(cfg, filepath.Base(filepath.Dir(wt)), filepath.Base(wt))
+		groups[key] = append(groups[key], wt)
+	}
+	for key, members := range groups {
 		var s *sess
-		for _, p := range d.Panes {
-			if p.CWD == wt {
-				s = &sess{name: p.Session, cmd: p.Cmd}
-				break
-			}
-		}
-		if s == nil && d.HasSession != nil && d.HasSession(t) {
-			cmd := ""
-			for _, p := range d.Panes {
-				if p.Session == t {
-					cmd = p.Cmd
+		for _, pane := range d.Panes {
+			for _, wt := range members {
+				if PathWithin(wt, pane.CWD) {
+					s = &sess{name: pane.Session, cmd: pane.Cmd}
 					break
 				}
 			}
-			s = &sess{name: t, cmd: cmd}
+			if s != nil {
+				break
+			}
+		}
+		if s == nil && d.HasSession != nil && d.HasSession(key) {
+			s = &sess{name: key}
+			for _, pane := range d.Panes {
+				if pane.Session == key {
+					s.cmd = pane.Cmd
+					break
+				}
+			}
 		}
 		if s != nil && d.AgentState != nil {
 			s.agent = d.AgentState(s.name)
 		}
-		taskSess[t] = s // nil means "no session", memoized too
+		taskSess[key] = s
 	}
 
 	rows := make([]Row, 0, len(dirs))
@@ -115,7 +120,7 @@ func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 		if d.AccessTime != nil {
 			r.LastUsed = d.AccessTime(repo, task)
 		}
-		if s := taskSess[task]; s != nil {
+		if s := taskSess[SessionName(cfg, repo, task)]; s != nil {
 			r.Session, r.Cmd, r.Agent, r.Live = s.name, s.cmd, s.agent, true
 		}
 		if d.SessionWindows != nil {
@@ -151,10 +156,21 @@ func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 		if !ti.Equal(tj) {
 			return ti.After(tj)
 		}
-		if rows[i].Task == rows[j].Task && rows[i].Repo != rows[j].Repo {
+		groupKey := func(r Row) string {
+			if _, paired := group[r.Repo+"/"+r.Task]; paired {
+				p, _ := cfg.PairFor(r.Repo)
+				return r.Task + "/" + p.FERepo
+			}
+			return r.Task + "/" + r.Repo
+		}
+		ki, kj := groupKey(rows[i]), groupKey(rows[j])
+		if ki != kj {
+			return ki < kj
+		}
+		if rows[i].Repo != rows[j].Repo {
 			return isFE(rows[i].Repo) && !isFE(rows[j].Repo)
 		}
-		return false
+		return rows[i].Path < rows[j].Path
 	})
 	return rows
 }

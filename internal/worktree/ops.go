@@ -220,6 +220,12 @@ func EnsureFEBEWindows(cfg config.Config, repo, task, wt string) error {
 // writes .claude-profile, and touches the access marker (a fresh task
 // counts as used — otherwise it'd sort to the bottom next run).
 func NewTask(cfg config.Config, repoRoot, task string) (string, error) {
+	if len(cfg.WorktreeRoots) == 0 {
+		return "", fmt.Errorf("no worktree roots configured")
+	}
+	if err := ValidateTaskName(task); err != nil {
+		return "", err
+	}
 	repo := filepath.Base(repoRoot)
 	git(repoRoot, "worktree", "prune")
 
@@ -232,15 +238,19 @@ func NewTask(cfg config.Config, repoRoot, task string) (string, error) {
 		return "", err
 	}
 	if err := git(repoRoot, "worktree", "add", wt, "-b", task, base); err != nil {
-		return "", fmt.Errorf("git worktree add failed for %s", wt)
+		return "", fmt.Errorf("git worktree add failed for %s: %w", wt, err)
 	}
 
 	if data, err := os.ReadFile(filepath.Join(repoRoot, ".env.local")); err == nil {
-		os.WriteFile(filepath.Join(wt, ".env.local"), data, 0o600)
+		if err := os.WriteFile(filepath.Join(wt, ".env.local"), data, 0o600); err != nil {
+			return "", fmt.Errorf("worktree created at %s, but .env.local copy failed: %w", wt, err)
+		}
 		fmt.Fprintln(os.Stderr, "Copied .env.local")
 	}
 
-	hooks.RunRepoHook(cfg.HooksConfig, repo, wt)
+	if err := hooks.RunRepoHook(cfg.HooksConfig, repo, wt); err != nil {
+		return "", fmt.Errorf("worktree created at %s, but setup hook failed: %w", wt, err)
+	}
 	WriteClaudeProfile(cfg.ClaudePersonalDirs, repoRoot, wt)
 	TouchAccess(repo, task)
 	return wt, nil
@@ -283,35 +293,36 @@ func LiveTmuxOps() TmuxOps {
 // killing it would yank it from a still-active sibling.
 func KillSessionFor(cfg config.Config, t TmuxOps, repo, task string) {
 	wt := WorktreeOrDefault(cfg.WorktreeRoots, repo, task)
-
-	for _, p := range t.Panes() {
-		if p.CWD == wt {
-			t.KillSession(p.Session)
-			break
-		}
-	}
-
-	if repoSess := repo + "__" + task; t.HasSession(repoSess) {
-		t.KillSession(repoSess)
-	}
-
-	if t.HasSession(task) {
-		hasSibling := false
-		for _, root := range cfg.WorktreeRoots {
-			repos, _ := os.ReadDir(root)
-			for _, r := range repos {
-				d := filepath.Join(root, r.Name(), task)
-				if d == wt {
-					continue
-				}
-				if st, err := os.Stat(d); err == nil && st.IsDir() {
+	hasSibling := false
+	for _, root := range cfg.WorktreeRoots {
+		repos, _ := os.ReadDir(root)
+		for _, r := range repos {
+			dir := filepath.Join(root, r.Name(), task)
+			if dir != wt {
+				if st, err := os.Stat(dir); err == nil && st.IsDir() {
 					hasSibling = true
 				}
 			}
 		}
-		if !hasSibling {
-			t.KillSession(task)
+	}
+	killed := map[string]bool{}
+	kill := func(name string) {
+		if name == "" || killed[name] || (name == task && hasSibling) {
+			return
 		}
+		killed[name] = true
+		t.KillSession(name)
+	}
+	for _, pane := range t.Panes() {
+		if PathWithin(wt, pane.CWD) {
+			kill(pane.Session)
+		}
+	}
+	if name := repo + "__" + task; t.HasSession(name) {
+		kill(name)
+	}
+	if !cfg.ScopeSessionsToRepo && t.HasSession(task) {
+		kill(task)
 	}
 }
 
@@ -320,11 +331,18 @@ func KillSessionFor(cfg config.Config, t TmuxOps, repo, task string) {
 // runs inside the session being ended, the kill also kills this process —
 // with the kill first, nothing after it ever ran (branch+folder left
 // behind). Killing last means cleanup is already done if we die here.
-// EndTask is best-effort by design (a branch that was never pushed makes
+// Failed worktree removal stops cleanup, preserving files, branches and sessions.
+// Branch cleanup is best-effort (a branch that was never pushed makes
 // `push origin --delete` fail — that must not abort the rest), so instead
 // of an error it returns a summary of what each step actually did, for the
 // TUI's status line / CLI output.
 func EndTask(cfg config.Config, t TmuxOps, repos []string, repo, task string) string {
+	if len(cfg.WorktreeRoots) == 0 || filepath.Base(repo) != repo || repo == "." || repo == ".." {
+		return "cleanup refused: invalid repo or worktree roots"
+	}
+	if err := ValidateTaskName(task); err != nil {
+		return "cleanup refused: " + err.Error()
+	}
 	wt := WorktreeOrDefault(cfg.WorktreeRoots, repo, task)
 	var steps []string
 	step := func(label string, err error) {
@@ -337,23 +355,29 @@ func EndTask(cfg config.Config, t TmuxOps, repos []string, repo, task string) st
 
 	repoRoot := FindRepoRoot(repos, repo)
 	if repoRoot == "" {
-		home, _ := os.UserHomeDir()
-		repoRoot = filepath.Join(home, "code", repo)
+		return repo + "/" + task + ": repo root not found — cleanup skipped"
 	}
-	if _, err := os.Stat(repoRoot); err == nil {
-		step("worktree removed", git(repoRoot, "worktree", "remove", wt, "--force"))
-		git(repoRoot, "worktree", "prune")
-		step("branch deleted", git(repoRoot, "branch", "-D", task))
-		step("origin branch deleted", git(repoRoot, "push", "origin", "--delete", task))
-	} else {
-		steps = append(steps, "repo root not found ("+repoRoot+") — git cleanup skipped")
+	if err := git(repoRoot, "worktree", "remove", wt, "--force"); err != nil {
+		return repo + "/" + task + ": worktree removal FAILED; branch and session preserved: " + err.Error()
 	}
-	if _, err := os.Stat(wt); err == nil {
-		step("folder removed", os.RemoveAll(wt))
-	}
+	steps = append(steps, "worktree removed")
+	git(repoRoot, "worktree", "prune")
+	step("branch deleted", git(repoRoot, "branch", "-D", task))
+	step("origin branch deleted", git(repoRoot, "push", "origin", "--delete", task))
 	os.Remove(AccessFile(repo, task))
 
 	KillSessionFor(cfg, t, repo, task)
-	steps = append(steps, "session killed")
+	steps = append(steps, "session cleanup complete")
 	return repo + "/" + task + ": " + strings.Join(steps, " · ")
+}
+
+// Task names are Git branch names that also fit the discovery layout's one folder.
+func ValidateTaskName(task string) error {
+	if task == "" || task == "." || task == ".." || strings.ContainsAny(task, `/\\`) || strings.Contains(task, "@{") {
+		return fmt.Errorf("task must be a single folder name")
+	}
+	if err := exec.Command("git", "check-ref-format", "--branch", task).Run(); err != nil {
+		return fmt.Errorf("invalid task branch name %q", task)
+	}
+	return nil
 }
