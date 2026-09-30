@@ -1,7 +1,6 @@
 package worktree
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"hash/fnv"
@@ -26,7 +25,9 @@ func git(dir string, args ...string) error {
 	var buf bytes.Buffer
 	c := exec.Command("git", append([]string{"-C", dir}, args...)...)
 	c.Stdout = io.MultiWriter(Log, &buf)
-	c.Stderr = io.MultiWriter(Log, &buf)
+	// Identical writers let os/exec serialize both streams through one
+	// copy goroutine; separate MultiWriters race on the shared buffer.
+	c.Stderr = c.Stdout
 	if err := c.Run(); err != nil {
 		// Log may be io.Discard (TUI) — carry the output in the error so
 		// failures still surface somewhere instead of vanishing.
@@ -110,90 +111,60 @@ func TaskPorts(task string) (fe, be int) {
 	return 3000 + n, 8000 + n
 }
 
-// patchFEEnvVar rewrites (or appends) VAR=http://localhost:<port> in
-// feDir/.env.local — how the fe dev server learns which port the
-// task-specific backend landed on, since fe/be run as separate processes
-// with no shared env.
-func patchFEEnvVar(feDir, varName, urlPath string, port int) error {
-	return patchEnvVar(feDir, varName, fmt.Sprintf("http://localhost:%d%s", port, urlPath))
+// PairPlan is the resolved setup used by both the CLI preview and launcher.
+// Building a plan never writes files or starts processes.
+type PairPlan struct {
+	FERepo, BERepo, FEDir, BEDir, FECmd, BECmd string
+	FEPort, BEPort                             int
+	EnvFile                                    string
+	Env                                        map[string]string
 }
 
-// patchEnvVar rewrites (or appends) VAR=value in dir/.env.local.
-func patchEnvVar(dir, varName, value string) error {
-	path := filepath.Join(dir, ".env.local")
-	line := varName + "=" + value
-
-	f, err := os.Open(path)
-	var lines []string
-	found := false
-	if err == nil {
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			l := sc.Text()
-			if strings.HasPrefix(l, varName+"=") {
-				lines = append(lines, line)
-				found = true
-			} else {
-				lines = append(lines, l)
-			}
-		}
-		f.Close()
-		if err := sc.Err(); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if !found {
-		lines = append(lines, line)
-	}
-	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
-}
-
-// subPort substitutes a {port} placeholder in cmd, if present.
-func subPort(cmd string, port int) string {
-	return strings.ReplaceAll(cmd, "{port}", strconv.Itoa(port))
-}
-
-// prepFEBE resolves fe/be dirs, derives the task's ports ({port} in FECmd
-// gets the fe port, in BECmd the be port), and patches the fe env var (if
-// configured) to point at the be port — the setup shared before actually
-// starting either process.
-func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, feCmd, beCmd string, err error) {
-	// Only rows belonging to a configured pair get fe/be windows —
-	// an unrelated repo whose task name happens to exist in both sibling
-	// repos must not spawn dev servers for them.
+func PlanPair(cfg config.Config, repo, task, wt string) (PairPlan, error) {
 	pair, ok := cfg.PairFor(repo)
 	if !ok {
-		if len(cfg.Pairs) == 0 {
-			return "", "", "", "", fmt.Errorf("no fe/be pairs configured (~/.ork.conf or ~/.config/ork/pairs.json)")
-		}
-		return "", "", "", "", fmt.Errorf("%s is not part of any configured fe/be pair", repo)
+		return PairPlan{}, fmt.Errorf("%s has no configured pair; set ORK_PAIRS_CONFIG (see ork config check)", repo)
 	}
-	feDir, beDir, err = feBEDirs(cfg, pair, repo, task, wt)
+	if err := pair.Validate(); err != nil {
+		return PairPlan{}, err
+	}
+	feDir, beDir, err := feBEDirs(cfg, pair, repo, task, wt)
+	if err != nil {
+		return PairPlan{}, err
+	}
+	for _, dir := range []string{feDir, beDir} {
+		if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+			return PairPlan{}, fmt.Errorf("worktree directory unavailable: %s", dir)
+		}
+	}
+	fePort, bePort := TaskPorts(task)
+	replace := func(cmd string, port int) string {
+		return strings.NewReplacer("{port}", strconv.Itoa(port), "{fe_port}", strconv.Itoa(fePort), "{be_port}", strconv.Itoa(bePort)).Replace(cmd)
+	}
+	plan := PairPlan{FERepo: pair.FERepo, BERepo: pair.BERepo, FEDir: feDir, BEDir: beDir,
+		FECmd: replace(pair.FECmd, fePort), BECmd: replace(pair.BECmd, bePort),
+		FEPort: fePort, BEPort: bePort, EnvFile: pair.EnvFile(), Env: map[string]string{}}
+	if pair.FEEnvVar != "" {
+		plan.Env[pair.FEEnvVar] = fmt.Sprintf("http://localhost:%d%s", bePort, pair.FEEnvPath)
+	}
+	if key := pair.TaskKey(); key != "" {
+		plan.Env[key] = task
+	}
+	for _, key := range pair.FEURLEnvVars {
+		plan.Env[key] = fmt.Sprintf("http://localhost:%d", fePort)
+	}
+	return plan, nil
+}
+
+func prepFEBE(cfg config.Config, repo, task, wt string) (feDir, beDir, feCmd, beCmd string, err error) {
+	plan, err := PlanPair(cfg, repo, task, wt)
 	if err != nil {
 		return "", "", "", "", err
 	}
-	fePort, bePort := TaskPorts(task)
-	if pair.FEEnvVar != "" {
-		if err := patchFEEnvVar(feDir, pair.FEEnvVar, pair.FEEnvPath, bePort); err != nil {
-			return "", "", "", "", err
-		}
-	}
-	// Task name exposed to the fe app so it can label itself (e.g. browser
-	// tab title "[task] app") — otherwise every task's tab reads identically
-	// and only the port distinguishes them. Best-effort: the fe may ignore it.
-	if err := patchEnvVar(feDir, "NEXT_PUBLIC_ORK_TASK", task); err != nil {
+	if err := patchEnvFile(plan.FEDir, plan.EnvFile, plan.Env); err != nil {
 		return "", "", "", "", err
 	}
-	// Apps that hardcode their own origin (NEXTAUTH_URL etc.) must learn
-	// the task's real fe port, or auth redirects land on localhost:3000.
-	for _, v := range pair.FEURLEnvVars {
-		if err := patchEnvVar(feDir, v, fmt.Sprintf("http://localhost:%d", fePort)); err != nil {
-			return "", "", "", "", err
-		}
-	}
-	return feDir, beDir, subPort(pair.FECmd, fePort), subPort(pair.BECmd, bePort), nil
+	return plan.FEDir, plan.BEDir, plan.FECmd, plan.BECmd, nil
 }
 
 // EnsureFEBEWindows makes sure the base session for repo/task exists and has

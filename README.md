@@ -177,7 +177,62 @@ any number more go in `~/.config/ork/pairs.json` (path override:
 origin (`http://localhost:<fePort>`) — for apps that hardcode it, like
 next-auth's `NEXTAUTH_URL`, which would otherwise bounce auth redirects to
 whatever runs on port 3000. `fe_cmd`/`be_cmd` fall back to the built-in
-defaults when omitted. A repo row triggers pairing only if it belongs to a declared pair.
+defaults (or your `ORK_FE_CMD`/`ORK_BE_CMD` overrides) when omitted. A repo row triggers pairing only if it belongs to a declared pair.
+
+## Pairing and configuration from the CLI
+
+Run `ork config check` before opening the picker to validate your settings
+and list the effective pairs. Set `ORK_CONFIG=/path/to/ork.conf` to try a
+separate configuration; the same file is used by all commands. Configuration
+is parsed as data, without executing shell commands. Single-line assignments,
+`export KEY=value`, and trailing comments are supported.
+
+From either repo's main checkout, use `ork pair <task> --dry-run` to inspect
+the resolved worktrees, ports, commands, and proposed environment updates.
+From anywhere inside a task worktree, `ork pair --dry-run` infers the task.
+Remove `--dry-run` to start both dev windows in the task session. Dry runs
+and configuration checks need no multiplexer; normal launches use your
+configured backend. Output goes to stderr so the shell wrapper only changes
+directory when a command explicitly returns a directory on stdout.
+
+For a Vite frontend and Python API, `~/.config/ork/pairs.json` can contain:
+
+```json
+[
+  {
+    "fe": "dashboard",
+    "be": "api",
+    "fe_cmd": "npm run dev -- --port {port}",
+    "be_cmd": "python -m uvicorn app:app --port {port}",
+    "fe_env_file": ".env",
+    "fe_env_var": "VITE_API_URL",
+    "fe_env_path": "/v1",
+    "task_env_var": "VITE_ORK_TASK"
+  }
+]
+```
+
+`fe_env_file` defaults to `.env.local`. Use a relative path within the
+frontend worktree; its parent directory must already exist. `task_env_var`
+defaults to `NEXT_PUBLIC_ORK_TASK`; set it to `""` to disable the task label.
+Commands accept `{port}` for their own port, plus `{fe_port}` and `{be_port}`
+for either service's port. Omitted commands inherit `ORK_FE_CMD` and
+`ORK_BE_CMD`, whose built-in defaults remain `rund` and `bund`.
+Environment updates preserve other keys and file permissions, collapse
+repeated assignments for managed keys, and replace the file atomically.
+Symlinked environment files are rejected; copy them into the worktree first.
+
+The default pairs file is loaded even if `~/.ork.conf` does not exist.
+A missing pairs file is optional. Invalid JSON, unknown JSON fields,
+incomplete pairs, invalid environment keys, and duplicate repo membership
+now produce errors instead of silently disabling pairing. Define each repo
+in one pair, removing its legacy `ORK_FE_REPO`/`ORK_BE_REPO` declaration if
+you move it into JSON. Unknown shell configuration keys remain allowed.
+
+Ports retain the existing task-name hash, so existing URLs stay stable.
+Different tasks can hash to the same port, and different pairs using the
+same task name share ports; port allocation is not a reservation system.
+The optional login proxy retains its existing Next.js auth behavior.
 
 ### Login proxy (`ork login-proxy`)
 

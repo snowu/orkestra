@@ -76,7 +76,7 @@ func infoPreview(cfg config.Config, r worktree.Row, lines, width int, pathStyle 
 	// Header packed into two lines across the full width instead of one
 	// stacked field per line — the vertical space belongs to the live tail.
 	line1 := styleCyan.Render(" branch:") + " " + styleBold.Render(branch)
-	if cfg.FERepo != "" && cfg.BERepo != "" {
+	if _, paired := cfg.PairFor(r.Repo); paired {
 		fePort, bePort := worktree.TaskPorts(r.Task)
 		feOn, beOn := styleDim.Render("-"), styleDim.Render("-")
 		if r.FELive {

@@ -8,8 +8,11 @@ package config
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -43,7 +46,7 @@ type Config struct {
 	// PairsConfig is the JSON file declaring additional FE/BE pairs (same
 	// no-code-execution rationale as HooksConfig). Pairs is the merged
 	// result: the legacy ORK_FE_REPO/ORK_BE_REPO pair first (if set),
-	// then every pair from PairsConfig.
+	// then every pair from PairsConfig (repositories must be unique).
 	PairsConfig string
 	Pairs       []Pair
 }
@@ -64,6 +67,10 @@ type Pair struct {
 	// origin (e.g. NEXTAUTH_URL=http://localhost:3000) and would otherwise
 	// redirect auth flows to whatever task hashes to port 3000.
 	FEURLEnvVars []string `json:"fe_url_env_vars"`
+	// FEEnvFile selects the frontend dotenv file; default .env.local.
+	FEEnvFile string `json:"fe_env_file"`
+	// TaskEnvVar defaults to NEXT_PUBLIC_ORK_TASK; an empty string disables it.
+	TaskEnvVar *string `json:"task_env_var,omitempty"`
 }
 
 // PairFor returns the pair repo belongs to (either side), or false.
@@ -95,7 +102,11 @@ func Load(path string) (Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, nil
+			if err := cfg.Validate(); err != nil {
+				return cfg, err
+			}
+			cfg.Pairs, err = mergePairs(cfg)
+			return cfg, err
 		}
 		return cfg, err
 	}
@@ -103,7 +114,8 @@ func Load(path string) (Config, error) {
 
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+		line := strings.TrimSpace(stripComment(sc.Text()))
+		line = strings.TrimPrefix(line, "export ")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -115,19 +127,23 @@ func Load(path string) (Config, error) {
 		val = strings.TrimSpace(val)
 		switch key {
 		case "ORK_WORKTREES_ROOTS":
-			if v := parseArray(val); len(v) > 0 {
-				cfg.WorktreeRoots = v
-			}
+			cfg.WorktreeRoots = parseArray(val)
 		case "ORK_FAVORITES":
 			cfg.Favorites = parseArray(val)
 		case "CLAUDE_PERSONAL_DIRS":
 			cfg.ClaudePersonalDirs = parseArray(val)
 		case "ORK_SCAN_MAXDEPTH":
-			if n, err := strconv.Atoi(unquote(val)); err == nil && n > 0 {
-				cfg.ScanMaxDepth = n
+			n, err := strconv.Atoi(unquote(val))
+			if err != nil || n <= 0 {
+				return cfg, fmt.Errorf("ORK_SCAN_MAXDEPTH must be a positive integer")
 			}
+			cfg.ScanMaxDepth = n
 		case "ORK_SCOPE_SESSIONS_TO_REPO":
-			cfg.ScopeSessionsToRepo = unquote(val) == "1"
+			v := unquote(val)
+			if v != "0" && v != "1" {
+				return cfg, fmt.Errorf("ORK_SCOPE_SESSIONS_TO_REPO must be 0 or 1")
+			}
+			cfg.ScopeSessionsToRepo = v == "1"
 		case "ORK_MULTIPLEXER":
 			if v := unquote(val); v != "" {
 				cfg.Multiplexer = v
@@ -159,44 +175,147 @@ func Load(path string) (Config, error) {
 	if err := sc.Err(); err != nil {
 		return cfg, err
 	}
-	cfg.Pairs = mergePairs(cfg)
-	return cfg, nil
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
+	cfg.Pairs, err = mergePairs(cfg)
+	return cfg, err
 }
 
-// mergePairs builds the pair list: legacy ORK_FE_REPO/ORK_BE_REPO first
-// (so existing setups keep their priority on repo-name collisions), then
-// pairs.json. A missing/unreadable pairs file is not an error — pairing
-// is optional. Cmd defaults mirror the legacy FECmd/BECmd defaults.
-func mergePairs(cfg Config) []Pair {
+// mergePairs preserves legacy priority while rejecting ambiguous definitions.
+// A missing file is optional; malformed or unreadable configuration is an error.
+func mergePairs(cfg Config) ([]Pair, error) {
 	var pairs []Pair
-	if cfg.FERepo != "" && cfg.BERepo != "" {
-		pairs = append(pairs, Pair{
-			FERepo: cfg.FERepo, BERepo: cfg.BERepo,
-			FECmd: cfg.FECmd, BECmd: cfg.BECmd, FEEnvVar: cfg.FEEnvVar,
-		})
+	if cfg.FERepo != "" || cfg.BERepo != "" {
+		pairs = append(pairs, Pair{FERepo: cfg.FERepo, BERepo: cfg.BERepo,
+			FECmd: cfg.FECmd, BECmd: cfg.BECmd, FEEnvVar: cfg.FEEnvVar})
 	}
-	data, err := os.ReadFile(cfg.PairsConfig)
-	if err != nil {
-		return pairs
+	f, err := os.Open(cfg.PairsConfig)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("pairs %s: %w", cfg.PairsConfig, err)
 	}
-	var fromFile []Pair
-	if json.Unmarshal(data, &fromFile) != nil {
-		return pairs
+	if err == nil {
+		defer f.Close()
+		var fromFile []Pair
+		dec := json.NewDecoder(f)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&fromFile); err != nil {
+			return nil, fmt.Errorf("pairs %s: %w", cfg.PairsConfig, err)
+		}
+		if fromFile == nil {
+			return nil, fmt.Errorf("pairs %s: expected a JSON array, use [] for no pairs", cfg.PairsConfig)
+		}
+		var extra any
+		if err := dec.Decode(&extra); err != io.EOF {
+			return nil, fmt.Errorf("pairs %s: expected one JSON array", cfg.PairsConfig)
+		}
+		pairs = append(pairs, fromFile...)
 	}
-	def := defaults()
-	for _, p := range fromFile {
-		if p.FERepo == "" || p.BERepo == "" {
-			continue
+	seen := map[string]int{}
+	for i := range pairs {
+		p := &pairs[i]
+		if err := p.Validate(); err != nil {
+			return nil, fmt.Errorf("pair %d (%s + %s): %w", i+1, p.FERepo, p.BERepo, err)
+		}
+		for _, repo := range []string{p.FERepo, p.BERepo} {
+			if prev, ok := seen[repo]; ok {
+				return nil, fmt.Errorf("pair %d: repo %q already belongs to pair %d", i+1, repo, prev)
+			}
+			seen[repo] = i + 1
 		}
 		if p.FECmd == "" {
-			p.FECmd = def.FECmd
+			p.FECmd = cfg.FECmd
 		}
 		if p.BECmd == "" {
-			p.BECmd = def.BECmd
+			p.BECmd = cfg.BECmd
 		}
-		pairs = append(pairs, p)
 	}
-	return pairs
+	return pairs, nil
+}
+
+// Validate checks configuration without requiring installed tools or existing roots.
+func (c Config) Validate() error {
+	if c.Multiplexer != "tmux" && c.Multiplexer != "herdr" {
+		return fmt.Errorf("ORK_MULTIPLEXER must be tmux or herdr")
+	}
+	if len(c.WorktreeRoots) == 0 {
+		return fmt.Errorf("ORK_WORKTREES_ROOTS must contain at least one root")
+	}
+	return nil
+}
+
+var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// Validate checks values used as paths and dotenv assignments before any writes.
+func (p Pair) Validate() error {
+	for _, repo := range []string{p.FERepo, p.BERepo} {
+		if repo == "" || repo == "." || repo == ".." || strings.ContainsAny(repo, `/\\`) {
+			return fmt.Errorf("fe and be must be repo folder names")
+		}
+	}
+	if p.FERepo == p.BERepo {
+		return fmt.Errorf("fe and be must be different repos")
+	}
+	if f := p.FEEnvFile; f != "" && (!filepath.IsLocal(f) || strings.ContainsAny(f, "\r\n")) {
+		return fmt.Errorf("fe_env_file must be a relative path inside the worktree")
+	}
+	keys := append([]string{p.FEEnvVar, p.TaskKey()}, p.FEURLEnvVars...)
+	seen := map[string]bool{}
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if !envKey.MatchString(key) {
+			return fmt.Errorf("invalid environment key %q", key)
+		}
+		if seen[key] {
+			return fmt.Errorf("duplicate environment key %q", key)
+		}
+		seen[key] = true
+	}
+	if strings.ContainsAny(p.FEEnvPath, "\r\n\"'#$`\\") || (p.FEEnvPath != "" && !strings.HasPrefix(p.FEEnvPath, "/")) {
+		return fmt.Errorf("fe_env_path must be a dotenv-safe URL path starting with /")
+	}
+	return nil
+}
+
+func (p Pair) EnvFile() string {
+	if p.FEEnvFile != "" {
+		return p.FEEnvFile
+	}
+	return ".env.local"
+}
+
+func (p Pair) TaskKey() string {
+	if p.TaskEnvVar != nil {
+		return *p.TaskEnvVar
+	}
+	return "NEXT_PUBLIC_ORK_TASK"
+}
+
+// stripComment respects quoted command strings and bash's whitespace before #.
+func stripComment(s string) string {
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && quote != '\'' {
+			i++
+			continue
+		}
+		if quote != 0 {
+			if s[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+		if s[i] == '\'' || s[i] == '"' {
+			quote = s[i]
+			continue
+		}
+		if s[i] == '#' && (i == 0 || s[i-1] == ' ' || s[i-1] == '\t') {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // parseArray handles bash `(elem "elem" 'elem')` values.

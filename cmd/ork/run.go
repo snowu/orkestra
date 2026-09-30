@@ -16,9 +16,13 @@ import (
 
 func loadConfig() config.Config {
 	home, _ := os.UserHomeDir()
-	cfg, err := config.Load(filepath.Join(home, ".ork.conf"))
+	path := os.Getenv("ORK_CONFIG")
+	if path == "" {
+		path = filepath.Join(home, ".ork.conf")
+	}
+	cfg, err := config.Load(path)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ork: bad ~/.ork.conf: "+err.Error())
+		fatal("bad config " + path + ": " + err.Error())
 	}
 	return cfg
 }
