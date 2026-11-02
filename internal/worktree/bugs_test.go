@@ -56,7 +56,7 @@ func TestMultipleGroupsWithEqualTimesStayAdjacent(t *testing.T) {
 		{Name: "g2", Processes: []config.Process{{Label: "fe", Repo: "b-web"}, {Label: "be", Repo: "d-api"}}},
 	}}
 	for _, repo := range []string{"a-web", "b-web", "c-api", "d-api"} {
-		os.MkdirAll(filepath.Join(root, repo, "task"), 0o755)
+		mkWorktree(root, filepath.Join(repo, "task"))
 	}
 	rows := BuildRows(cfg, []string{root}, Deps{})
 	if !GroupSiblings(cfg, rows[0], rows[1]) || !GroupSiblings(cfg, rows[2], rows[3]) {

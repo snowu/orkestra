@@ -19,12 +19,23 @@ func mk(t *testing.T, paths ...string) string {
 }
 
 func TestAllWorktreeDirs(t *testing.T) {
-	root := mk(t, "repoA/task1", "repoA/task2", "repoB/task1")
+	root := mk(t, "repoA/task1", "repoA/task2", "repoB/task1", "reaver/src", "reaver/docs")
+	for _, wt := range []string{"repoA/task1", "repoA/task2", "repoB/task1"} {
+		os.WriteFile(filepath.Join(root, wt, ".git"), []byte("gitdir: elsewhere"), 0o644)
+	}
+	// a worktree sitting directly in the root (<root>/reaver): its plain
+	// subdirs are not tasks
+	os.WriteFile(filepath.Join(root, "reaver/.git"), []byte("gitdir: elsewhere"), 0o644)
 	// stray file at repo level must be skipped
 	os.WriteFile(filepath.Join(root, "repoA/notadir"), []byte("x"), 0o644)
 	got := AllWorktreeDirs([]string{root, filepath.Join(root, "missing-root")})
 	if len(got) != 3 {
 		t.Fatalf("got %v", got)
+	}
+	for _, g := range got {
+		if filepath.Base(filepath.Dir(g)) == "reaver" {
+			t.Errorf("non-worktree subdir listed: %s", g)
+		}
 	}
 }
 
