@@ -52,6 +52,15 @@ type Process struct {
 	EnvVar     string   `json:"env_var"`
 	EnvPath    string   `json:"env_path"`
 	URLEnvVars []string `json:"url_env_vars"`
+	// PatchFile/PatchKey: for apps whose backend url lives in some other
+	// text file entirely (e.g. a Pkl config template rendered into
+	// public/config.json on every dev-server start — patching the
+	// generated file gets clobbered immediately). PatchFile is relative to
+	// this process's worktree; ork rewrites lines matching
+	// `<key> = "http://localhost:<anything>"` (or `<key>: "..."`) to
+	// http://localhost:<bePort>, key/value quoting preserved.
+	PatchFile string `json:"patch_file"`
+	PatchKey  string `json:"patch_key"`
 }
 
 // Group is N processes spawned together for one task.

@@ -85,7 +85,12 @@ ORK_FAVORITES=()
 # URL path appended after the port. "url_env_vars" are keys rewritten to the
 # task's OWN fe url — for apps that hardcode their origin
 # (NEXTAUTH_URL=http://localhost:3000) and would otherwise redirect auth
-# flows to port 3000 instead of the task's port.
+# flows to port 3000 instead of the task's port. "patch_file"/"patch_key"
+# are for backend urls that live in some other file (e.g. a Pkl template
+# rendered into a generated config.json on every dev-server start):
+# "patch_file" is relative to the process's worktree, and ork rewrites
+# `<patch_key> = "http://localhost:PORT"` (or `<patch_key>: "..."`) in it
+# to the task's backend port.
 #
 # A repo can belong to several groups (e.g. a backend shared between a
 # 2-process pair and a bigger federated group with different siblings) —

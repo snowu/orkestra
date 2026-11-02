@@ -487,3 +487,31 @@ func TestEnsureGroupWindowsSkipsMissingWorktree(t *testing.T) {
 		t.Errorf("the skip must be reported, got notes %v", notes)
 	}
 }
+
+func TestPatchFilePort(t *testing.T) {
+	dir := t.TempDir()
+	src := "amends \"x.pkl\"\n" +
+		"  apiUrl = \"http://localhost:8000/api\"\n" +
+		"otherUrl = \"http://localhost:9999\"\n" +
+		"yamlUrl: \"http://localhost:1\"\n"
+	os.WriteFile(filepath.Join(dir, "config.pkl"), []byte(src), 0o600)
+
+	if err := patchFilePort(dir, "config.pkl", "apiUrl", 8123); err != nil {
+		t.Fatal(err)
+	}
+	if err := patchFilePort(dir, "config.pkl", "yamlUrl", 8123); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "config.pkl"))
+	want := "amends \"x.pkl\"\n" +
+		"  apiUrl = \"http://localhost:8123/api\"\n" +
+		"otherUrl = \"http://localhost:9999\"\n" +
+		"yamlUrl: \"http://localhost:8123\"\n"
+	if string(got) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+
+	if err := patchFilePort(dir, "config.pkl", "missingKey", 8123); err == nil {
+		t.Error("expected error for missing key")
+	}
+}

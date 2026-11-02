@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -221,6 +222,26 @@ func patchEnvVar(dir, varName, value string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
+// patchFilePort rewrites the first line matching `key = "http://localhost:PORT"`
+// or `key: "http://localhost:PORT"` in relPath (relative to feDir) to point
+// at port — for backend urls that live in a config template (e.g. a Pkl
+// file rendered into a generated config.json on every dev-server start,
+// where patching the generated file gets immediately clobbered) rather than
+// .env.local.
+func patchFilePort(feDir, relPath, key string, port int) error {
+	path := filepath.Join(feDir, relPath)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	re := regexp.MustCompile(`(?m)^(\s*` + regexp.QuoteMeta(key) + `\s*[:=]\s*")http://localhost:\d+([^"]*")`)
+	out := re.ReplaceAll(data, []byte(`${1}http://localhost:`+strconv.Itoa(port)+`${2}`))
+	if !re.Match(data) {
+		return fmt.Errorf("patchFilePort: no %q key found in %s", key, path)
+	}
+	return os.WriteFile(path, out, 0o600)
+}
+
 // subPort substitutes a {port} placeholder in cmd, if present.
 func subPort(cmd string, port int) string {
 	return strings.ReplaceAll(cmd, "{port}", strconv.Itoa(port))
@@ -308,6 +329,11 @@ func EnsureGroupWindowsFor(cfg config.Config, g config.Group, repo, task, wt str
 		}
 		if p.EnvVar != "" {
 			if err := patchFEEnvVar(dir, p.EnvVar, p.EnvPath, bePort); err != nil {
+				return spawned, notes, err
+			}
+		}
+		if p.PatchFile != "" && p.PatchKey != "" {
+			if err := patchFilePort(dir, p.PatchFile, p.PatchKey, bePort); err != nil {
 				return spawned, notes, err
 			}
 		}

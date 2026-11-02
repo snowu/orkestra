@@ -203,7 +203,12 @@ task's backend port; `env_path` is an optional URL path appended after the
 port. `url_env_vars` keys get rewritten to the task's own fe origin
 (`http://localhost:<fePort>`) — for apps that hardcode it, like next-auth's
 `NEXTAUTH_URL`, which would otherwise bounce auth redirects to whatever
-runs on port 3000.
+runs on port 3000. `patch_file`/`patch_key` cover backend urls that don't
+live in `.env.local` at all — e.g. a Pkl/YAML template rendered into a
+generated `config.json` on every dev-server start, where patching the
+generated file gets clobbered. `patch_file` is relative to the process's
+worktree; ork rewrites `<patch_key> = "http://localhost:PORT"` (or
+`<patch_key>: "..."`) in it to the task's backend port.
 
 `cr-managament` above belongs to both groups — a repo can be a member of
 several groups with different siblings. ork resolves which group a task
