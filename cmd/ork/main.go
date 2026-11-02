@@ -28,8 +28,8 @@ func main() {
 			fatal("usage: ork config check")
 		}
 		runConfigCheck()
-	case "pair":
-		runPair(args[1:])
+	case "group", "pair":
+		runGroup(args[1:])
 	case "--version":
 		fmt.Fprintln(os.Stderr, "ork "+version)
 	case "new-task":
@@ -43,6 +43,8 @@ func main() {
 			task = args[1]
 		}
 		runEndTask(task)
+	case "scan":
+		runScan()
 	case "login-proxy":
 		runLoginProxy(parseListenArg(args))
 	case "_end-task":

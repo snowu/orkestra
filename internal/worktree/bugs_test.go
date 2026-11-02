@@ -49,15 +49,22 @@ func TestKillSharedCwdSessionPreservesSibling(t *testing.T) {
 	}
 }
 
-func TestMultiplePairsWithEqualTimesStayAdjacent(t *testing.T) {
+func TestMultipleGroupsWithEqualTimesStayAdjacent(t *testing.T) {
 	root := t.TempDir()
-	cfg := config.Config{Pairs: []config.Pair{{FERepo: "a-web", BERepo: "c-api"}, {FERepo: "b-web", BERepo: "d-api"}}}
+	cfg := config.Config{Groups: []config.Group{
+		{Name: "g1", Processes: []config.Process{{Label: "fe", Repo: "a-web"}, {Label: "be", Repo: "c-api"}}},
+		{Name: "g2", Processes: []config.Process{{Label: "fe", Repo: "b-web"}, {Label: "be", Repo: "d-api"}}},
+	}}
 	for _, repo := range []string{"a-web", "b-web", "c-api", "d-api"} {
 		os.MkdirAll(filepath.Join(root, repo, "task"), 0o755)
 	}
 	rows := BuildRows(cfg, []string{root}, Deps{})
-	if !PairSiblings(cfg, rows[0], rows[1]) || !PairSiblings(cfg, rows[2], rows[3]) {
-		t.Fatalf("pairs split: %+v", rows)
+	if !GroupSiblings(cfg, rows[0], rows[1]) || !GroupSiblings(cfg, rows[2], rows[3]) {
+		t.Fatalf("groups split: %+v", rows)
+	}
+	// within a cluster, the group's declared process order
+	if rows[0].Repo != "a-web" || rows[1].Repo != "c-api" {
+		t.Fatalf("cluster order = %s, %s", rows[0].Repo, rows[1].Repo)
 	}
 }
 
@@ -108,13 +115,72 @@ func TestLockedWorktreeCleanupPreservesEverything(t *testing.T) {
 	if summary := EndTask(cfg, ops, nil, "repo", "task"); !strings.Contains(summary, "cleanup skipped") || killed {
 		t.Fatal("missing repo did not stop cleanup")
 	}
+	// A failing setup hook is reported but the worktree is finished:
+	// profile written, path returned, so the user can repair it.
 	hooksPath := filepath.Join(home, "hooks.json")
 	os.WriteFile(hooksPath, []byte(`{"repo":"exit 9"}`), 0o600)
 	cfg.HooksConfig = hooksPath
-	if _, err := NewTask(cfg, repo, "hook-failure"); err == nil || !strings.Contains(err.Error(), "setup hook failed") {
-		t.Fatalf("hook failure hidden: %v", err)
+	wt2, err := NewTask(cfg, repo, "hook-failure")
+	if err != nil || wt2 != filepath.Join(root, "repo/hook-failure") {
+		t.Fatalf("hook failure must not fail NewTask: %q %v", wt2, err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "repo/hook-failure")); err != nil {
-		t.Fatal("failed hook's worktree should remain for repair")
+	if _, err := os.Stat(filepath.Join(wt2, ".claude-profile")); err != nil {
+		t.Fatal("profile must still be written after a hook failure")
+	}
+}
+
+func TestEndTaskUntrackedFolderAndReusedBranch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, "repo")
+	os.MkdirAll(repo, 0o755)
+	gitCmd := func(args ...string) {
+		t.Helper()
+		c := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		c.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git: %v %s", err, out)
+		}
+	}
+	gitCmd("init", "-b", "main")
+	gitCmd("commit", "--allow-empty", "-m", "init")
+	root := filepath.Join(home, "worktrees")
+	cfg := config.Config{WorktreeRoots: []string{root}}
+	ops := TmuxOps{Panes: func() []mux.Pane { return nil }, HasSession: func(string) bool { return false }, KillSession: func(string) {}}
+
+	// A folder git doesn't track: removed directly instead of stuck forever.
+	stray := filepath.Join(root, "repo", "stray")
+	os.MkdirAll(stray, 0o755)
+	if s := EndTask(cfg, ops, []string{repo}, "repo", "stray"); !strings.Contains(s, "untracked folder removed") {
+		t.Fatalf("summary = %s", s)
+	}
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Fatal("untracked folder left behind")
+	}
+
+	// A reused feat/login branch lives in task dir feat-login: EndTask must
+	// delete feat/login, not a (nonexistent) feat-login branch.
+	if _, err := NewTaskOnBranch(cfg, repo, "feat-login", "feat/login"); err != nil {
+		t.Fatal(err)
+	}
+	if s := EndTask(cfg, ops, []string{repo}, "repo", "feat-login"); !strings.Contains(s, "branch feat/login deleted") || strings.Contains(s, "branch feat/login deleted FAILED") {
+		t.Fatalf("summary = %s", s)
+	}
+	if HasBranch(repo, "feat/login") {
+		t.Fatal("reused branch not deleted")
+	}
+}
+
+func TestSessionsForMatchesKill(t *testing.T) {
+	root := fixtureRoots(t)
+	panes := []mux.Pane{{Session: "main", CWD: filepath.Join(root, "repoBE/mytask/src")}}
+	var killed []string
+	ops := TmuxOps{Panes: func() []mux.Pane { return panes },
+		HasSession: func(string) bool { return false }, KillSession: func(n string) { killed = append(killed, n) }}
+	cfg := config.Config{WorktreeRoots: []string{root}}
+	doomed := SessionsFor(cfg, ops, "repoBE", "mytask")
+	KillSessionFor(cfg, ops, "repoBE", "mytask")
+	if strings.Join(doomed, ",") != "main" || strings.Join(killed, ",") != "main" {
+		t.Fatalf("doomed=%v killed=%v", doomed, killed)
 	}
 }

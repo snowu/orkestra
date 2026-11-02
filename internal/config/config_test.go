@@ -88,118 +88,224 @@ func TestExampleConfParses(t *testing.T) {
 	}
 }
 
-func TestPairsMergeLegacyAndJSON(t *testing.T) {
+func TestGroupsForRepo(t *testing.T) {
+	cfg := Config{Groups: []Group{
+		{Name: "a", Processes: []Process{{Label: "x", Repo: "shared"}}},
+		{Name: "b", Processes: []Process{{Label: "y", Repo: "shared"}, {Label: "z", Repo: "other"}}},
+		{Name: "c", Processes: []Process{{Label: "w", Repo: "solo-only"}}},
+	}}
+
+	gs := cfg.GroupsForRepo("shared")
+	if len(gs) != 2 || gs[0].Name != "a" || gs[1].Name != "b" {
+		t.Errorf("shared should resolve to [a b] in file order, got %+v", gs)
+	}
+
+	gs = cfg.GroupsForRepo("solo-only")
+	if len(gs) != 1 || gs[0].Name != "c" {
+		t.Errorf("solo-only should resolve to [c], got %+v", gs)
+	}
+
+	gs = cfg.GroupsForRepo("nowhere")
+	if len(gs) != 0 {
+		t.Errorf("unknown repo should resolve to no groups, got %+v", gs)
+	}
+}
+
+func TestGroupValidate(t *testing.T) {
+	ok := Group{Name: "g", Processes: []Process{
+		{Label: "a", Repo: "r1", Cmd: "x"},
+		{Label: "b", Repo: "r2", Cmd: "y"},
+	}}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("valid group rejected: %v", err)
+	}
+	dup := Group{Name: "g", Processes: []Process{
+		{Label: "a", Repo: "r1", Cmd: "x"},
+		{Label: "a", Repo: "r2", Cmd: "y"},
+	}}
+	if err := dup.Validate(); err == nil {
+		t.Error("duplicate labels must be rejected — they name windows")
+	}
+	empty := Group{Name: "g"}
+	if err := empty.Validate(); err == nil {
+		t.Error("a group with no processes must be rejected")
+	}
+	noLabel := Group{Name: "g", Processes: []Process{{Repo: "r1", Cmd: "x"}}}
+	if err := noLabel.Validate(); err == nil {
+		t.Error("a process with no label must be rejected")
+	}
+}
+
+func TestLoadGroupsAndResolution(t *testing.T) {
 	dir := t.TempDir()
-	pairsPath := filepath.Join(dir, "pairs.json")
-	os.WriteFile(pairsPath, []byte(`[
-		{"fe": "lending-frontend", "be": "trade-finance-service",
-		 "fe_cmd": "bun run dev -- --port {port}",
-		 "be_cmd": "uv run fastapi dev src/app.py --port {port}",
-		 "fe_env_var": "NEXT_PUBLIC_TRADE_FINANCE_SERVICE_ENDPOINT",
-		 "fe_env_path": "/public/operations"}
+	groupsPath := filepath.Join(dir, "groups.json")
+	os.WriteFile(groupsPath, []byte(`[
+	  {"name":"mfe","processes":[
+	    {"label":"remote","repo":"web-remote","cmd":"pnpm dev","fixed_port":4023},
+	    {"label":"host","repo":"web-host","cmd":"./go app.dev","fixed_port":4000},
+	    {"label":"be","repo":"shared-be","cmd":"uv run x --port {port}","port_range":"be"}
+	  ]},
+	  {"name":"be-solo","processes":[
+	    {"label":"be","repo":"shared-be","cmd":"uv run x --port {port}","port_range":"be"}
+	  ]}
 	]`), 0o644)
-	p := write(t, `
-ORK_FE_REPO=cr-frontend
-ORK_BE_REPO=cr-managament
-ORK_FE_CMD="bun run dev -- --port {port}"
-ORK_FE_ENV_VAR=NEXT_PUBLIC_CREDIT_RISK_SERVICE_ENDPOINT
-ORK_PAIRS_CONFIG="`+pairsPath+`"
-`)
-	cfg, err := Load(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Pairs) != 2 {
-		t.Fatalf("pairs = %+v, want legacy + 1 json", cfg.Pairs)
-	}
-	if cfg.Pairs[0].FERepo != "cr-frontend" || cfg.Pairs[0].FEEnvVar != "NEXT_PUBLIC_CREDIT_RISK_SERVICE_ENDPOINT" {
-		t.Errorf("legacy pair first, got %+v", cfg.Pairs[0])
-	}
-	if cfg.Pairs[0].BECmd != "bund" {
-		t.Errorf("legacy pair should keep default BECmd, got %q", cfg.Pairs[0].BECmd)
-	}
-	lend := cfg.Pairs[1]
-	if lend.BERepo != "trade-finance-service" || lend.FEEnvPath != "/public/operations" {
-		t.Errorf("json pair = %+v", lend)
+
+	cfg := Config{GroupsConfig: groupsPath}
+	cfg.loadGroups()
+
+	if len(cfg.Groups) != 2 || len(cfg.Groups[0].Processes) != 3 {
+		t.Fatalf("groups = %+v", cfg.Groups)
 	}
 
-	if p, ok := cfg.PairFor("trade-finance-service"); !ok || p.FERepo != "lending-frontend" {
-		t.Errorf("PairFor(be side) = %+v, %v", p, ok)
+	// A repo only in one group resolves to that single group.
+	gs := cfg.GroupsForRepo("web-remote")
+	if len(gs) != 1 || gs[0].Name != "mfe" {
+		t.Errorf("web-remote resolved to %+v", gs)
 	}
-	if _, ok := cfg.PairFor("unrelated-repo"); ok {
-		t.Error("PairFor should miss unrelated repo")
+
+	// A repo in multiple groups: GroupsForRepo returns ALL of them, in
+	// file order — the flaw this replaces was picking just the first.
+	gs = cfg.GroupsForRepo("shared-be")
+	if len(gs) != 2 || gs[0].Name != "mfe" || gs[1].Name != "be-solo" {
+		t.Errorf("shared-be should resolve to both groups in file order, got %+v", gs)
+	}
+
+	// Unknown repo resolves to nothing.
+	if gs := cfg.GroupsForRepo("nope"); len(gs) != 0 {
+		t.Errorf("unknown repo should resolve to no groups, got %+v", gs)
 	}
 }
 
-func TestPairsJSONOnlyDefaultsCmds(t *testing.T) {
+func TestLoadGroupsMissingFileIsSilent(t *testing.T) {
+	cfg := Config{GroupsConfig: filepath.Join(t.TempDir(), "absent.json")}
+	cfg.loadGroups()
+	if len(cfg.Groups) != 0 {
+		t.Errorf("missing file should yield no groups, got %+v", cfg.Groups)
+	}
+}
+
+func TestLoadGroupsRejectsInvalid(t *testing.T) {
 	dir := t.TempDir()
-	pairsPath := filepath.Join(dir, "pairs.json")
-	os.WriteFile(pairsPath, []byte(`[{"fe": "a-fe", "be": "a-be"}]`), 0o644)
-	cfg, err := Load(write(t, `ORK_PAIRS_CONFIG="`+pairsPath+`"`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Pairs) != 1 || cfg.Pairs[0].FECmd != "rund" || cfg.Pairs[0].BECmd != "bund" {
-		t.Fatalf("pairs = %+v", cfg.Pairs)
+	p := filepath.Join(dir, "groups.json")
+	// Duplicate labels — must be dropped, not loaded half-broken.
+	os.WriteFile(p, []byte(`[{"name":"bad","processes":[
+	  {"label":"x","repo":"r1","cmd":"a"},{"label":"x","repo":"r2","cmd":"b"}]}]`), 0o644)
+	cfg := Config{GroupsConfig: p}
+	cfg.loadGroups()
+	if len(cfg.Groups) != 0 {
+		t.Errorf("invalid group must be dropped, got %+v", cfg.Groups)
 	}
 }
 
-func TestPairConfigurationErrors(t *testing.T) {
-	for _, content := range []string{
-		`[`, `null`, `[] []`, `[{"fe":"a","be":"b","fe_comand":"typo"}]`,
-		`[{"fe":"a"}]`, `[{"fe":"a","be":"a"}]`,
-		`[{"fe":"../a","be":"b"}]`,
-		`[{"fe":"a","be":"b"},{"fe":"b","be":"c"}]`,
-		`[{"fe":"a","be":"b","fe_env_file":"../.env"}]`,
-		`[{"fe":"a","be":"b","fe_env_var":"BAD-KEY"}]`,
-		`[{"fe":"a","be":"b","fe_env_var":"NEXT_PUBLIC_ORK_TASK"}]`,
-		`[{"fe":"a","be":"b","fe_env_path":"/x\nINJECT=1"}]`,
-		`[{"fe":"a","be":"b","fe_patch_file":"config.pkl"}]`,
-		`[{"fe":"a","be":"b","fe_patch_file":"../config.pkl","fe_patch_key":"backend"}]`,
-		`[{"fe":"a","be":"b","fe_patch_file":".env.local","fe_patch_key":"backend"}]`,
+func TestProcessValidationErrors(t *testing.T) {
+	for _, proc := range []string{
+		`{"label":"a","repo":"../a","cmd":"x"}`,
+		`{"label":"a","repo":"","cmd":"x"}`,
+		`{"label":"a","repo":"r","cmd":"x","port_range":"api"}`,
+		`{"label":"a","repo":"r","cmd":"x --port {port}"}`,
+		`{"label":"a","repo":"r","cmd":"x","env_file":"../.env"}`,
+		`{"label":"a","repo":"r","cmd":"x","env_var":"BAD-KEY"}`,
+		`{"label":"a","repo":"r","cmd":"x","port_range":"fe","env_var":"NEXT_PUBLIC_ORK_TASK"}`,
+		`{"label":"a","repo":"r","cmd":"x","env_var":"A","env_path":"/x\nINJECT=1"}`,
+		`{"label":"a","repo":"r","cmd":"x","patch_file":"config.pkl"}`,
+		`{"label":"a","repo":"r","cmd":"x","patch_file":"../config.pkl","patch_key":"backend"}`,
+		`{"label":"a","repo":"r","cmd":"x","patch_file":".env.local","patch_key":"backend"}`,
 	} {
-		t.Run(content, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "pairs.json")
-			os.WriteFile(path, []byte(content), 0o600)
-			_, err := Load(write(t, `ORK_PAIRS_CONFIG="`+path+`"`))
-			if err == nil {
-				t.Fatal("invalid pair accepted")
+		t.Run(proc, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "groups.json")
+			os.WriteFile(path, []byte(`[{"name":"g","processes":[`+proc+`]}]`), 0o600)
+			cfg, err := Load(write(t, `ORK_GROUPS_CONFIG="`+path+`"`))
+			if err != nil {
+				t.Fatal(err) // invalid groups are problems, not load errors
+			}
+			if len(cfg.Groups) != 0 || len(cfg.Problems) == 0 {
+				t.Fatalf("invalid process accepted: groups=%+v problems=%v", cfg.Groups, cfg.Problems)
 			}
 		})
 	}
 }
 
-func TestDefaultPairsWithoutShellConfig(t *testing.T) {
+func TestGroupsFileProblems(t *testing.T) {
+	for name, content := range map[string]string{
+		"bad json":       `[`,
+		"unknown field":  `[{"name":"g","processes":[{"label":"a","repo":"r","cmd":"x","port-range":"fe"}]}]`,
+		"duplicate name": `[{"name":"g","processes":[{"label":"a","repo":"r","cmd":"x"}]},{"name":"g","processes":[{"label":"a","repo":"s","cmd":"x"}]}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "groups.json")
+			os.WriteFile(path, []byte(content), 0o600)
+			cfg, err := Load(write(t, `ORK_GROUPS_CONFIG="`+path+`"`))
+			if err != nil || len(cfg.Problems) == 0 {
+				t.Fatalf("err=%v problems=%v", err, cfg.Problems)
+			}
+		})
+	}
+}
+
+func TestTaskKeyDefaults(t *testing.T) {
+	empty := ""
+	for _, c := range []struct {
+		p    Process
+		want string
+	}{
+		{Process{PortRange: "fe"}, "NEXT_PUBLIC_ORK_TASK"},
+		{Process{EnvVar: "API"}, "NEXT_PUBLIC_ORK_TASK"},
+		{Process{PortRange: "be"}, ""},
+		{Process{PortRange: "fe", TaskEnvVar: &empty}, ""},
+	} {
+		if got := c.p.TaskKey(); got != c.want {
+			t.Errorf("%+v: TaskKey = %q, want %q", c.p, got, c.want)
+		}
+	}
+}
+
+func TestDefaultGroupsWithoutShellConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	dir := filepath.Join(home, ".config/ork")
 	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "pairs.json"), []byte(`[{"fe":"web","be":"api","task_env_var":"","fe_env_file":".env"}]`), 0o600)
+	os.WriteFile(filepath.Join(dir, "groups.json"), []byte(`[{"name":"g","processes":[
+	  {"label":"fe","repo":"web","cmd":"x","port_range":"fe","task_env_var":"","env_file":".env"}]}]`), 0o600)
 	cfg, err := Load(filepath.Join(home, ".ork.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Pairs) != 1 || cfg.Pairs[0].TaskKey() != "" || cfg.Pairs[0].EnvFile() != ".env" {
-		t.Fatalf("pairs = %+v", cfg.Pairs)
+	if len(cfg.Groups) != 1 {
+		t.Fatalf("groups = %+v problems = %v", cfg.Groups, cfg.Problems)
+	}
+	p := cfg.Groups[0].Processes[0]
+	if p.TaskKey() != "" || p.EnvFileOrDefault() != ".env" {
+		t.Fatalf("process = %+v", p)
 	}
 }
 
-func TestExportCommentsAndCommandDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "pairs.json")
-	os.WriteFile(path, []byte(`[{"fe":"a","be":"b"}]`), 0o600)
-	cfg, err := Load(write(t, `export ORK_PAIRS_CONFIG="`+path+`" # pairs
-ORK_FE_CMD="echo '# keep' {port}" # trailing comment
-ORK_BE_CMD='python app.py --port {port}'
-ORK_SCOPE_SESSIONS_TO_REPO=1 # shared config`))
+func TestExportAndComments(t *testing.T) {
+	cfg, err := Load(write(t, `export ORK_FAVORITES=("a b" c) # favs
+ORK_HOOKS_CONFIG="/tmp/x #1.json" # trailing comment
+ORK_SCOPE_SESSIONS_TO_REPO=true # shared config`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Pairs[0].FECmd != "echo '# keep' {port}" || cfg.Pairs[0].BECmd != "python app.py --port {port}" || !cfg.ScopeSessionsToRepo {
+	if len(cfg.Favorites) != 2 || cfg.Favorites[0] != "a b" || cfg.HooksConfig != "/tmp/x #1.json" || !cfg.ScopeSessionsToRepo {
 		t.Fatalf("config = %+v", cfg)
 	}
-	for _, line := range []string{"ORK_WORKTREES_ROOTS=()", "ORK_SCAN_MAXDEPTH=oops", "ORK_SCOPE_SESSIONS_TO_REPO=true", "ORK_MULTIPLEXER=unknown", "ORK_FE_REPO=only-one"} {
-		if _, err := Load(write(t, line)); err == nil {
-			t.Errorf("accepted %s", line)
+}
+
+func TestBadValuesKeepDefaults(t *testing.T) {
+	for _, line := range []string{"ORK_WORKTREES_ROOTS=()", "ORK_SCAN_MAXDEPTH=oops", "ORK_SCOPE_SESSIONS_TO_REPO=maybe", "ORK_FE_REPO=legacy"} {
+		cfg, err := Load(write(t, line))
+		if err != nil {
+			t.Errorf("%s: must not be fatal: %v", line, err)
+			continue
 		}
+		if len(cfg.Problems) == 0 {
+			t.Errorf("%s: expected a problem to be reported", line)
+		}
+		if len(cfg.WorktreeRoots) == 0 || cfg.ScanMaxDepth != 3 || cfg.ScopeSessionsToRepo {
+			t.Errorf("%s: defaults not kept: %+v", line, cfg)
+		}
+	}
+	if _, err := Load(write(t, "ORK_MULTIPLEXER=screen")); err == nil {
+		t.Error("unknown multiplexer must be fatal")
 	}
 }

@@ -36,7 +36,21 @@ func TestTaskContextFromNestedWorktree(t *testing.T) {
 	}
 }
 
-func TestPairCLI(t *testing.T) {
+func TestTaskContextThroughSymlinkedRoot(t *testing.T) {
+	real := t.TempDir()
+	os.MkdirAll(filepath.Join(real, "api", "feature"), 0o755)
+	link := filepath.Join(t.TempDir(), "wt")
+	os.Symlink(real, link)
+	// git reports the resolved path; the config names the symlink.
+	cfg := config.Config{WorktreeRoots: []string{link}}
+	resolved, _ := filepath.EvalSymlinks(filepath.Join(real, "api", "feature"))
+	repo, task, wt := taskContext(cfg, resolved, "")
+	if repo != "api" || task != "feature" || wt != filepath.Join(link, "api", "feature") {
+		t.Fatalf("context=%s %s %s", repo, task, wt)
+	}
+}
+
+func TestGroupCLI(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, "worktrees")
 	web, api := filepath.Join(home, "web"), filepath.Join(home, "api")
@@ -54,11 +68,13 @@ func TestPairCLI(t *testing.T) {
 		git(repo, "commit", "--allow-empty", "-m", "init")
 		git(repo, "worktree", "add", filepath.Join(root, filepath.Base(repo), "feature"), "-b", "feature")
 	}
-	pairs := filepath.Join(home, "pairs.json")
-	os.WriteFile(pairs, []byte(`[{"fe":"web","be":"api","fe_cmd":"web {port} {be_port}","be_cmd":"api {port} {fe_port}","fe_env_file":".env","task_env_var":"VITE_TASK"}]`), 0o600)
+	groups := filepath.Join(home, "groups.json")
+	os.WriteFile(groups, []byte(`[{"name":"app","processes":[
+	  {"label":"fe","repo":"web","cmd":"web {port} {be_port}","port_range":"fe","env_file":".env","task_env_var":"VITE_TASK"},
+	  {"label":"be","repo":"api","cmd":"api {port} {fe_port}","port_range":"be"}]}]`), 0o600)
 	conf := filepath.Join(home, "ork.conf")
 	os.WriteFile(conf, []byte(`ORK_WORKTREES_ROOTS=("`+root+`")
-ORK_PAIRS_CONFIG="`+pairs+`"`), 0o600)
+ORK_GROUPS_CONFIG="`+groups+`"`), 0o600)
 	run := func(dir string, args ...string) (string, error) {
 		t.Helper()
 		c := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLIProcess$", "--"}, args...)...)
@@ -72,13 +88,13 @@ ORK_PAIRS_CONFIG="`+pairs+`"`), 0o600)
 		}
 		return stderr.String(), err
 	}
-	if out, err := run(web, "config", "check"); err != nil || !strings.Contains(out, "web + api") {
+	if out, err := run(web, "config", "check"); err != nil || !strings.Contains(out, "app: fe=web, be=api") {
 		t.Fatalf("config check: %v %s", err, out)
 	}
 	var expected string
 	for _, dir := range []string{web, api, filepath.Join(root, "web/feature"), filepath.Join(root, "api/feature/subdir")} {
 		os.MkdirAll(dir, 0o755)
-		args := []string{"pair", "--dry-run"}
+		args := []string{"group", "--dry-run"}
 		if dir == web || dir == api {
 			args = append(args, "feature")
 		}
@@ -92,10 +108,13 @@ ORK_PAIRS_CONFIG="`+pairs+`"`), 0o600)
 			t.Fatalf("different plans: %s vs %s", out, expected)
 		}
 	}
+	if !strings.Contains(expected, `.env: VITE_TASK="feature"`) {
+		t.Fatalf("plan missing task env: %s", expected)
+	}
 	if _, err := os.Stat(filepath.Join(root, "web/feature/.env")); !os.IsNotExist(err) {
 		t.Fatal("dry run wrote environment")
 	}
-	if out, err := run(web, "pair"); err == nil || !strings.Contains(out, "supply a task") {
+	if out, err := run(web, "group"); err == nil || !strings.Contains(out, "supply a task") {
 		t.Fatalf("missing task: %v %s", err, out)
 	}
 	// Exercise end-task from a nested directory with an isolated multiplexer.
@@ -119,8 +138,8 @@ ORK_PAIRS_CONFIG="`+pairs+`"`), 0o600)
 	if _, err := os.Stat(filepath.Join(root, "web/feature")); err != nil {
 		t.Fatal("end-task removed sibling")
 	}
-	os.WriteFile(pairs, []byte(`[{"fe":"web"}]`), 0o600)
-	if out, err := run(web, "config", "check"); err == nil || !strings.Contains(out, "pair 1") {
+	os.WriteFile(groups, []byte(`[{"name":"app","processes":[{"label":"fe","repo":"web","cmd":"x {port}"}]}]`), 0o600)
+	if out, err := run(web, "config", "check"); err == nil || !strings.Contains(out, "problem:") {
 		t.Fatalf("invalid config: %v %s", err, out)
 	}
 }

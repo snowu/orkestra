@@ -66,7 +66,12 @@ func patchEnvFile(dir, file string, values map[string]string) error {
 	return atomicWrite(path, []byte(strings.Join(lines, "\n")+"\n"), mode)
 }
 
-// managedFile validates the destination shared by dotenv and template updates.
+// managedFile validates the destination shared by dotenv and template
+// updates and returns the path to actually write. The name must resolve
+// inside the worktree (no ../ or symlinked-parent escapes). A symlink AT
+// that name is followed — setup hooks commonly symlink .env.local to the
+// main checkout's copy, and replacing the link with a file would silently
+// fork it — so the returned path is the link's target.
 func managedFile(dir, file string) (string, os.FileMode, error) {
 	path := filepath.Join(dir, file)
 	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
@@ -82,7 +87,12 @@ func managedFile(dir, file string) (string, os.FileMode, error) {
 		return "", 0, fmt.Errorf("environment file %s escapes worktree", path)
 	}
 	mode := os.FileMode(0o600)
-	if st, err := os.Lstat(path); err == nil {
+	if st, err := os.Lstat(path); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		if path, err = filepath.EvalSymlinks(path); err != nil {
+			return "", 0, fmt.Errorf("environment file %s: %w", filepath.Join(dir, file), err)
+		}
+	}
+	if st, err := os.Stat(path); err == nil {
 		if !st.Mode().IsRegular() {
 			return "", 0, fmt.Errorf("environment file %s must be a regular file", path)
 		}

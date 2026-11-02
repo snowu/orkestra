@@ -34,11 +34,27 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
   your favorites listed first), type a new task name, creates the
   worktree/branch off the repo's actual default branch, copies the repo's
   `.env.local` if it has one, runs any repo-specific setup hook you've
-  configured, and lands you straight in its tmux session. Configured fe/be
-  pairs also appear as a combined `fe + be` entry (searching either name
-  finds it) — picking it, or hitting **ctrl-b** on either sibling's row,
-  creates the same-named task in both repos at once (one shared session,
-  since sessions are task-named).
+  configured, and lands you straight in its tmux session. On the task-name
+  screen, the picked repo's local branches (any without a worktree already) are listed below
+  what you type — `↓` moves onto one and `enter` creates the worktree on
+  that EXISTING branch instead of a new one; typing still filters the list
+  even while it doubles as the new-branch name, and `↑` back to the top
+  returns to "create a new branch". If the branch you pick is already
+  checked out somewhere else, ork asks before moving it (enter or `y`
+  confirms, anything else cancels): checked out in the repo's main
+  checkout, that checkout is switched to its base branch (origin/HEAD)
+  instead of left detached, so it stays usable for whatever you do there
+  next; checked out in another linked worktree, that worktree is detached.
+  If switching the main checkout would require discarding dirty changes,
+  ork aborts and changes nothing. Branch names with slashes (`feat/x`) become dashed task names (`feat-x`), since
+  a task name is also a directory and tmux session name; the picker still
+  shows the real branch name.
+- **ctrl-f** (or `ork scan` from the shell) — scan: lists branches across
+  every repo ork knows about whose most recent commit is within the last
+  48 hours and which have no worktree yet, newest first, with each row's
+  age shown compactly (`3h`, `2d`). Typing filters; `enter` creates the
+  worktree for the selected branch and attaches, same as picking an
+  existing branch from ctrl-n.
 - **ctrl-x** — end task: asks to confirm ("no" is the default), then
   removes the worktree, kills its tmux session (unless another repo's
   worktree still shares that task name — see "Session naming" below), and
@@ -55,6 +71,8 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
 - **ctrl-s** — toggle a 50/50 split panel: `git status` on the left, the
   live info panel on the right — check for uncommitted changes without
   losing sight of what the agent is doing.
+- **?** — open a full-screen help modal listing every keybinding, grouped
+  by what you're trying to do; `?`, `esc`, `q`, or `enter` closes it.
 
 ## Requirements
 
@@ -151,99 +169,94 @@ given repo.
 Key = repo folder basename. Repos without a matching key just skip the hook
 step. Point at a different file with `ORK_HOOKS_CONFIG` in `~/.ork.conf`.
 
-### FE/BE pairs
+### Process groups
 
-Sibling repos that share task names can be declared as pairs — ctrl-g
-spawns fe/be tmux windows running each side's dev command in its worktree,
-with a stable per-task port ({port} placeholder, FE 3000-3999, BE
-8000-8999) and the fe `.env.local` rewritten to point at the task's
-backend. One pair fits in `~/.ork.conf` (`ORK_FE_REPO`/`ORK_BE_REPO`/...);
-any number more go in `~/.config/ork/pairs.json` (path override:
-`ORK_PAIRS_CONFIG`):
-
-```json
-[
-  {
-    "fe": "my-frontend", "be": "my-backend",
-    "fe_cmd": "bun run dev -- --port {port}",
-    "be_cmd": "uv run fastapi dev src/app.py --port {port}",
-    "fe_env_var": "NEXT_PUBLIC_MY_SERVICE_ENDPOINT",
-    "fe_env_path": "/public/operations",
-    "fe_url_env_vars": ["NEXTAUTH_URL"]
-  }
-]
-```
-
-`fe_env_path` is optional — appended after the port in the URL written to
-`fe_env_var`. `fe_url_env_vars` keys get rewritten to the task's own fe
-origin (`http://localhost:<fePort>`) — for apps that hardcode it, like
-next-auth's `NEXTAUTH_URL`, which would otherwise bounce auth redirects to
-whatever runs on port 3000. `fe_cmd`/`be_cmd` fall back to the built-in
-defaults (or your `ORK_FE_CMD`/`ORK_BE_CMD` overrides) when omitted. A repo row triggers pairing only if it belongs to a declared pair.
-
-## Pairing and configuration from the CLI
-
-Run `ork config check` before opening the picker to validate your settings
-and list the effective pairs. Set `ORK_CONFIG=/path/to/ork.conf` to try a
-separate configuration; the same file is used by all commands. Configuration
-is parsed as data, without executing shell commands. Single-line assignments,
-`export KEY=value`, and trailing comments are supported.
-
-From either repo's main checkout, use `ork pair <task> --dry-run` to inspect
-the resolved worktrees, ports, commands, and proposed environment updates.
-From anywhere inside a task worktree, `ork pair --dry-run` infers the task.
-Remove `--dry-run` to start both dev windows in the task session. Dry runs
-and configuration checks need no multiplexer; normal launches use your
-configured backend. Output goes to stderr so the shell wrapper only changes
-directory when a command explicitly returns a directory on stdout.
-
-For a Vite frontend and Python API, `~/.config/ork/pairs.json` can contain:
+Sibling repos that share task names can be declared as a group — ctrl-g
+spawns one tmux window per process running its command in its own worktree,
+with a stable per-task port ({port} placeholder, FE range 3000-3999, BE
+range 8000-8999) and each process's `.env.local` rewritten as configured.
+Groups live in `~/.config/ork/groups.json` (path override:
+`ORK_GROUPS_CONFIG`) — there is no shell-conf shorthand, every group goes
+in this file. Here's the author's real config, two groups sharing a
+backend:
 
 ```json
 [
-  {
-    "fe": "dashboard",
-    "be": "api",
-    "fe_cmd": "npm run dev -- --port {port}",
-    "be_cmd": "python -m uvicorn app:app --port {port}",
-    "fe_env_file": ".env",
-    "fe_env_var": "VITE_API_URL",
-    "fe_env_path": "/v1",
-    "task_env_var": "VITE_ORK_TASK"
-  }
+  {"name":"cr","processes":[
+    {"label":"fe","repo":"cr-frontend","cmd":"bun run dev -- --port {port}","port_range":"fe","env_var":"NEXT_PUBLIC_CREDIT_RISK_SERVICE_ENDPOINT"},
+    {"label":"be","repo":"cr-managament","cmd":"uv run fastapi dev src/app.py --port {port}","port_range":"be"}]},
+  {"name":"credit-risk-mfe","processes":[
+    {"label":"remote","repo":"ops-web-credit-risk","cmd":"pnpm dev","fixed_port":4023},
+    {"label":"host","repo":"ops-web-core","cmd":"./go app.dev","fixed_port":4000},
+    {"label":"be","repo":"cr-managament","cmd":"uv run fastapi dev src/app.py --port {port}","port_range":"be"}]}
 ]
 ```
 
-`fe_env_file` defaults to `.env.local`. Use a relative path within the
-frontend worktree; its parent directory must already exist. `task_env_var`
-defaults to `NEXT_PUBLIC_ORK_TASK`; set it to `""` to disable the task label.
-Commands accept `{port}` for their own port, plus `{fe_port}` and `{be_port}`
-for either service's port. Omitted commands inherit `ORK_FE_CMD` and
-`ORK_BE_CMD`, whose built-in defaults remain `rund` and `bund`.
-Environment updates preserve other keys and file permissions, collapse
-repeated assignments for managed keys, and replace the file atomically.
-Symlinked environment files are rejected; copy them into the worktree first.
+Each process has a `label` (names its tmux window), a `repo`, and a `cmd`.
+`{port}` in `cmd` is substituted with the task's stable port whenever
+`port_range` ("fe" or "be") is set; `{fe_port}` and `{be_port}` give either
+side's port, so a command can point at its sibling. Omit `port_range` when
+the port is hardcoded in the repo's own config instead — `remote` and
+`host` above are a federated MFE setup where the ports are pinned in each
+repo's own config file; `fixed_port` there declares the port ONLY so ork can
+warn when it's already in use, since a process without `port_range` can't
+be isolated per task and only one task at a time can run it. `env_var`, if
+set, is the dotenv key ork rewrites in that process's worktree to point at
+the task's backend port; `env_path` is an optional URL path appended after
+the port. `url_env_vars` keys get rewritten to the task's own fe origin
+(`http://localhost:<fePort>`) — for apps that hardcode it, like next-auth's
+`NEXTAUTH_URL`, which would otherwise bounce auth redirects to whatever
+runs on port 3000. `env_file` picks the dotenv file (default `.env.local`;
+e.g. `.env` for Vite), relative to the worktree. `task_env_var` is the key
+that receives the task name so the app can label itself — it defaults to
+`NEXT_PUBLIC_ORK_TASK` for processes that already have a dotenv file in
+play (`port_range: "fe"`, `env_var` or `url_env_vars`); set it to `""` to
+disable. `patch_file`/`patch_key` cover backend urls that don't live in a
+dotenv file at all — e.g. a Pkl/YAML template rendered into a generated
+`config.json` on every dev-server start, where patching the generated file
+gets clobbered. `patch_file` is relative to the process's worktree; ork
+rewrites `<patch_key> = "http://localhost:PORT"` (or `<patch_key>: "..."`)
+lines in it to the task's backend port, keeping any URL suffix. Choose the
+source template, not its generated output.
 
-If the backend URL lives in a source template, set `fe_patch_file` and
-`fe_patch_key` together, for example `"fe_patch_file": "config.pkl"` and
-`"fe_patch_key": "backend"`. The launcher updates matching lines such as
-`backend = "http://localhost:8000/v1"` to the task's backend port, preserving
-the URL suffix and other settings. Choose the source template rather than
-its generated output. Dry runs validate the matching key and show the
-proposed port update without writing. Template updates also use atomic
-replacement and preserve permissions.
+Env and template updates preserve other keys and file permissions and
+replace the file atomically. A symlinked env file (e.g. a setup hook
+linking `.env.local` to the main checkout's copy) is written through to its
+target; a path that would escape the worktree is refused.
 
-The default pairs file is loaded even if `~/.ork.conf` does not exist.
-A missing pairs file is optional. Invalid JSON, unknown JSON fields,
-incomplete pairs, invalid environment keys, and duplicate repo membership
-now produce errors instead of silently disabling pairing. Define each repo
-in one pair, removing its legacy `ORK_FE_REPO`/`ORK_BE_REPO` declaration if
-you move it into JSON. Unknown shell configuration keys remain allowed.
+`cr-managament` above belongs to both groups — a repo can be a member of
+several groups with different siblings. ork resolves which group a task
+actually means by counting, per candidate group, how many of its member
+repos have worktrees for that task; the group with the most wins. If two
+or more groups tie (including "no worktrees exist yet for either"),
+ctrl-g's (or ctrl-a's) spawn is ambiguous and prompts you with a picker listing each
+candidate's name and processes so you can choose which one to start.
+Groups that share no repo never compete, even under the same task name.
 
-Ports retain the existing task-name hash, so existing URLs stay stable.
-Different tasks can hash to the same port, and different pairs using the
-same task name share ports; port allocation is not a reservation system.
-The optional login proxy retains its existing Next.js auth behavior.
+## Groups and configuration from the CLI
+
+Run `ork config check` to validate your settings and list the effective
+groups; it exits non-zero on any problem. Normal startup reports the same
+problems on stderr but carries on (an invalid group is skipped, an
+unparseable value keeps its default), so a config mistake never locks you
+out of your worktrees. Unknown keys in `groups.json` — usually typos — are
+reported too. Set `ORK_CONFIG=/path/to/ork.conf` to use a different config
+file; it is passed along to cleanup sessions ork spawns. The file is parsed
+as data, never executed; single-line assignments, `export KEY=value` and
+trailing comments are supported.
+
+From a repo's main checkout, `ork group <task> --dry-run` shows what ctrl-g
+would do for that task: the resolved group, worktrees, ports, commands, env
+and template updates, and anything that would be skipped. From anywhere
+inside a task worktree, `ork group --dry-run` infers the task. Drop
+`--dry-run` to start the windows; add `--group NAME` when the task's group
+is ambiguous. (`ork pair` is an alias.) Dry runs and config checks need no
+multiplexer. Output goes to stderr, so the shell wrapper only changes
+directory when a command prints one on stdout.
+
+Ports come from a hash of the task name, so URLs stay stable across runs.
+Different tasks can hash to the same port; port allocation is not a
+reservation system.
 
 ### Login proxy (`ork login-proxy`)
 
@@ -255,9 +268,12 @@ forwards auth traffic to the task port the login started from (Referer
 pins the target in an `ork_login_target` cookie so the provider's
 Referer-less callback still routes; when nothing pins the target it scans
 the worktrees for live fe dev servers — one alive routes automatically,
-several render a click-to-pick chooser). It starts automatically in a
-detached `ork-login-proxy` tmux session whenever the TUI opens with pairs
-configured and port 3000 is free — no dedicated "login" dev server needed.
+several render a click-to-pick chooser). It starts automatically as a
+detached background process whenever the TUI opens with pairs configured
+and port 3000 is free — no dedicated "login" dev server needed. It has no
+terminal or multiplexer session of its own; output goes to
+`~/.cache/ork/login-proxy.log` and it keeps running after `ork` exits. The
+main list's header shows `proxy :3000 up`/`down` when pairs are configured.
 
 ### Session naming
 
@@ -269,11 +285,14 @@ task only kills the shared task-named session if no other repo's worktree
 under that same task name still exists.
 
 Task names must be valid Git branch names that fit one directory (no `/`),
-matching the worktree discovery layout. Setup-hook failures report the
-created worktree path so you can repair it. Cleanup stops if Git cannot
-remove a worktree, preserving its files, branches, and sessions; locked
-worktrees must be unlocked explicitly before retrying. `end-task` also works
-from subdirectories within a task worktree.
+matching the worktree discovery layout; reusing an existing branch like
+`feat/login` maps it to task `feat-login` and keeps the real branch name.
+A failing setup hook is reported with the worktree path so you can repair
+it, but the worktree is still finished and opened. Cleanup deletes the
+worktree's actual branch. It stops if Git refuses to remove a worktree it
+tracks, preserving its files, branch and session (unlock a locked worktree
+before retrying); a leftover folder Git no longer tracks is deleted
+directly. `end-task` also works from subdirectories within a task worktree.
 
 ## Claude Code agent status (optional)
 
