@@ -13,10 +13,11 @@ import (
 	"orkestra/internal/worktree"
 )
 
-const usage = `usage: ork [new-task <name> | end-task [name] | scan | group [task] [--group NAME] [--dry-run] | config check | login-proxy [port] | --version]
+const usage = `usage: ork [new-task <name> | end-task [name] | scan | group [task] [--group NAME] [--dry-run] | config check | login-proxy [port] | mcp | --version]
 ORK_CONFIG selects a config file (default ~/.ork.conf).
 group starts the task's process-group windows (same as ctrl-g); --dry-run
-previews worktrees, ports, commands and file updates without changing anything.`
+previews worktrees, ports, commands and file updates without changing anything.
+mcp serves ork's operations to coding agents over MCP (stdio).`
 
 // runConfigCheck validates the configuration and lists the effective
 // groups. Unlike normal startup, which reports problems and carries on,
