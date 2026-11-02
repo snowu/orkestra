@@ -90,7 +90,13 @@ ORK_FAVORITES=()
 # rendered into a generated config.json on every dev-server start):
 # "patch_file" is relative to the process's worktree, and ork rewrites
 # `<patch_key> = "http://localhost:PORT"` (or `<patch_key>: "..."`) in it
-# to the task's backend port.
+# to the task's backend port. {fe_port}/{be_port} in cmd give either side's
+# port. "env_file" picks the dotenv file (default .env.local). "task_env_var"
+# is the key that gets the task name (default NEXT_PUBLIC_ORK_TASK for
+# processes with port_range "fe", env_var or url_env_vars; "" disables).
+#
+# Check the result with `ork config check`; preview a launch with
+# `ork group <task> --dry-run`.
 #
 # A repo can belong to several groups (e.g. a backend shared between a
 # 2-process pair and a bigger federated group with different siblings) —

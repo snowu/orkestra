@@ -353,7 +353,7 @@ func TestSharedRepoRowsAgreeOnGroup(t *testing.T) {
 // TestSharedRepoTaskLevelTieDeclinesRatherThanGuessing: when BOTH
 // candidate groups sharing cr-managament are equally materialized for one
 // task (2/2 present each), there's no principled way to pick a bracket to
-// draw — resolveTaskGroup must decline for every row of that task
+// draw — resolveTaskGroups must decline for every row of that task
 // (GroupName == "" everywhere) instead of some rows getting one group's
 // name and others getting the other's.
 func TestSharedRepoTaskLevelTieDeclinesRatherThanGuessing(t *testing.T) {

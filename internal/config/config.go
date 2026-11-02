@@ -1,16 +1,19 @@
 // Package config parses ~/.ork.conf. The file is bash syntax (it's still
 // sourced by the shell shims), but ork only ever needs the handful of
-// KEY=value / KEY=(a b c) assignments below — this is a line parser for
-// exactly those forms, not a bash evaluator. Unknown keys are ignored so
-// users can keep arbitrary shell in the file for their own wrappers.
+// KEY=value / KEY=(a b c) assignments below (optionally `export`ed, with
+// trailing comments) — this is a line parser for exactly those forms, not a
+// bash evaluator. Unknown keys are ignored so users can keep arbitrary
+// shell in the file for their own wrappers.
 package config
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -32,6 +35,13 @@ type Config struct {
 	// no-code-execution rationale as HooksConfig). Optional.
 	GroupsConfig string
 	Groups       []Group
+
+	// Problems are non-fatal configuration issues (an invalid group that
+	// was dropped, an unparseable value that kept its default, legacy pair
+	// keys). Startup reports them on stderr and carries on — a config
+	// mistake must not lock the user out of their worktrees — while
+	// `ork config check` lists them and fails.
+	Problems []string
 }
 
 // Process is one command in a Group: a repo, what to run in its worktree,
@@ -61,6 +71,90 @@ type Process struct {
 	// http://localhost:<bePort>, key/value quoting preserved.
 	PatchFile string `json:"patch_file"`
 	PatchKey  string `json:"patch_key"`
+	// EnvFile is the dotenv file env_var/url_env_vars/the task label are
+	// written to, relative to the worktree; default .env.local.
+	EnvFile string `json:"env_file"`
+	// TaskEnvVar names the key that receives the task name (an app can
+	// show it, e.g. in its tab title). Defaults to NEXT_PUBLIC_ORK_TASK;
+	// "" disables it.
+	TaskEnvVar *string `json:"task_env_var,omitempty"`
+}
+
+// EnvFileOrDefault is EnvFile, defaulting to .env.local.
+func (p Process) EnvFileOrDefault() string {
+	if p.EnvFile != "" {
+		return p.EnvFile
+	}
+	return ".env.local"
+}
+
+// TaskKey is the dotenv key that receives the task name, "" for none. The
+// default only applies to processes that already manage a dotenv file
+// (fe port range, env_var or url_env_vars) — writing a label into a
+// backend or non-JS worktree just leaves a stray untracked file.
+func (p Process) TaskKey() string {
+	if p.TaskEnvVar != nil {
+		return *p.TaskEnvVar
+	}
+	if p.PortRange == "fe" || p.EnvVar != "" || len(p.URLEnvVars) > 0 {
+		return "NEXT_PUBLIC_ORK_TASK"
+	}
+	return ""
+}
+
+var envKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// localPath: relative, inside the worktree, single line.
+func localPath(f string) bool {
+	return filepath.IsLocal(f) && !strings.ContainsAny(f, "\r\n")
+}
+
+// Validate checks values later used as paths, dotenv assignments and
+// window names, before anything is written.
+func (p Process) Validate() error {
+	if p.Label == "" {
+		return fmt.Errorf("a process has no label")
+	}
+	if r := p.Repo; r == "" || r == "." || r == ".." || strings.ContainsAny(r, `/\`) {
+		return fmt.Errorf("%s: repo must be a repo folder name", p.Label)
+	}
+	switch p.PortRange {
+	case "", "fe", "be":
+	default:
+		return fmt.Errorf("%s: port_range must be \"fe\", \"be\" or omitted", p.Label)
+	}
+	if p.PortRange == "" && strings.Contains(p.Cmd, "{port}") {
+		return fmt.Errorf("%s: cmd uses {port} but no port_range is set", p.Label)
+	}
+	if (p.PatchFile == "") != (p.PatchKey == "") {
+		return fmt.Errorf("%s: patch_file and patch_key must be set together", p.Label)
+	}
+	if p.PatchFile != "" && !localPath(p.PatchFile) {
+		return fmt.Errorf("%s: patch_file must be a relative path inside the worktree", p.Label)
+	}
+	if p.EnvFile != "" && !localPath(p.EnvFile) {
+		return fmt.Errorf("%s: env_file must be a relative path inside the worktree", p.Label)
+	}
+	if p.PatchFile != "" && filepath.Clean(p.PatchFile) == filepath.Clean(p.EnvFileOrDefault()) {
+		return fmt.Errorf("%s: patch_file and env_file must be different files", p.Label)
+	}
+	seen := map[string]bool{}
+	for _, key := range append([]string{p.EnvVar, p.TaskKey()}, p.URLEnvVars...) {
+		if key == "" {
+			continue
+		}
+		if !envKey.MatchString(key) {
+			return fmt.Errorf("%s: invalid environment key %q", p.Label, key)
+		}
+		if seen[key] {
+			return fmt.Errorf("%s: duplicate environment key %q", p.Label, key)
+		}
+		seen[key] = true
+	}
+	if strings.ContainsAny(p.EnvPath, "\r\n\"'#$`\\") || (p.EnvPath != "" && !strings.HasPrefix(p.EnvPath, "/")) {
+		return fmt.Errorf("%s: env_path must be a URL path starting with /", p.Label)
+	}
+	return nil
 }
 
 // Group is N processes spawned together for one task.
@@ -77,8 +171,8 @@ func (g Group) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, p := range g.Processes {
-		if p.Label == "" {
-			return fmt.Errorf("group %q has a process with no label", g.Name)
+		if err := p.Validate(); err != nil {
+			return fmt.Errorf("group %q: %w", g.Name, err)
 		}
 		if seen[p.Label] {
 			return fmt.Errorf("group %q has duplicate label %q", g.Name, p.Label)
@@ -88,26 +182,48 @@ func (g Group) Validate() error {
 	return nil
 }
 
-// loadGroups reads GroupsConfig. Invalid groups are dropped with a note on
-// stderr rather than failing startup — a broken groups file must not stop
-// the user reaching their worktrees.
+// loadGroups reads GroupsConfig. Invalid groups are dropped and recorded in
+// Problems rather than failing startup — a broken groups file must not stop
+// the user reaching their worktrees. A missing file is fine (groups are
+// optional); an unreadable one is a problem.
 func (c *Config) loadGroups() {
 	data, err := os.ReadFile(c.GroupsConfig)
+	if os.IsNotExist(err) {
+		return
+	}
 	if err != nil {
+		c.problem("%s: %v — ignoring", c.GroupsConfig, err)
 		return
 	}
 	var fromFile []Group
-	if json.Unmarshal(data, &fromFile) != nil {
-		fmt.Fprintln(os.Stderr, "ork: bad "+c.GroupsConfig+" — ignoring")
+	if err := json.Unmarshal(data, &fromFile); err != nil {
+		c.problem("%s: %v — ignoring", c.GroupsConfig, err)
 		return
 	}
+	// Unknown keys are almost always typos ("port-range", "env_vars") whose
+	// setting then silently does nothing — say so, but still load.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&[]Group{}); err != nil {
+		c.problem("%s: %v", c.GroupsConfig, err)
+	}
+	names := map[string]bool{}
 	for _, g := range fromFile {
 		if err := g.Validate(); err != nil {
-			fmt.Fprintln(os.Stderr, "ork: "+err.Error()+" — ignoring")
+			c.problem("%v — group ignored", err)
 			continue
 		}
+		if names[g.Name] {
+			c.problem("duplicate group name %q — later one ignored", g.Name)
+			continue
+		}
+		names[g.Name] = true
 		c.Groups = append(c.Groups, g)
 	}
+}
+
+func (c *Config) problem(format string, args ...any) {
+	c.Problems = append(c.Problems, fmt.Sprintf(format, args...))
 }
 
 // GroupsForRepo returns every group repo belongs to, in file order. A repo
@@ -151,7 +267,9 @@ func defaults() Config {
 	}
 }
 
-// Load reads path if it exists; a missing file just yields defaults.
+// Load reads path if it exists; a missing file just yields defaults. The
+// only hard error is one ork cannot run with at all (unreadable file,
+// unknown multiplexer); everything else lands in Problems.
 func Load(path string) (Config, error) {
 	cfg := defaults()
 	f, err := os.Open(path)
@@ -159,7 +277,7 @@ func Load(path string) (Config, error) {
 		if os.IsNotExist(err) {
 			// groups.json is its own file — no ~/.ork.conf must not hide it.
 			cfg.loadGroups()
-			warnLegacyPairs(cfg, nil)
+			cfg.warnLegacyPairs(nil)
 			return cfg, nil
 		}
 		return cfg, err
@@ -169,7 +287,8 @@ func Load(path string) (Config, error) {
 	var legacyPairKeys []string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+		line := strings.TrimSpace(stripComment(sc.Text()))
+		line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -183,6 +302,8 @@ func Load(path string) (Config, error) {
 		case "ORK_WORKTREES_ROOTS":
 			if v := parseArray(val); len(v) > 0 {
 				cfg.WorktreeRoots = v
+			} else {
+				cfg.problem("ORK_WORKTREES_ROOTS is empty — using %s", cfg.WorktreeRoots[0])
 			}
 		case "ORK_FAVORITES":
 			cfg.Favorites = parseArray(val)
@@ -191,9 +312,18 @@ func Load(path string) (Config, error) {
 		case "ORK_SCAN_MAXDEPTH":
 			if n, err := strconv.Atoi(unquote(val)); err == nil && n > 0 {
 				cfg.ScanMaxDepth = n
+			} else {
+				cfg.problem("ORK_SCAN_MAXDEPTH=%s is not a positive integer — using %d", val, cfg.ScanMaxDepth)
 			}
 		case "ORK_SCOPE_SESSIONS_TO_REPO":
-			cfg.ScopeSessionsToRepo = unquote(val) == "1"
+			switch strings.ToLower(unquote(val)) {
+			case "1", "true", "yes", "on":
+				cfg.ScopeSessionsToRepo = true
+			case "", "0", "false", "no", "off":
+				cfg.ScopeSessionsToRepo = false
+			default:
+				cfg.problem("ORK_SCOPE_SESSIONS_TO_REPO=%s is not 0 or 1 — leaving it off", val)
+			}
 		case "ORK_MULTIPLEXER":
 			if v := unquote(val); v != "" {
 				cfg.Multiplexer = v
@@ -213,9 +343,38 @@ func Load(path string) (Config, error) {
 	if err := sc.Err(); err != nil {
 		return cfg, err
 	}
+	if cfg.Multiplexer != "tmux" && cfg.Multiplexer != "herdr" {
+		return cfg, fmt.Errorf("ORK_MULTIPLEXER must be tmux or herdr, got %q", cfg.Multiplexer)
+	}
 	cfg.loadGroups()
-	warnLegacyPairs(cfg, legacyPairKeys)
+	cfg.warnLegacyPairs(legacyPairKeys)
 	return cfg, nil
+}
+
+// stripComment drops a trailing bash comment: a # at line start or after
+// whitespace, outside quotes ("echo '# keep'" stays intact).
+func stripComment(s string) string {
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && quote != '\'' {
+			i++
+			continue
+		}
+		if quote != 0 {
+			if s[i] == quote {
+				quote = 0
+			}
+			continue
+		}
+		if s[i] == '\'' || s[i] == '"' {
+			quote = s[i]
+			continue
+		}
+		if s[i] == '#' && (i == 0 || s[i-1] == ' ' || s[i-1] == '\t') {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // parseArray handles bash `(elem "elem" 'elem')` values.
@@ -296,12 +455,12 @@ func expand(s string) string {
 
 // warnLegacyPairs tells users upgrading from the fe/be-pair config that
 // it is no longer read — otherwise their pairs just silently vanish.
-func warnLegacyPairs(cfg Config, keys []string) {
+func (c *Config) warnLegacyPairs(keys []string) {
 	if len(keys) > 0 {
-		fmt.Fprintln(os.Stderr, "ork: "+strings.Join(keys, ", ")+" no longer supported — move the pair to "+cfg.GroupsConfig+" (see ork.conf.example)")
+		c.problem("%s no longer supported — move the pair to %s (see ork.conf.example)", strings.Join(keys, ", "), c.GroupsConfig)
 	}
-	pairs := filepath.Join(filepath.Dir(cfg.GroupsConfig), "pairs.json")
+	pairs := filepath.Join(filepath.Dir(c.GroupsConfig), "pairs.json")
 	if _, err := os.Stat(pairs); err == nil {
-		fmt.Fprintln(os.Stderr, "ork: "+pairs+" is no longer read — move its pairs to "+cfg.GroupsConfig)
+		c.problem("%s is no longer read — move its pairs to %s", pairs, c.GroupsConfig)
 	}
 }

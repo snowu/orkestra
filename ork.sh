@@ -5,5 +5,8 @@ ork() {
   local out dir
   out="$(command ork "$@")" || return $?
   dir=$(printf '%s' "$out" | tail -n1)
-  [[ -n "$dir" && -d "$dir" ]] && cd "$dir"
+  if [[ -n "$dir" && -d "$dir" ]]; then
+    cd "$dir" || return $?
+  fi
+  return 0
 }

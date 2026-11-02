@@ -2,12 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sahilm/fuzzy"
@@ -184,7 +186,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "backspace":
 		if len(m.filter) > 0 {
-			m.filter = m.filter[:len(m.filter)-1]
+			m.filter = dropLastRune(m.filter)
 			m.applyFilter()
 		}
 	default:
@@ -247,7 +249,7 @@ func (m *Model) confirmAccept() (tea.Model, tea.Cmd) {
 	// If ork's own window lives in a session about to die, move it out
 	// first (with the client following) — otherwise the kill takes ork
 	// down with it and the user is dumped out of the TUI.
-	m.evacuateIfDoomed(sel)
+	m.evacuateIfDoomed(ops, sel)
 	switch mode {
 	case modeConfirmKill:
 		worktree.KillSessionFor(m.cfg, ops, sel.Repo, sel.Task)
@@ -259,7 +261,13 @@ func (m *Model) confirmAccept() (tea.Model, tea.Cmd) {
 		// preview. Works outside tmux too — detached sessions need no client.
 		repo, task := sel.Repo, sel.Task
 		name := "ork-end-" + endSessionSafe.Replace(repo+"-"+task)
-		cmd := fmt.Sprintf("ork _end-task %q %q 2>&1; echo; echo '[done]'; sleep 3", repo, task)
+		cmd := fmt.Sprintf("ork _end-task %s %s 2>&1; echo; echo '[done]'; sleep 3", quoteShell(repo), quoteShell(task))
+		// The detached session gets the mux server's environment, not
+		// ours — pass an ORK_CONFIG override along explicitly, or cleanup
+		// would run against ~/.ork.conf's roots and sessions.
+		if c := os.Getenv("ORK_CONFIG"); c != "" {
+			cmd = "ORK_CONFIG=" + quoteShell(c) + " " + cmd
+		}
 		if err := mux.NewDetached(name, cmd); err != nil {
 			// tmux refused — inline fallback, summary in the status line.
 			repos := worktree.AllRepoDirs(homeDir(), m.cfg.ScanMaxDepth, repoCachePath(), 60*time.Second)
@@ -275,24 +283,20 @@ func (m *Model) confirmAccept() (tea.Model, tea.Cmd) {
 	return m, m.reloadCmd()
 }
 
-// evacuateIfDoomed checks whether the tmux session hosting ork's own
-// window is one of the sessions the pending kill/end will destroy (task
-// name, repo__task, or the session whose pane cwd is the worktree) and, if
-// so, moves ork's window into the fallback "ork-home" session so ork — and
-// the user's client — survive the kill.
-func (m *Model) evacuateIfDoomed(sel worktree.Row) {
+// evacuateIfDoomed checks whether the session hosting ork's own window is
+// one of the sessions the pending kill/end will destroy — the exact list
+// KillSessionFor uses — and, if so, moves ork's window into the fallback
+// "ork-home" session so ork — and the user's client — survive the kill.
+func (m *Model) evacuateIfDoomed(ops worktree.TmuxOps, sel worktree.Row) {
 	cur, win := mux.CurrentWindow()
 	if cur == "" {
 		return
 	}
-	doomed := cur == sel.Task || cur == sel.Repo+"__"+sel.Task
-	if !doomed {
-		if p := resolvePane(m.cfg, sel); p != nil && p.Session == cur {
-			doomed = true
+	for _, name := range worktree.SessionsFor(m.cfg, ops, sel.Repo, sel.Task) {
+		if name == cur {
+			mux.EvacuateWindow(win, "ork-home")
+			return
 		}
-	}
-	if doomed {
-		mux.EvacuateWindow(win, "ork-home")
 	}
 }
 
@@ -393,7 +397,7 @@ func (m *Model) handlePickRepoKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "backspace":
 		if len(m.repoFilter) > 0 {
-			m.repoFilter = m.repoFilter[:len(m.repoFilter)-1]
+			m.repoFilter = dropLastRune(m.repoFilter)
 			m.repoCursor = 0
 		}
 	default:
@@ -600,7 +604,7 @@ func (m *Model) handleTaskNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "backspace":
 		if len(m.taskInput) > 0 {
-			m.taskInput = m.taskInput[:len(m.taskInput)-1]
+			m.taskInput = dropLastRune(m.taskInput)
 			m.branchCursor = 0
 		}
 	default:
@@ -660,3 +664,12 @@ func (m *Model) handleConfirmStealKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+func dropLastRune(s string) string {
+	if s == "" {
+		return s
+	}
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-size]
+}
+
+func quoteShell(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

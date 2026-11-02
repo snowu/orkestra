@@ -68,43 +68,48 @@ func GitBranch(wt string) string {
 
 // BuildRows assembles the picker rows.
 //
-// Session resolution runs ONCE PER TASK from a single pane snapshot —
+// Session resolution runs once per configured session scope from a pane snapshot —
 // per-row resolution let two sibling worktrees sharing a task (BE+FE under
 // one task name) resolve to different sessions, the exact "waiting shows
 // in one folder but not the other" bug. Agent state is read in the same
-// per-task pass so siblings can't observe different values within one
+// per-session pass so siblings can't observe different values within one
 // build either.
 func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 	dirs := AllWorktreeDirs(roots)
 
 	type sess struct{ name, cmd, agent string }
 	taskSess := map[string]*sess{}
+	groups := map[string][]string{}
 	for _, wt := range dirs {
-		t := filepath.Base(wt)
-		if _, done := taskSess[t]; done {
-			continue
-		}
+		key := SessionName(cfg, filepath.Base(filepath.Dir(wt)), filepath.Base(wt))
+		groups[key] = append(groups[key], wt)
+	}
+	for key, members := range groups {
 		var s *sess
-		for _, p := range d.Panes {
-			if p.CWD == wt {
-				s = &sess{name: p.Session, cmd: p.Cmd}
-				break
-			}
-		}
-		if s == nil && d.HasSession != nil && d.HasSession(t) {
-			cmd := ""
-			for _, p := range d.Panes {
-				if p.Session == t {
-					cmd = p.Cmd
+		for _, pane := range d.Panes {
+			for _, wt := range members {
+				if PathWithin(wt, pane.CWD) {
+					s = &sess{name: pane.Session, cmd: pane.Cmd}
 					break
 				}
 			}
-			s = &sess{name: t, cmd: cmd}
+			if s != nil {
+				break
+			}
+		}
+		if s == nil && d.HasSession != nil && d.HasSession(key) {
+			s = &sess{name: key}
+			for _, pane := range d.Panes {
+				if pane.Session == key {
+					s.cmd = pane.Cmd
+					break
+				}
+			}
 		}
 		if s != nil && d.AgentState != nil {
 			s.agent = d.AgentState(s.name)
 		}
-		taskSess[t] = s // nil means "no session", memoized too
+		taskSess[key] = s
 	}
 
 	// Group resolution also runs ONCE PER TASK, over every repo present
@@ -119,13 +124,13 @@ func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 	// silently land on different GroupNames. taskGroup below is resolved
 	// from the task's full repo set so every member of the winning group
 	// gets the SAME name.
-	taskGroup := map[string]*resolvedTaskGroup{}
+	taskGroup := map[string][]*resolvedTaskGroup{}
 	for _, wt := range dirs {
 		t := filepath.Base(wt)
 		if _, done := taskGroup[t]; done {
 			continue
 		}
-		taskGroup[t] = resolveTaskGroup(cfg, roots, dirs, t)
+		taskGroup[t] = resolveTaskGroups(cfg, roots, dirs, t)
 	}
 
 	rows := make([]Row, 0, len(dirs))
@@ -139,7 +144,7 @@ func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 		if d.AccessTime != nil {
 			r.LastUsed = d.AccessTime(repo, task)
 		}
-		if s := taskSess[task]; s != nil {
+		if s := taskSess[SessionName(cfg, repo, task)]; s != nil {
 			r.Session, r.Cmd, r.Agent, r.Live = s.name, s.cmd, s.agent, true
 		}
 		var windows []string
@@ -160,7 +165,14 @@ func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 		// not a liveness fact, and other code (sort adjacency, sibling
 		// detection, the picker) needs it regardless of whether live-window
 		// info is available.
-		if tg := taskGroup[task]; tg != nil && tg.memberRepos[repo] {
+		var tg *resolvedTaskGroup
+		for _, cand := range taskGroup[task] {
+			if cand.memberRepos[repo] {
+				tg = cand
+				break
+			}
+		}
+		if tg != nil {
 			r.GroupName = tg.group.Name
 			r.GroupSize = len(tg.group.Processes)
 			live := map[string]bool{}
@@ -202,39 +214,61 @@ func BuildRows(cfg config.Config, roots []string, d Deps) []Row {
 		}
 		return r.Repo + "/" + r.Task
 	}
+	procIndex := func(r Row) int {
+		if g, ok := cfg.GroupByName(r.GroupName); ok {
+			for i, p := range g.Processes {
+				if p.Repo == r.Repo {
+					return i
+				}
+			}
+		}
+		return 0
+	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		ti, tj := effTime(rows[i]), effTime(rows[j])
 		if !ti.Equal(tj) {
 			return ti.After(tj)
 		}
-		return clusterKey(rows[i]) < clusterKey(rows[j])
+		ki, kj := clusterKey(rows[i]), clusterKey(rows[j])
+		if ki != kj {
+			return ki < kj
+		}
+		// Same cluster: the group's own process order (as declared in
+		// groups.json), then a stable path order so refreshes never
+		// reshuffle siblings.
+		if pi, pj := procIndex(rows[i]), procIndex(rows[j]); pi != pj {
+			return pi < pj
+		}
+		return rows[i].Path < rows[j].Path
 	})
 	return rows
 }
 
 // resolvedTaskGroup is the outcome of resolving ALL repos present for one
 // task down to a single winning group (or none), for display/sibling
-// purposes — see resolveTaskGroup.
+// purposes — see resolveTaskGroups.
 type resolvedTaskGroup struct {
 	group       config.Group
 	memberRepos map[string]bool // group.Processes' repos, for O(1) row lookup
 }
 
-// resolveTaskGroup picks ONE group to represent task's whole row cluster
+// resolveTaskGroups picks the groups that represent task's row clusters
 // in the picker, considering every repo that actually has a worktree for
 // task — not just one repo's candidate list in isolation. Candidates are
-// every group touched by ANY present repo for this task; each is scored
-// by how many of ITS OWN member repos have a present worktree for task
-// (same "most materialized" rule as ResolveGroup). The highest-scoring
-// group wins; on a genuine tie, resolveTaskGroup deliberately declines
-// rather than picking arbitrarily per-row — nil is returned, so no row
-// for this task gets a GroupName, and the picker shows no (potentially
+// every group touched by ANY present repo for this task, split into
+// components of groups that share a repo: groups with no repo in common
+// never compete (two unrelated fe/be groups can both have a "fix-login"
+// task). Within a component, each group is scored by how many of ITS OWN
+// member repos have a present worktree for task (same "most materialized"
+// rule as ResolveGroup) and the highest wins. On a genuine tie the
+// component deliberately declines rather than picking arbitrarily per-row
+// — no row of it gets a GroupName, so the picker shows no (potentially
 // wrong) bracket instead of a partial/inconsistent one. This is stricter
 // than ResolveGroup's ambiguous-but-still-returns-a-value contract,
 // because ResolveGroup's ambiguity is surfaced to a human deciding what
 // to launch, while this feeds a passive cosmetic pairing indicator with no
 // place to show "ambiguous" per row.
-func resolveTaskGroup(cfg config.Config, roots []string, allDirs []string, task string) *resolvedTaskGroup {
+func resolveTaskGroups(cfg config.Config, roots []string, allDirs []string, task string) []*resolvedTaskGroup {
 	presentRepos := map[string]bool{}
 	for _, wt := range allDirs {
 		if filepath.Base(wt) == task {
@@ -244,44 +278,73 @@ func resolveTaskGroup(cfg config.Config, roots []string, allDirs []string, task 
 
 	seen := map[string]bool{}
 	var candidates []config.Group
-	for repo := range presentRepos {
-		for _, g := range cfg.GroupsForRepo(repo) {
-			if !seen[g.Name] {
+	for _, g := range cfg.Groups { // file order, for deterministic output
+		for _, p := range g.Processes {
+			if presentRepos[p.Repo] && !seen[g.Name] {
 				seen[g.Name] = true
 				candidates = append(candidates, g)
 			}
 		}
 	}
-	if len(candidates) == 0 {
-		return nil
-	}
 
-	best := -1
-	var bestGroups []config.Group
-	for _, cand := range candidates {
-		present := 0
-		for _, p := range cand.Processes {
-			if presentRepos[p.Repo] {
-				present++
+	// Union candidates that share any repo into components.
+	comp := make([]int, len(candidates))
+	for i := range comp {
+		comp[i] = i
+	}
+	var find func(int) int
+	find = func(i int) int {
+		if comp[i] != i {
+			comp[i] = find(comp[i])
+		}
+		return comp[i]
+	}
+	owner := map[string]int{}
+	for i, g := range candidates {
+		for _, p := range g.Processes {
+			if j, ok := owner[p.Repo]; ok {
+				comp[find(i)] = find(j)
+			} else {
+				owner[p.Repo] = i
 			}
 		}
-		switch {
-		case present > best:
-			best = present
-			bestGroups = []config.Group{cand}
-		case present == best:
-			bestGroups = append(bestGroups, cand)
-		}
-	}
-	if len(bestGroups) != 1 {
-		return nil // tie: decline rather than guess which one to draw
 	}
 
-	members := map[string]bool{}
-	for _, p := range bestGroups[0].Processes {
-		members[p.Repo] = true
+	var out []*resolvedTaskGroup
+	for root := range candidates {
+		if find(root) != root {
+			continue
+		}
+		best := -1
+		var bestGroups []config.Group
+		for i, cand := range candidates {
+			if find(i) != root {
+				continue
+			}
+			present := 0
+			for _, p := range cand.Processes {
+				if presentRepos[p.Repo] {
+					present++
+				}
+			}
+			switch {
+			case present > best:
+				best = present
+				bestGroups = []config.Group{cand}
+			case present == best:
+				bestGroups = append(bestGroups, cand)
+			}
+		}
+		if len(bestGroups) != 1 {
+			continue // tie: decline rather than guess which one to draw
+		}
+		members := map[string]bool{}
+		for _, p := range bestGroups[0].Processes {
+			members[p.Repo] = true
+		}
+		out = append(out, &resolvedTaskGroup{group: bestGroups[0], memberRepos: members})
 	}
-	return &resolvedTaskGroup{group: bestGroups[0], memberRepos: members}
+	return out
 }
 
 // ResolveGroup picks the group to act on for (repo, task) when repo is a

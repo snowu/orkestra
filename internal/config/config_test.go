@@ -79,7 +79,7 @@ UNKNOWN_KEY=whatever
 
 func TestExampleConfParses(t *testing.T) {
 	// The shipped example must always parse.
-	cfg, err := Load("testdata/ork.conf.example")
+	cfg, err := Load("../../ork.conf.example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,5 +194,118 @@ func TestLoadGroupsRejectsInvalid(t *testing.T) {
 	cfg.loadGroups()
 	if len(cfg.Groups) != 0 {
 		t.Errorf("invalid group must be dropped, got %+v", cfg.Groups)
+	}
+}
+
+func TestProcessValidationErrors(t *testing.T) {
+	for _, proc := range []string{
+		`{"label":"a","repo":"../a","cmd":"x"}`,
+		`{"label":"a","repo":"","cmd":"x"}`,
+		`{"label":"a","repo":"r","cmd":"x","port_range":"api"}`,
+		`{"label":"a","repo":"r","cmd":"x --port {port}"}`,
+		`{"label":"a","repo":"r","cmd":"x","env_file":"../.env"}`,
+		`{"label":"a","repo":"r","cmd":"x","env_var":"BAD-KEY"}`,
+		`{"label":"a","repo":"r","cmd":"x","port_range":"fe","env_var":"NEXT_PUBLIC_ORK_TASK"}`,
+		`{"label":"a","repo":"r","cmd":"x","env_var":"A","env_path":"/x\nINJECT=1"}`,
+		`{"label":"a","repo":"r","cmd":"x","patch_file":"config.pkl"}`,
+		`{"label":"a","repo":"r","cmd":"x","patch_file":"../config.pkl","patch_key":"backend"}`,
+		`{"label":"a","repo":"r","cmd":"x","patch_file":".env.local","patch_key":"backend"}`,
+	} {
+		t.Run(proc, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "groups.json")
+			os.WriteFile(path, []byte(`[{"name":"g","processes":[`+proc+`]}]`), 0o600)
+			cfg, err := Load(write(t, `ORK_GROUPS_CONFIG="`+path+`"`))
+			if err != nil {
+				t.Fatal(err) // invalid groups are problems, not load errors
+			}
+			if len(cfg.Groups) != 0 || len(cfg.Problems) == 0 {
+				t.Fatalf("invalid process accepted: groups=%+v problems=%v", cfg.Groups, cfg.Problems)
+			}
+		})
+	}
+}
+
+func TestGroupsFileProblems(t *testing.T) {
+	for name, content := range map[string]string{
+		"bad json":       `[`,
+		"unknown field":  `[{"name":"g","processes":[{"label":"a","repo":"r","cmd":"x","port-range":"fe"}]}]`,
+		"duplicate name": `[{"name":"g","processes":[{"label":"a","repo":"r","cmd":"x"}]},{"name":"g","processes":[{"label":"a","repo":"s","cmd":"x"}]}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "groups.json")
+			os.WriteFile(path, []byte(content), 0o600)
+			cfg, err := Load(write(t, `ORK_GROUPS_CONFIG="`+path+`"`))
+			if err != nil || len(cfg.Problems) == 0 {
+				t.Fatalf("err=%v problems=%v", err, cfg.Problems)
+			}
+		})
+	}
+}
+
+func TestTaskKeyDefaults(t *testing.T) {
+	empty := ""
+	for _, c := range []struct {
+		p    Process
+		want string
+	}{
+		{Process{PortRange: "fe"}, "NEXT_PUBLIC_ORK_TASK"},
+		{Process{EnvVar: "API"}, "NEXT_PUBLIC_ORK_TASK"},
+		{Process{PortRange: "be"}, ""},
+		{Process{PortRange: "fe", TaskEnvVar: &empty}, ""},
+	} {
+		if got := c.p.TaskKey(); got != c.want {
+			t.Errorf("%+v: TaskKey = %q, want %q", c.p, got, c.want)
+		}
+	}
+}
+
+func TestDefaultGroupsWithoutShellConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config/ork")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "groups.json"), []byte(`[{"name":"g","processes":[
+	  {"label":"fe","repo":"web","cmd":"x","port_range":"fe","task_env_var":"","env_file":".env"}]}]`), 0o600)
+	cfg, err := Load(filepath.Join(home, ".ork.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Groups) != 1 {
+		t.Fatalf("groups = %+v problems = %v", cfg.Groups, cfg.Problems)
+	}
+	p := cfg.Groups[0].Processes[0]
+	if p.TaskKey() != "" || p.EnvFileOrDefault() != ".env" {
+		t.Fatalf("process = %+v", p)
+	}
+}
+
+func TestExportAndComments(t *testing.T) {
+	cfg, err := Load(write(t, `export ORK_FAVORITES=("a b" c) # favs
+ORK_HOOKS_CONFIG="/tmp/x #1.json" # trailing comment
+ORK_SCOPE_SESSIONS_TO_REPO=true # shared config`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Favorites) != 2 || cfg.Favorites[0] != "a b" || cfg.HooksConfig != "/tmp/x #1.json" || !cfg.ScopeSessionsToRepo {
+		t.Fatalf("config = %+v", cfg)
+	}
+}
+
+func TestBadValuesKeepDefaults(t *testing.T) {
+	for _, line := range []string{"ORK_WORKTREES_ROOTS=()", "ORK_SCAN_MAXDEPTH=oops", "ORK_SCOPE_SESSIONS_TO_REPO=maybe", "ORK_FE_REPO=legacy"} {
+		cfg, err := Load(write(t, line))
+		if err != nil {
+			t.Errorf("%s: must not be fatal: %v", line, err)
+			continue
+		}
+		if len(cfg.Problems) == 0 {
+			t.Errorf("%s: expected a problem to be reported", line)
+		}
+		if len(cfg.WorktreeRoots) == 0 || cfg.ScanMaxDepth != 3 || cfg.ScopeSessionsToRepo {
+			t.Errorf("%s: defaults not kept: %+v", line, cfg)
+		}
+	}
+	if _, err := Load(write(t, "ORK_MULTIPLEXER=screen")); err == nil {
+		t.Error("unknown multiplexer must be fatal")
 	}
 }

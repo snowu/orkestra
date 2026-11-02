@@ -11,7 +11,7 @@ Config lives in `~/.config/ork/` (JSON, no code execution) plus `~/.ork.conf` (b
 
 ## Files involved
 
-- `~/.config/ork/groups.json` (override: `ORK_GROUPS_CONFIG`) — array of `{name, processes: [{label, repo, cmd, port_range, fixed_port, env_var, env_path, url_env_vars, patch_file, patch_key}]}`. This is what ctrl-g reads (`config.Group`/`config.Process`, `internal/ui/keys.go` ctrl+g → `worktree.EnsureGroupWindows`). There is no `pairs.json` and no `ORK_FE_REPO`/`ORK_BE_REPO` shorthand anymore.
+- `~/.config/ork/groups.json` (override: `ORK_GROUPS_CONFIG`) — array of `{name, processes: [{label, repo, cmd, port_range, fixed_port, env_var, env_path, url_env_vars, env_file, task_env_var, patch_file, patch_key}]}`. This is what ctrl-g reads (`config.Group`/`config.Process`, `internal/ui/keys.go` ctrl+g → `worktree.EnsureGroupWindows`). There is no `pairs.json` and no `ORK_FE_REPO`/`ORK_BE_REPO` shorthand anymore.
 - `~/.config/ork/hooks.json` — per-repo one-shot setup command run after `new-task` creates a worktree (cwd = new worktree). Typical use: copy `.env`/`.envrc` from the canonical repo checkout and install deps.
 
 ## Steps
@@ -27,11 +27,13 @@ Config lives in `~/.config/ork/` (JSON, no code execution) plus `~/.ork.conf` (b
    ```
    - `label` names the window and must be unique within the group.
    - `{port}` in `cmd` gets substituted with a stable per-task port when `port_range` is `"fe"` (3000-3999) or `"be"` (8000-8999). If the port is hardcoded in the repo's own config, omit `port_range`, don't use `{port}`, and set `fixed_port` so ork can warn when it's already taken.
+   - `{fe_port}`/`{be_port}` in `cmd` give either side's port (e.g. a BE that needs its FE's origin for CORS).
+   - `env_file` (default `.env.local`) picks the dotenv file — e.g. `.env` for Vite. `task_env_var` names the key that gets the task name (default `NEXT_PUBLIC_ORK_TASK`, only for processes with `port_range: "fe"`/`env_var`/`url_env_vars`; `""` disables) — use `VITE_…` for Vite apps.
    - `env_var`/`env_path`/`url_env_vars` are optional — only add if that process's `.env.local` needs rewriting to point at the task's own BE port (`env_var`) or its own FE origin (`url_env_vars`, e.g. `NEXTAUTH_URL`).
    - `patch_file`/`patch_key` are for apps whose backend url lives elsewhere — e.g. a Pkl/YAML/JSON template that gets *rendered* into a generated config file on every dev-server start (patching the generated file directly gets clobbered the moment the dev command runs). `patch_file` is a path relative to that process's worktree; ork rewrites `key = "http://localhost:PORT"` (or `key: "..."`) in it to the task's BE port. Find the real source (grep the repo's dev/build task for what generates the file you'd naively patch) — don't patch generated output.
    - If the repo uses direnv (`.envrc`), the setup hook must also run `direnv allow .` after copying it in, or the dev command fails with "is blocked" on first run in the new worktree.
 4. **Add/update setup hooks** in `~/.config/ork/hooks.json` for each repo in the group, if not already present — typically copying env files from the canonical checkout plus installing deps.
-5. **Validate both JSON files parse** (`python3 -m json.tool <file>` or `jq .`) before finishing. A syntactically broken groups.json is ignored wholesale (one `ork: bad ... — ignoring` line on stderr); an individual invalid group (no processes, missing/duplicate label) is dropped on its own.
+5. **Validate**: run `ork config check` — it lists the groups and exits non-zero on any problem (bad JSON, unknown/typo'd keys, invalid group). Normal startup only warns and skips an invalid group, so don't rely on ork "still starting" as proof. Then preview a real task with `ork group <task> --dry-run` from one of the repos (worktrees, ports, commands, env/template updates — writes nothing). Also check hooks.json parses (`jq . ~/.config/ork/hooks.json`).
 6. Do **not** run `./build.sh` or touch Go source for a config-only change — config is read at runtime from these files.
 
 ## Gotchas

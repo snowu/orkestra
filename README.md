@@ -22,7 +22,9 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
 - Repo names are colored for grouping — distinct repos get maximally
   distinct colors, stable across runs while your set of repos is stable.
 - Type to fuzzy-filter the list. An orc (cowsay + fortune) heckles from the
-  right margin if you have both installed.
+  right margin if you have both installed. Its fortune is generated once per
+  picker session and stays stable across refreshes. The full orc is shown
+  when space permits, with preview space adjusted to fit it.
 - **ENTER** — attach-or-create: lands you in a tmux session for that
   worktree (attaches if the session already exists, creates it otherwise).
 - **alt-ENTER** — cd only, no tmux session: for when you just want to look
@@ -80,7 +82,7 @@ bash/fzf implementation lives in `legacy/`, functional but frozen.)
   without its binary.
 - `bash` or `zsh`
 - git (worktrees)
-- Go 1.22+ — build-time only (`install.sh` compiles the binary; e.g.
+- Go 1.26.5+ — build-time only (`install.sh` compiles the binary; e.g.
   `mise use -g go@latest`)
 - `fortune` + `cowsay` — optional, for the orc sidebar
 - [Claude Code](https://claude.com/claude-code) — optional; only needed for
@@ -192,23 +194,35 @@ backend:
 
 Each process has a `label` (names its tmux window), a `repo`, and a `cmd`.
 `{port}` in `cmd` is substituted with the task's stable port whenever
-`port_range` ("fe" or "be") is set. Omit `port_range` when the port is
-hardcoded in the repo's own config instead — `remote` and `host` above are
-a federated MFE setup where the ports are pinned in each repo's own config
-file; `fixed_port` there declares the port ONLY so ork can warn when it's
-already in use, since a process without `port_range` can't be isolated per
-task and only one task at a time can run it. `env_var`, if set, is the
-`.env.local` key ork rewrites in that process's worktree to point at the
-task's backend port; `env_path` is an optional URL path appended after the
-port. `url_env_vars` keys get rewritten to the task's own fe origin
+`port_range` ("fe" or "be") is set; `{fe_port}` and `{be_port}` give either
+side's port, so a command can point at its sibling. Omit `port_range` when
+the port is hardcoded in the repo's own config instead — `remote` and
+`host` above are a federated MFE setup where the ports are pinned in each
+repo's own config file; `fixed_port` there declares the port ONLY so ork can
+warn when it's already in use, since a process without `port_range` can't
+be isolated per task and only one task at a time can run it. `env_var`, if
+set, is the dotenv key ork rewrites in that process's worktree to point at
+the task's backend port; `env_path` is an optional URL path appended after
+the port. `url_env_vars` keys get rewritten to the task's own fe origin
 (`http://localhost:<fePort>`) — for apps that hardcode it, like next-auth's
 `NEXTAUTH_URL`, which would otherwise bounce auth redirects to whatever
-runs on port 3000. `patch_file`/`patch_key` cover backend urls that don't
-live in `.env.local` at all — e.g. a Pkl/YAML template rendered into a
-generated `config.json` on every dev-server start, where patching the
-generated file gets clobbered. `patch_file` is relative to the process's
-worktree; ork rewrites `<patch_key> = "http://localhost:PORT"` (or
-`<patch_key>: "..."`) in it to the task's backend port.
+runs on port 3000. `env_file` picks the dotenv file (default `.env.local`;
+e.g. `.env` for Vite), relative to the worktree. `task_env_var` is the key
+that receives the task name so the app can label itself — it defaults to
+`NEXT_PUBLIC_ORK_TASK` for processes that already have a dotenv file in
+play (`port_range: "fe"`, `env_var` or `url_env_vars`); set it to `""` to
+disable. `patch_file`/`patch_key` cover backend urls that don't live in a
+dotenv file at all — e.g. a Pkl/YAML template rendered into a generated
+`config.json` on every dev-server start, where patching the generated file
+gets clobbered. `patch_file` is relative to the process's worktree; ork
+rewrites `<patch_key> = "http://localhost:PORT"` (or `<patch_key>: "..."`)
+lines in it to the task's backend port, keeping any URL suffix. Choose the
+source template, not its generated output.
+
+Env and template updates preserve other keys and file permissions and
+replace the file atomically. A symlinked env file (e.g. a setup hook
+linking `.env.local` to the main checkout's copy) is written through to its
+target; a path that would escape the worktree is refused.
 
 `cr-managament` above belongs to both groups — a repo can be a member of
 several groups with different siblings. ork resolves which group a task
@@ -217,6 +231,32 @@ repos have worktrees for that task; the group with the most wins. If two
 or more groups tie (including "no worktrees exist yet for either"),
 ctrl-g's (or ctrl-a's) spawn is ambiguous and prompts you with a picker listing each
 candidate's name and processes so you can choose which one to start.
+Groups that share no repo never compete, even under the same task name.
+
+## Groups and configuration from the CLI
+
+Run `ork config check` to validate your settings and list the effective
+groups; it exits non-zero on any problem. Normal startup reports the same
+problems on stderr but carries on (an invalid group is skipped, an
+unparseable value keeps its default), so a config mistake never locks you
+out of your worktrees. Unknown keys in `groups.json` — usually typos — are
+reported too. Set `ORK_CONFIG=/path/to/ork.conf` to use a different config
+file; it is passed along to cleanup sessions ork spawns. The file is parsed
+as data, never executed; single-line assignments, `export KEY=value` and
+trailing comments are supported.
+
+From a repo's main checkout, `ork group <task> --dry-run` shows what ctrl-g
+would do for that task: the resolved group, worktrees, ports, commands, env
+and template updates, and anything that would be skipped. From anywhere
+inside a task worktree, `ork group --dry-run` infers the task. Drop
+`--dry-run` to start the windows; add `--group NAME` when the task's group
+is ambiguous. (`ork pair` is an alias.) Dry runs and config checks need no
+multiplexer. Output goes to stderr, so the shell wrapper only changes
+directory when a command prints one on stdout.
+
+Ports come from a hash of the task name, so URLs stay stable across runs.
+Different tasks can hash to the same port; port allocation is not a
+reservation system.
 
 ### Login proxy (`ork login-proxy`)
 
@@ -243,6 +283,16 @@ session for context continuity). Set `ORK_SCOPE_SESSIONS_TO_REPO=1` in
 `~/.ork.conf` if you'd rather sessions never collide across repos. Ending a
 task only kills the shared task-named session if no other repo's worktree
 under that same task name still exists.
+
+Task names must be valid Git branch names that fit one directory (no `/`),
+matching the worktree discovery layout; reusing an existing branch like
+`feat/login` maps it to task `feat-login` and keeps the real branch name.
+A failing setup hook is reported with the worktree path so you can repair
+it, but the worktree is still finished and opened. Cleanup deletes the
+worktree's actual branch. It stops if Git refuses to remove a worktree it
+tracks, preserving its files, branch and session (unlock a locked worktree
+before retrying); a leftover folder Git no longer tracks is deleted
+directly. `end-task` also works from subdirectories within a task worktree.
 
 ## Claude Code agent status (optional)
 
