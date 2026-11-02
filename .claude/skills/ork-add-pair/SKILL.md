@@ -9,6 +9,8 @@ ork (`~/personal/orkestra`) drives tmux/herdr sessions per task-worktree. Repos 
 
 Config lives in `~/.config/ork/` (JSON, no code execution) plus `~/.ork.conf` (bash-sourced, line-parsed by `internal/config/config.go`). **Never edit files under `~/code/**` for this** — ork-side only.
 
+If the `ork` MCP server is loaded (`ork mcp`; tools `get_config`, `set_group`, `set_repo_hook`, `plan_group`, …), use those instead of editing the JSON by hand: they validate before writing and report config problems. The steps below still apply — what to put in each field doesn't change.
+
 ## Files involved
 
 - `~/.config/ork/groups.json` (override: `ORK_GROUPS_CONFIG`) — array of `{name, processes: [{label, repo, cmd, port_range, fixed_port, env_var, env_path, url_env_vars, env_file, task_env_var, patch_file, patch_key}]}`. This is what ctrl-g reads (`config.Group`/`config.Process`, `internal/ui/keys.go` ctrl+g → `worktree.EnsureGroupWindows`). There is no `pairs.json` and no `ORK_FE_REPO`/`ORK_BE_REPO` shorthand anymore.

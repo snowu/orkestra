@@ -258,6 +258,40 @@ Ports come from a hash of the task name, so URLs stay stable across runs.
 Different tasks can hash to the same port; port allocation is not a
 reservation system.
 
+## MCP server (`ork mcp`)
+
+`ork mcp` serves ork's operations to coding-agent CLIs over MCP (stdio),
+so an agent can set up worktrees and groups for you. Register it once:
+
+```sh
+claude mcp add --scope user ork -- ork mcp      # Claude Code
+codex mcp add ork -- ork mcp                     # Codex CLI
+```
+
+Other clients take the usual stdio entry: command `ork`, args `["mcp"]`.
+
+| Tool | What it does |
+|------|--------------|
+| `get_config` | multiplexer, worktree roots, favorites, groups, hooks, config problems |
+| `list_repos` | repos found under `$HOME`, favorites first, with their groups |
+| `list_worktrees` | task worktrees with branch, session, agent state and group |
+| `list_branches` | a repo's local branches that have no worktree yet |
+| `create_worktree` | new or existing branch, in one repo or every member of a group (like ctrl-n) |
+| `plan_group` / `start_group` | preview / start a task's group windows (like `ork group --dry-run` / ctrl-g) |
+| `kill_session` | kill a task's session, keep the worktree (like ctrl-k) |
+| `end_task` | remove the worktree and delete the branch locally and on origin (like ctrl-x) |
+| `set_group` / `delete_group` | add, replace or remove a group in `groups.json` |
+| `set_repo_hook` | set or remove a repo's setup hook in `hooks.json` |
+
+Config is reloaded on every call, so hand edits are picked up straight
+away. Group and hook edits are validated before they are written; the
+previous file is kept as `groups.json.bak` / `hooks.json.bak`, and other
+groups keep their formatting. Moving a branch that is checked out elsewhere
+needs an explicit `force`, which applies only to the first repo, as in the
+TUI. Nothing attaches a terminal — the agent creates and starts things, and
+you attach with `ork` or `tmux attach -t <task>`. Note that `end_task` run
+from inside the session it ends also kills the agent that called it.
+
 ### Login proxy (`ork login-proxy`)
 
 For apps whose OAuth provider only whitelists `http://localhost:3000` as a

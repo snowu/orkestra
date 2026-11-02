@@ -43,6 +43,8 @@ func main() {
 			task = args[1]
 		}
 		runEndTask(task)
+	case "mcp":
+		runMCP()
 	case "scan":
 		runScan()
 	case "login-proxy":
