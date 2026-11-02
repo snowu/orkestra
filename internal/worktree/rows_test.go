@@ -14,9 +14,21 @@ func fixtureRoots(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	for _, p := range []string{"repoBE/mytask", "repoFE/mytask", "repoBE/other"} {
-		os.MkdirAll(filepath.Join(root, p), 0o755)
+		if err := mkWorktree(root, p); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return root
+}
+
+// mkWorktree creates <root>/<rel> as a stand-in worktree: a dir with a
+// .git file, which is what AllWorktreeDirs requires of a task dir.
+func mkWorktree(root, rel string) error {
+	dir := filepath.Join(root, rel)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: elsewhere"), 0o644)
 }
 
 func TestSiblingsShareSessionAndAgent(t *testing.T) {
@@ -97,7 +109,7 @@ func TestPairRowsSortAdjacent(t *testing.T) {
 	}
 	root := t.TempDir()
 	for _, p := range []string{"fe-repo/tsk", "be-repo/tsk", "other/mid"} {
-		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+		if err := mkWorktree(root, p); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -130,7 +142,7 @@ func TestGroupLiveCount(t *testing.T) {
 	}}}
 	root := t.TempDir()
 	for _, p := range []string{"shell-repo/tsk", "solo-repo/tsk"} {
-		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+		if err := mkWorktree(root, p); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -192,7 +204,7 @@ func TestResolveGroupPicksMoreMaterialized(t *testing.T) {
 	}}
 	root := t.TempDir()
 	for _, p := range []string{"credit-risk-host/UND-329", "cr-managament/UND-329"} {
-		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+		if err := mkWorktree(root, p); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -220,7 +232,7 @@ func TestResolveGroupTiesAreAmbiguous(t *testing.T) {
 	root := t.TempDir()
 	// Neither only-a nor only-b has a worktree — both candidates tie at 1
 	// present member (shared itself, found via its own worktree).
-	if err := os.MkdirAll(filepath.Join(root, "shared/tsk"), 0o755); err != nil {
+	if err := mkWorktree(root, "shared/tsk"); err != nil {
 		t.Fatal(err)
 	}
 	g, ambiguous, ok := ResolveGroup(cfg, []string{root}, "shared", "tsk")
@@ -258,7 +270,7 @@ func TestBuildRowsPopulatesGroupName(t *testing.T) {
 	}}}
 	root := t.TempDir()
 	for _, p := range []string{"shell-repo/tsk", "solo-repo/tsk"} {
-		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+		if err := mkWorktree(root, p); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -291,7 +303,7 @@ func TestThreeMemberGroupSortsFullyAdjacent(t *testing.T) {
 	}}}
 	root := t.TempDir()
 	for _, p := range []string{"shell-repo/UND-1", "cart-repo/UND-1", "checkout-repo/UND-1", "other/UND-1"} {
-		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+		if err := mkWorktree(root, p); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -332,7 +344,7 @@ func TestSharedRepoRowsAgreeOnGroup(t *testing.T) {
 	}}
 	root := t.TempDir()
 	for _, p := range []string{"cr-frontend/UND-1", "cr-managament/UND-1"} {
-		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+		if err := mkWorktree(root, p); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -367,7 +379,7 @@ func TestSharedRepoTaskLevelTieDeclinesRatherThanGuessing(t *testing.T) {
 	}}
 	root := t.TempDir()
 	for _, p := range []string{"cr-frontend/UND-1", "credit-risk-host/UND-1", "cr-managament/UND-1"} {
-		if err := os.MkdirAll(filepath.Join(root, p), 0o755); err != nil {
+		if err := mkWorktree(root, p); err != nil {
 			t.Fatal(err)
 		}
 	}

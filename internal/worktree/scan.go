@@ -22,6 +22,10 @@ var scanPrune = map[string]bool{
 }
 
 // AllWorktreeDirs lists every <root>/<repo>/<task> dir across all roots.
+// A task dir must be a git checkout (have a .git file or dir): a root can
+// also hold a worktree laid out as <root>/<name> (e.g. a repo's own
+// .worktrees/<name>), and without this check its src/, docs/, zig-out/...
+// subdirs were listed as tasks of a bogus repo.
 func AllWorktreeDirs(roots []string) []string {
 	var out []string
 	for _, root := range roots {
@@ -38,8 +42,12 @@ func AllWorktreeDirs(roots []string) []string {
 				continue
 			}
 			for _, task := range tasks {
-				if task.IsDir() {
-					out = append(out, filepath.Join(root, repo.Name(), task.Name()))
+				if !task.IsDir() {
+					continue
+				}
+				p := filepath.Join(root, repo.Name(), task.Name())
+				if _, err := os.Stat(filepath.Join(p, ".git")); err == nil {
+					out = append(out, p)
 				}
 			}
 		}
