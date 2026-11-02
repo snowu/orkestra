@@ -106,13 +106,19 @@ func dispatch(cfg config.Config, res ui.Result) {
 				if c != nil {
 					fmt.Fprintln(os.Stderr, "ork: "+res.Branch+" is already checked out in "+c.Path+" — skipped "+root)
 				}
-			} else if _, err := worktree.NewTask(cfg, root, res.Task); err != nil {
+			} else if _, err := worktree.NewTaskOnBranch(cfg, root, res.Task, res.Branch); err != nil {
 				fmt.Fprintln(os.Stderr, "ork: new-task failed for "+root+"/"+res.Task+": "+err.Error())
 			}
 		}
 		attach(cfg, res.Repo, res.Task, wt)
 	case ui.ActionOpenAll:
-		_, notes, err := worktree.EnsureGroupWindows(cfg, res.Repo, res.Task, res.WtPath)
+		var notes []string
+		var err error
+		if g, ok := cfg.GroupByName(res.Group); ok {
+			_, notes, err = worktree.EnsureGroupWindowsFor(cfg, g, res.Repo, res.Task, res.WtPath)
+		} else {
+			_, notes, err = worktree.EnsureGroupWindows(cfg, res.Repo, res.Task, res.WtPath)
+		}
 		if err != nil {
 			if amb, ok := err.(*worktree.AmbiguousGroupError); ok {
 				fatal(amb.Error())

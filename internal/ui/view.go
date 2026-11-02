@@ -362,10 +362,10 @@ func (m *Model) viewTaskName() string {
 		return b.String()
 	}
 	b.WriteString(styleDim.Render("branches without a worktree:") + "\n")
-	for i, br := range branches {
-		if i >= max(3, m.height-10) {
-			break
-		}
+	// branchCursor 0 is the new-branch input line; rows are 1-based.
+	lo, hi := scrollWindow(len(branches), m.branchCursor-1, max(3, m.height-10))
+	for i := lo; i < hi; i++ {
+		br := branches[i]
 		row := fmt.Sprintf("  %s  %s", br.Name, humanAge(br.Tip))
 		if br.InMain {
 			row += styleDim.Render(" (in main repo)")
@@ -412,10 +412,9 @@ func (m *Model) viewScan() string {
 		b.WriteString(styleDim.Render("  (nothing recent without a worktree)") + "\n")
 		return b.String()
 	}
-	for i, c := range cands {
-		if i >= max(3, m.height-8) {
-			break
-		}
+	lo, hi := scrollWindow(len(cands), m.scanCursor, max(3, m.height-8))
+	for i := lo; i < hi; i++ {
+		c := cands[i]
 		row := fmt.Sprintf("  %-20s %-40s %s", c.Repo, c.Name, humanAge(c.Tip))
 		if c.InMain {
 			row += styleDim.Render(" (in main repo)")
@@ -665,4 +664,13 @@ func humanAge(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// scrollWindow returns the [lo, hi) slice of n rows to draw in h lines so
+// that cursor (which may be -1 for "none") stays visible.
+func scrollWindow(n, cursor, h int) (lo, hi int) {
+	if cursor >= h {
+		lo = cursor - h + 1
+	}
+	return lo, min(n, lo+h)
 }

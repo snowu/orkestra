@@ -52,6 +52,9 @@ type Result struct {
 	// soon as a Result is returned.
 	Branch string
 	Force  bool
+	// Group is set for ActionOpenAll when the user picked it from the
+	// ambiguity picker; empty means resolve normally.
+	Group string
 }
 
 // Styles must bind to a stderr renderer: the ork() shell wrapper captures
@@ -241,6 +244,9 @@ type Model struct {
 	groupRepo   string
 	groupTask   string
 	groupWt     string
+	// groupAttach: the picker was opened by ctrl+a, so choosing a group
+	// quits with ActionOpenAll instead of spawning in the background.
+	groupAttach bool
 
 	startInScan bool
 
@@ -443,6 +449,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.groupCands = msg.ambiguous
 				m.groupCursor = 0
 				m.groupRepo, m.groupTask, m.groupWt = msg.pickRepo, msg.pickTask, msg.pickWt
+				m.groupAttach = false
 				m.mode = modeGroupPick
 				return m, nil
 			}
@@ -541,7 +548,7 @@ func (m *Model) previewLines() int {
 	// help+header+filter (3) + listH (height - height*6/10 - 5) + divider
 	// (1) lines above it, so the space actually left is height*6/10 + 1;
 	// one line is held back for the error/status line.
-	n := m.height*6/10
+	n := m.height * 6 / 10
 	if n < 5 {
 		n = 5
 	}

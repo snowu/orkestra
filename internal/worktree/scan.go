@@ -145,6 +145,7 @@ func BranchCandidates(repoRoot string, maxAge time.Duration) []BranchCand {
 	}
 	repo := filepath.Base(repoRoot)
 	linked, main := checkedOutBranches(repoRoot)
+	base := BaseBranch(repoRoot)
 	var cands []BranchCand
 	for _, line := range strings.Split(out, "\n") {
 		name, ts, ok := strings.Cut(strings.TrimSpace(line), "\t")
@@ -160,6 +161,11 @@ func BranchCandidates(repoRoot string, maxAge time.Duration) []BranchCand {
 			continue
 		}
 		if linked[name] {
+			continue
+		}
+		// The base branch checked out in the main repo can't be stolen —
+		// AddExisting refuses it — so offering it only leads to an error.
+		if main[name] && name == base {
 			continue
 		}
 		cands = append(cands, BranchCand{Repo: repo, Root: repoRoot, Name: name, Tip: tip, InMain: main[name]})

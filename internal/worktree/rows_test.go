@@ -91,9 +91,9 @@ func TestPairRowsSortAdjacent(t *testing.T) {
 	}}}}
 	t0 := time.Now()
 	times := map[string]time.Time{
-		"fe-repo__tsk":  t0.Add(-3 * time.Hour), // fe old
-		"other__mid":    t0.Add(-1 * time.Hour), // would split the pair without grouping
-		"be-repo__tsk":  t0,                     // be fresh
+		"fe-repo__tsk": t0.Add(-3 * time.Hour), // fe old
+		"other__mid":   t0.Add(-1 * time.Hour), // would split the pair without grouping
+		"be-repo__tsk": t0,                     // be fresh
 	}
 	root := t.TempDir()
 	for _, p := range []string{"fe-repo/tsk", "be-repo/tsk", "other/mid"} {

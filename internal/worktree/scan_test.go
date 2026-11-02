@@ -79,6 +79,10 @@ func TestBranchCandidates(t *testing.T) {
 	run("branch", "recent-two")
 	linked := filepath.Join(t.TempDir(), "linked")
 	run("worktree", "add", linked, "-b", "has-worktree")
+	// Primary checkout on a non-base branch; origin/HEAD names main as base.
+	run("update-ref", "refs/remotes/origin/main", "refs/heads/main")
+	run("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	run("checkout", "-b", "on-main")
 
 	got := BranchCandidates(repoRoot, 0)
 	names := map[string]BranchCand{}
@@ -94,7 +98,7 @@ func TestBranchCandidates(t *testing.T) {
 	if _, ok := names["has-worktree"]; ok {
 		t.Error("branch held by a LINKED worktree must be excluded")
 	}
-	if c, ok := names["main"]; !ok {
+	if c, ok := names["on-main"]; !ok {
 		t.Error("branch held by the primary checkout must be a candidate")
 	} else if !c.InMain {
 		t.Error("branch held by the primary checkout must have InMain == true")
@@ -109,6 +113,15 @@ func TestBranchCandidates(t *testing.T) {
 	// newest first
 	if len(got) >= 2 && got[0].Tip.Before(got[1].Tip) {
 		t.Error("candidates must be sorted newest tip first")
+	}
+
+	// base branch held by the primary checkout: AddExisting always refuses
+	// it, so it must not be offered
+	run("checkout", "main")
+	for _, c := range BranchCandidates(repoRoot, 0) {
+		if c.Name == "main" {
+			t.Error("base branch in the primary checkout must be excluded")
+		}
 	}
 
 	// an age filter that excludes everything (all commits are "now")

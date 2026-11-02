@@ -130,6 +130,16 @@ func (c Config) GroupsForRepo(repo string) []Group {
 	return out
 }
 
+// GroupByName returns the group called name, or false (always false for "").
+func (c Config) GroupByName(name string) (Group, bool) {
+	for _, g := range c.Groups {
+		if name != "" && g.Name == name {
+			return g, true
+		}
+	}
+	return Group{}, false
+}
+
 func defaults() Config {
 	home, _ := os.UserHomeDir()
 	return Config{
@@ -147,12 +157,16 @@ func Load(path string) (Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// groups.json is its own file — no ~/.ork.conf must not hide it.
+			cfg.loadGroups()
+			warnLegacyPairs(cfg, nil)
 			return cfg, nil
 		}
 		return cfg, err
 	}
 	defer f.Close()
 
+	var legacyPairKeys []string
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -188,6 +202,8 @@ func Load(path string) (Config, error) {
 			if v := expand(unquote(val)); v != "" {
 				cfg.HooksConfig = v
 			}
+		case "ORK_FE_REPO", "ORK_BE_REPO", "ORK_FE_CMD", "ORK_BE_CMD", "ORK_FE_ENV_VAR", "ORK_PAIRS_CONFIG":
+			legacyPairKeys = append(legacyPairKeys, key)
 		case "ORK_GROUPS_CONFIG":
 			if v := expand(unquote(val)); v != "" {
 				cfg.GroupsConfig = v
@@ -198,6 +214,7 @@ func Load(path string) (Config, error) {
 		return cfg, err
 	}
 	cfg.loadGroups()
+	warnLegacyPairs(cfg, legacyPairKeys)
 	return cfg, nil
 }
 
@@ -275,4 +292,16 @@ func expand(s string) string {
 		s = home + s[1:]
 	}
 	return s
+}
+
+// warnLegacyPairs tells users upgrading from the fe/be-pair config that
+// it is no longer read — otherwise their pairs just silently vanish.
+func warnLegacyPairs(cfg Config, keys []string) {
+	if len(keys) > 0 {
+		fmt.Fprintln(os.Stderr, "ork: "+strings.Join(keys, ", ")+" no longer supported — move the pair to "+cfg.GroupsConfig+" (see ork.conf.example)")
+	}
+	pairs := filepath.Join(filepath.Dir(cfg.GroupsConfig), "pairs.json")
+	if _, err := os.Stat(pairs); err == nil {
+		fmt.Fprintln(os.Stderr, "ork: "+pairs+" is no longer read — move its pairs to "+cfg.GroupsConfig)
+	}
 }

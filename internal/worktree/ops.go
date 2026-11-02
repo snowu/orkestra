@@ -30,6 +30,7 @@ var Log io.Writer = os.Stderr
 var (
 	ensureSession = mux.EnsureSession
 	ensureWindow  = mux.EnsureWindow
+	windowNames   = mux.SessionWindowNames
 )
 
 func git(dir string, args ...string) error {
@@ -67,30 +68,44 @@ type Conflict struct {
 	IsMain bool   // Path is the primary checkout, not a linked worktree
 }
 
-// BranchCheckout reports where branch is checked out, or nil if it is
-// free. Read-only — the caller decides whether to disturb anything.
-//
-// `git worktree list --porcelain` emits records separated by blank lines,
-// each starting with a "worktree <path>" line; the FIRST record is always
-// the primary checkout, which is how IsMain is determined without a
-// separate rev-parse.
-func BranchCheckout(repoRoot, branch string) *Conflict {
-	out := gitOut(repoRoot, "worktree", "list", "--porcelain")
-	if out == "" {
-		return nil
-	}
-	want := "branch refs/heads/" + branch
-	path, first := "", true
-	isMain := false
-	for _, line := range strings.Split(out, "\n") {
+// wtRecord is one record of `git worktree list --porcelain`.
+type wtRecord struct {
+	path, branch string // branch is the short name; "" when detached
+	isMain       bool   // the FIRST record is always the primary checkout
+	prunable     bool   // its directory is gone; `git worktree prune` drops it
+}
+
+// listWorktrees parses `git worktree list --porcelain`: records separated
+// by blank lines, each starting with "worktree <path>".
+func listWorktrees(repoRoot string) []wtRecord {
+	var recs []wtRecord
+	for _, line := range strings.Split(gitOut(repoRoot, "worktree", "list", "--porcelain"), "\n") {
 		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "worktree "):
-			path = strings.TrimPrefix(line, "worktree ")
-			isMain = first
-			first = false
-		case line == want:
-			return &Conflict{Branch: branch, Path: path, IsMain: isMain}
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			recs = append(recs, wtRecord{path: p, isMain: len(recs) == 0})
+			continue
+		}
+		if len(recs) == 0 {
+			continue
+		}
+		r := &recs[len(recs)-1]
+		if b, ok := strings.CutPrefix(line, "branch refs/heads/"); ok {
+			r.branch = b
+		} else if line == "prunable" || strings.HasPrefix(line, "prunable ") {
+			r.prunable = true
+		}
+	}
+	return recs
+}
+
+// BranchCheckout reports where branch is checked out, or nil if it is
+// free. Read-only — the caller decides whether to disturb anything. A
+// prunable record (directory deleted by hand) does not count: git still
+// lists it until pruned, but nothing real holds the branch.
+func BranchCheckout(repoRoot, branch string) *Conflict {
+	for _, r := range listWorktrees(repoRoot) {
+		if r.branch == branch && !r.prunable {
+			return &Conflict{Branch: branch, Path: r.path, IsMain: r.isMain}
 		}
 	}
 	return nil
@@ -102,33 +117,16 @@ func BranchCheckout(repoRoot, branch string) *Conflict {
 // already has a worktree); main holds the branch (if any) held by the
 // primary checkout (no worktree yet — a legitimate candidate, picking it
 // just means the main checkout gets switched to its base branch first).
-// Parsed from a single `git worktree list --porcelain` call, using the same
-// "first record is the primary checkout" rule as BranchCheckout. A worktree
-// record with no "branch" line (detached HEAD) contributes nothing to
-// either set.
-//
-// Separate from BranchCheckout rather than sharing its loop: BranchCheckout
-// also tracks the record's path, which this doesn't need. Threading that
-// through here would make BranchCheckout more convoluted, not less.
+// Prunable records are skipped, as in BranchCheckout.
 func checkedOutBranches(repoRoot string) (linked map[string]bool, main map[string]bool) {
-	out := gitOut(repoRoot, "worktree", "list", "--porcelain")
-	linked = map[string]bool{}
-	main = map[string]bool{}
-	isMain, first := false, true
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
+	linked, main = map[string]bool{}, map[string]bool{}
+	for _, r := range listWorktrees(repoRoot) {
 		switch {
-		case strings.HasPrefix(line, "worktree "):
-			isMain = first
-			first = false
+		case r.branch == "" || r.prunable:
+		case r.isMain:
+			main[r.branch] = true
 		default:
-			if b, ok := strings.CutPrefix(line, "branch refs/heads/"); ok {
-				if isMain {
-					main[b] = true
-				} else {
-					linked[b] = true
-				}
-			}
+			linked[r.branch] = true
 		}
 	}
 	return linked, main
@@ -159,10 +157,11 @@ func SessionName(cfg config.Config, repo, task string) string {
 
 // TaskNameFor maps a branch name to an ork task name. A task is both a
 // directory name and a multiplexer session name, so slashes cannot
-// survive; Row.Branch still shows the real branch, keeping the mapping
-// visible in the picker.
+// survive, and tmux silently rewrites '.' and ':' in session names (so a
+// later lookup by the original name would miss). Row.Branch still shows
+// the real branch, keeping the mapping visible in the picker.
 func TaskNameFor(branch string) string {
-	return strings.ReplaceAll(branch, "/", "-")
+	return strings.NewReplacer("/", "-", ".", "-", ":", "-").Replace(branch)
 }
 
 // TaskPorts derives stable ports per task name — FE in 3000-3999, BE in
@@ -222,7 +221,7 @@ func patchEnvVar(dir, varName, value string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }
 
-// patchFilePort rewrites the first line matching `key = "http://localhost:PORT"`
+// patchFilePort rewrites every line matching `key = "http://localhost:PORT"`
 // or `key: "http://localhost:PORT"` in relPath (relative to feDir) to point
 // at port — for backend urls that live in a config template (e.g. a Pkl
 // file rendered into a generated config.json on every dev-server start,
@@ -301,6 +300,10 @@ func EnsureGroupWindowsFor(cfg config.Config, g config.Group, repo, task, wt str
 	if err := ensureSession(name, wt); err != nil {
 		return nil, nil, err
 	}
+	existing := map[string]bool{}
+	for _, w := range windowNames(name) {
+		existing[w] = true
+	}
 
 	for _, p := range g.Processes {
 		dir := wt
@@ -314,8 +317,9 @@ func EnsureGroupWindowsFor(cfg config.Config, g config.Group, repo, task, wt str
 		// A fixed-port process cannot be isolated per task, so a port
 		// already in use means another task's copy is running. Report it
 		// instead of letting the bind fail confusingly (or worse, letting
-		// a federation host load the wrong task's remote).
-		if p.FixedPort != 0 && portInUse(p.FixedPort) {
+		// a federation host load the wrong task's remote). This task's own
+		// window already running is not a conflict — it's a re-run.
+		if p.FixedPort != 0 && !existing[p.Label] && portInUse(p.FixedPort) {
 			notes = append(notes, fmt.Sprintf("%s: port %d already in use — skipped", p.Label, p.FixedPort))
 			continue
 		}
@@ -337,8 +341,13 @@ func EnsureGroupWindowsFor(cfg config.Config, g config.Group, repo, task, wt str
 				return spawned, notes, err
 			}
 		}
-		if err := patchEnvVar(dir, "NEXT_PUBLIC_ORK_TASK", task); err != nil {
-			return spawned, notes, err
+		// Task label for fe apps (e.g. browser tab title). Only where
+		// .env.local is already in play — writing it into a backend or
+		// non-JS worktree just leaves a stray untracked file.
+		if p.PortRange == "fe" || p.EnvVar != "" || len(p.URLEnvVars) > 0 {
+			if err := patchEnvVar(dir, "NEXT_PUBLIC_ORK_TASK", task); err != nil {
+				return spawned, notes, err
+			}
 		}
 		for _, v := range p.URLEnvVars {
 			if err := patchEnvVar(dir, v, fmt.Sprintf("http://localhost:%d", fePort)); err != nil {
@@ -363,18 +372,19 @@ func portInUse(port int) bool {
 	return true
 }
 
-// EnsureFEBEWindows is the pre-groups entry point, kept for callers that
-// do not surface notes.
-func EnsureFEBEWindows(cfg config.Config, repo, task, wt string) error {
-	_, _, err := EnsureGroupWindows(cfg, repo, task, wt)
-	return err
-}
-
 // NewTask creates <firstRoot>/<repo>/<task> as a worktree on a new branch
 // off the repo's default branch, copies .env.local, runs the repo hook,
 // writes .claude-profile, and touches the access marker (a fresh task
 // counts as used — otherwise it'd sort to the bottom next run).
 func NewTask(cfg config.Config, repoRoot, task string) (string, error) {
+	return NewTaskOnBranch(cfg, repoRoot, task, task)
+}
+
+// NewTaskOnBranch is NewTask with a branch name that differs from the task
+// (directory/session) name — used when a group sibling has to get a fresh
+// branch matching another member's existing one, e.g. feat/login while the
+// task dir is feat-login, so both repos' branches line up.
+func NewTaskOnBranch(cfg config.Config, repoRoot, task, branch string) (string, error) {
 	repo := filepath.Base(repoRoot)
 	git(repoRoot, "worktree", "prune")
 
@@ -386,7 +396,7 @@ func NewTask(cfg config.Config, repoRoot, task string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(wt), 0o755); err != nil {
 		return "", err
 	}
-	if err := git(repoRoot, "worktree", "add", wt, "-b", task, base); err != nil {
+	if err := git(repoRoot, "worktree", "add", wt, "-b", branch, base); err != nil {
 		return "", fmt.Errorf("git worktree add failed for %s", wt)
 	}
 	finishWorktree(cfg, repoRoot, repo, task, wt)
@@ -436,8 +446,11 @@ func AddExisting(cfg config.Config, repoRoot, branch string, force bool) (string
 	}
 
 	// Every mutating path from here on reaches this prune; no early return
-	// does, so the non-forced path never mutates anything (git self-heals
-	// worktree list for missing paths, so nothing depends on an early prune).
+	// does, so the non-forced path never mutates anything. It is required,
+	// not cosmetic: a worktree whose directory was deleted by hand still
+	// holds its branch in git's bookkeeping (BranchCheckout ignores such
+	// prunable records), and `git worktree add` refuses the branch until
+	// it is pruned.
 	git(repoRoot, "worktree", "prune")
 
 	if err := os.MkdirAll(filepath.Dir(wt), 0o755); err != nil {

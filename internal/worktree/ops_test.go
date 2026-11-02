@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,6 +132,8 @@ func TestTaskNameFor(t *testing.T) {
 		"plain":          "plain",
 		"a/b/c":          "a-b-c",
 		"UND-329-rating": "UND-329-rating",
+		"release/1.2":    "release-1-2",
+		"a:b":            "a-b",
 	}
 	for in, want := range cases {
 		if got := TaskNameFor(in); got != want {
@@ -406,13 +409,14 @@ type spawnRec struct{ session, window, dir, cmd string }
 func withFakeMux(t *testing.T) *[]spawnRec {
 	t.Helper()
 	var recs []spawnRec
-	origS, origW := ensureSession, ensureWindow
+	origS, origW, origN := ensureSession, ensureWindow, windowNames
 	ensureSession = func(name, dir string) error { return nil }
+	windowNames = func(string) []string { return nil }
 	ensureWindow = func(s, w, dir, cmd string) error {
 		recs = append(recs, spawnRec{s, w, dir, cmd})
 		return nil
 	}
-	t.Cleanup(func() { ensureSession, ensureWindow = origS, origW })
+	t.Cleanup(func() { ensureSession, ensureWindow, windowNames = origS, origW, origN })
 	return &recs
 }
 
@@ -513,5 +517,101 @@ func TestPatchFilePort(t *testing.T) {
 
 	if err := patchFilePort(dir, "config.pkl", "missingKey", 8123); err == nil {
 		t.Error("expected error for missing key")
+	}
+}
+
+func TestDeletedWorktreeBranchIsReusable(t *testing.T) {
+	repoRoot, run := gitRepo(t)
+	cfg, _ := addExistingCfg(t, repoRoot)
+
+	gone := filepath.Join(t.TempDir(), "gone")
+	run("worktree", "add", gone, "-b", "feat/x")
+	os.RemoveAll(gone) // deleted by hand; git still lists it as prunable
+
+	if c := BranchCheckout(repoRoot, "feat/x"); c != nil {
+		t.Fatalf("prunable worktree must not count as a checkout, got %+v", c)
+	}
+	found := false
+	for _, c := range BranchCandidates(repoRoot, 0) {
+		found = found || c.Name == "feat/x"
+	}
+	if !found {
+		t.Error("branch of a deleted worktree must be offered as a candidate")
+	}
+	wt, c, err := AddExisting(cfg, repoRoot, "feat/x", false)
+	if err != nil || c != nil || wt == "" {
+		t.Fatalf("AddExisting = %q, %+v, %v", wt, c, err)
+	}
+}
+
+func TestNewTaskOnBranchKeepsBranchName(t *testing.T) {
+	repoRoot, _ := gitRepo(t)
+	cfg, _ := addExistingCfg(t, repoRoot)
+
+	wt, err := NewTaskOnBranch(cfg, repoRoot, TaskNameFor("feat/login"), "feat/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(wt) != "feat-login" {
+		t.Errorf("dir = %s, want feat-login", wt)
+	}
+	if b := GitBranch(wt); b != "feat/login" {
+		t.Errorf("branch = %q, want feat/login", b)
+	}
+}
+
+func TestEnsureGroupWindowsFixedPortRerun(t *testing.T) {
+	withFakeMux(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	root := t.TempDir()
+	os.MkdirAll(filepath.Join(root, "remote", "mytask"), 0o755)
+	cfg := config.Config{
+		WorktreeRoots: []string{root},
+		Groups: []config.Group{{Name: "g", Processes: []config.Process{
+			{Label: "remote", Repo: "remote", Cmd: "pnpm dev", FixedPort: port},
+		}}},
+	}
+	wt := filepath.Join(root, "remote", "mytask")
+
+	// someone else holds the port: skipped with a note
+	_, notes, _ := EnsureGroupWindows(cfg, "remote", "mytask", wt)
+	if len(notes) != 1 {
+		t.Errorf("foreign port holder: notes = %v, want one conflict note", notes)
+	}
+	// our own window already exists: a re-run, not a conflict
+	windowNames = func(string) []string { return []string{"remote"} }
+	_, notes, _ = EnsureGroupWindows(cfg, "remote", "mytask", wt)
+	if len(notes) != 0 {
+		t.Errorf("re-run: notes = %v, want none", notes)
+	}
+}
+
+func TestEnsureGroupWindowsTaskEnvOnlyForFE(t *testing.T) {
+	withFakeMux(t)
+	root := t.TempDir()
+	for _, r := range []string{"fe", "be"} {
+		os.MkdirAll(filepath.Join(root, r, "mytask"), 0o755)
+	}
+	cfg := config.Config{
+		WorktreeRoots: []string{root},
+		Groups: []config.Group{{Name: "g", Processes: []config.Process{
+			{Label: "fe", Repo: "fe", Cmd: "x", PortRange: "fe"},
+			{Label: "be", Repo: "be", Cmd: "y", PortRange: "be"},
+		}}},
+	}
+	if _, _, err := EnsureGroupWindows(cfg, "fe", "mytask", filepath.Join(root, "fe", "mytask")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "fe", "mytask", ".env.local")); err != nil {
+		t.Error("fe worktree should get NEXT_PUBLIC_ORK_TASK")
+	}
+	if _, err := os.Stat(filepath.Join(root, "be", "mytask", ".env.local")); err == nil {
+		t.Error("be worktree must not get a stray .env.local")
 	}
 }

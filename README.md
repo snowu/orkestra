@@ -215,7 +215,7 @@ several groups with different siblings. ork resolves which group a task
 actually means by counting, per candidate group, how many of its member
 repos have worktrees for that task; the group with the most wins. If two
 or more groups tie (including "no worktrees exist yet for either"),
-ctrl-g's spawn is ambiguous and prompts you with a picker listing each
+ctrl-g's (or ctrl-a's) spawn is ambiguous and prompts you with a picker listing each
 candidate's name and processes so you can choose which one to start.
 
 ### Login proxy (`ork login-proxy`)

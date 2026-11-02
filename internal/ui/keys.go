@@ -112,6 +112,15 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "ctrl+a":
 		if sel, ok := m.selected(); ok {
+			// Resolve ambiguity here, while the TUI can still show the
+			// picker — dispatch runs after bubbletea has exited.
+			if _, amb, _ := worktree.ResolveGroup(m.cfg, m.cfg.WorktreeRoots, sel.Repo, sel.Task); amb != nil {
+				m.groupCands, m.groupCursor = amb, 0
+				m.groupRepo, m.groupTask, m.groupWt = sel.Repo, sel.Task, sel.Path
+				m.groupAttach = true
+				m.mode = modeGroupPick
+				return m, nil
+			}
 			worktree.TouchAccess(sel.Repo, sel.Task)
 			m.result = Result{Action: ActionOpenAll, Repo: sel.Repo, Task: sel.Task, WtPath: sel.Path}
 			return m, tea.Quit
@@ -625,6 +634,11 @@ func (m *Model) handleGroupPickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cfg, repo, task, wt := m.cfg, m.groupRepo, m.groupTask, m.groupWt
 			m.mode = modeList
 			m.groupCands = nil
+			if m.groupAttach {
+				worktree.TouchAccess(repo, task)
+				m.result = Result{Action: ActionOpenAll, Repo: repo, Task: task, WtPath: wt, Group: g.Name}
+				return m, tea.Quit
+			}
 			return m, func() tea.Msg {
 				spawned, notes, err := worktree.EnsureGroupWindowsFor(cfg, g, repo, task, wt)
 				return spawnDoneMsg{err: err, notes: notes, spawned: spawned}
